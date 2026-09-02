@@ -48,6 +48,10 @@ export interface DirectoryFlowInjected {
   }) => Promise<{ alias: string; host: string; port: number; user: string }>
   /** Browse a remote directory (host API). */
   listRemoteDir: (alias: string, path?: string) => Promise<{ path: string; entries: Array<{ name: string; type: 'dir' | 'file' | 'other'; size: number; mtimeMs: number }> }>
+  /** Interactive SSH connection gate: host-key TOFU + session-password
+   *  dialogs. Resolves true when the alias is connected (or the user
+   *  cancelled the prompts). Used to retry browsing. */
+  ensureConnected: (alias: string) => Promise<boolean>
 }
 
 /** The two entry choices after "Add workspace…". */
@@ -205,24 +209,36 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
     )
   }
 
-  /** Browse a remote dir level for the SSH branch. */
+  /** Browse a remote dir level for the SSH branch. When the connection needs
+   *  a credential (host key untrusted / session password), run the interactive
+   *  gate first, then retry — the operator never sees a raw "connect" error. */
   const browse = async (alias: string, path?: string): Promise<void> => {
     if (alias === '') {
       setError(tt('create.needHost'))
       return
     }
-    setLoading(true)
-    setError(null)
-    try {
-      const result = await props.listRemoteDir(alias, path)
-      setDirPath(result.path)
-      setDirEntries(result.entries)
-      setChoice('browsing')
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
-    } finally {
-      setLoading(false)
+    for (let attempt = 0; attempt < 3; attempt++) {
+      setLoading(true)
+      setError(null)
+      try {
+        const result = await props.listRemoteDir(alias, path)
+        setDirPath(result.path)
+        setDirEntries(result.entries)
+        setChoice('browsing')
+        setLoading(false)
+        return
+      } catch (e: unknown) {
+        const code = (e as { code?: string })?.code
+        const interactive = code === 'NEEDS_PASSWORD' || code === 'HOST_KEY_UNKNOWN' || code === 'HOST_KEY_MISMATCH'
+        setLoading(false)
+        if (!interactive) {
+          setError(e instanceof Error ? e.message : String(e))
+          return
+        }
+        if (!await props.ensureConnected(alias)) return // user cancelled
+      }
     }
+    setError(tt('create.needConnect'))
   }
 
   /** Create the SSH workspace; on success hand the anchor to the owner. */
@@ -249,14 +265,11 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
   }
 
   /** Save a newly-added SSH host, refresh the list, select it, and close the
-   *  add-server form. */
+   *  add-server form. The password is OPTIONAL at creation — adding never
+   *  connects; the credential is asked when browsing/connecting starts. */
   const saveHost = async (): Promise<void> => {
     if (newHost.alias.trim() === '' || newHost.host.trim() === '' || newHost.user.trim() === '') {
       setError(tt('host.needFields'))
-      return
-    }
-    if (newHost.password === '') {
-      setError(tt('host.needPassword'))
       return
     }
     setSavingHost(true)
@@ -282,8 +295,9 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
   }
 
   // Position the dropdown under the trigger, clamped inside the viewport.
-  const menuWidth = choice === 'menu' ? 200 : 320
-  const menuHeight = 320
+  // The "add server" mini-form is taller — give it room so nothing clips.
+  const menuWidth = choice === 'menu' ? 200 : 360
+  const menuHeight = addingHost ? Math.min(560, window.innerHeight - 16) : 320
   const rawTop = anchor !== undefined ? anchor.bottom + 4 : 56
   const rawLeft = anchor !== undefined ? anchor.left : Math.max(8, window.innerWidth - menuWidth - 8)
   const top = Math.max(8, Math.min(rawTop, window.innerHeight - menuHeight - 8))
@@ -299,6 +313,8 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
         top,
         left,
         width: menuWidth,
+        maxHeight: menuHeight,
+        overflowY: 'auto',
       }}
       onClick={(event) => event.stopPropagation()}
     >
@@ -362,6 +378,7 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
                   <label className={css.field} style={{ gridColumn: '1 / -1' }}>
                     <span>{tt('dialog.password')}</span>
                     <input type="password" value={newHost.password} onChange={(e) => setNewHost((p) => ({ ...p, password: e.target.value }))} spellCheck={false} />
+                    <span className={css.hostMeta}>{tt('dialog.passwordHint')}</span>
                   </label>
                 </div>
                 <div className={css.dialogActions} style={{ gridColumn: '1 / -1' }}>

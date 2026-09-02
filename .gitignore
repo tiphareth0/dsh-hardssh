@@ -5,3 +5,7 @@ lib/
 *.map
 *.log
 .DS_Store
+
+# Local working docs (not published; see CHANGELOG.md for releases)
+PLAN.md
+RECON.md

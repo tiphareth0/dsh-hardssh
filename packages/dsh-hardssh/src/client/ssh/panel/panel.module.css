@@ -500,9 +500,10 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
   box-sizing: border-box;
   width: min(560px, calc(100vw - 48px));
   min-width: 0;
-  /* FIX(clip): the body scrolls, the header/footer stay pinned 闂?content can
-     never exceed the card and get clipped. */
-  max-height: min(680px, calc(100vh - 64px));
+  /* The card sizes to its content so every input is fully visible without
+     scrolling; only a viewport-smaller-than-content screen falls back to
+     the body scroll. No fixed pixel cap that clips mid-height dialogs. */
+  max-height: calc(100vh - 48px);
   min-height: 0;
   overflow: hidden;
   background: var(--dsw-alias-bg-base, #fff);

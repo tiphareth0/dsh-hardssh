@@ -76,8 +76,10 @@ function mountModal(node: ReactElement): () => void {
   return close
 }
 
-/** Transient inline error under the clicked row (removed after 8 s). */
+/** Transient inline error under the clicked row (removed after 8 s).
+ *  A null row means the caller owns error surfacing — stay silent. */
 function showBanner(row: HTMLElement | null, alias: string, message: string): void {
+  if (row === null) return
   const banner = document.createElement('div')
   banner.dataset.sshGateError = ''
   banner.textContent = `${tt('gate.failed', alias)}: ${message}`
@@ -85,8 +87,7 @@ function showBanner(row: HTMLElement | null, alias: string, message: string): vo
     'style',
     'margin:2px 4px;padding:6px 8px;font-size:12px;color:#b00020;background:rgba(176,0,32,.08);border-radius:4px;white-space:normal;line-height:1.5',
   )
-  const target = row ?? document.body
-  target.insertAdjacentElement(row !== null ? 'afterend' : 'beforeend', banner)
+  row.insertAdjacentElement('afterend', banner)
   setTimeout(() => { banner.remove() }, 8000)
 }
 
@@ -168,6 +169,12 @@ function ensureConnected(api: SshApi, alias: string, row: HTMLElement | null): P
   pending.set(alias, attempt)
   void attempt.finally(() => { pending.delete(alias) })
   return attempt
+}
+
+/** Silent prompt-only connection gate (no row / banner) for flows that
+ *  surface their own errors (e.g. the directory browser). */
+export function connectHost(api: SshApi, alias: string): Promise<boolean> {
+  return ensureConnected(api, alias, null)
 }
 
 /**

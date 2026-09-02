@@ -26,7 +26,7 @@ import { WorkspaceManagerButton } from './manager-button.tsx'
 import { migrateLegacySessionMemory } from './migrate.ts'
 import { DirectoryFlow } from './directory-flow.tsx'
 import { mountWorkspaceBadges } from './workspace-badges.ts'
-import { mountWorkspaceGates } from './workspace-gate.ts'
+import { connectHost, mountWorkspaceGates } from './workspace-gate.ts'
 import { mountSshOperations } from './ssh/apply.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
@@ -96,6 +96,7 @@ export function apply(ctx: ClientContext): void {
         auth: { kind: 'password'; password: string } | { kind: 'key'; keyPath: string; passphrase?: string }
       }) => hostsApi.create(input),
       listRemoteDir: (alias: string, path?: string) => api.listRemoteDir(alias, path),
+      ensureConnected: (alias: string) => connectHost(sshApi, alias),
     })
     ctx.slots.inject('conversation.hero.workspace.directoryFlow', () => ctx.slots.inject('sidebar.workspaces.directoryFlow', function* () {
       yield (ctx.slots.register as unknown as (options: {

@@ -11,7 +11,8 @@ import type { IncomingMessage, ServerResponse } from 'node:http'
 import { posix } from 'node:path'
 import type { WebRoute } from '@deepseek-ai/dsh-host-webserver'
 import type { HostStore } from './ssh/store.ts'
-import type { SshEngine } from './ssh/engine.ts'
+import { NeedsPasswordError, type SshEngine } from './ssh/engine.ts'
+import { HostKeyMismatchError, HostKeyUnknownError } from './ssh/known-hosts.ts'
 import { isLoopbackRequest, queryParam, readJsonBody as readJsonBodyShared, writeJson } from './host-http.ts'
 import type { SshWorkspaceLedger } from './ledger.ts'
 import {
@@ -47,7 +48,9 @@ async function readJsonBody(req: IncomingMessage): Promise<Record<string, unknow
   throw new RequestBodyError(400, result.reason === 'malformed' ? 'malformed JSON body' : 'JSON body must be an object')
 }
 
-/** Map any thrown error to a stable JSON error response. */
+/** Map any thrown error to a stable JSON error response. Interactive gates
+ *  (session password, host-key TOFU) keep their machine codes so the client
+ *  can prompt and retry instead of showing a raw message. */
 function writeRouteError(res: ServerResponse, error: unknown, ioStatus: 500 | 502 = 502): void {
   if (error instanceof RequestBodyError) {
     writeJson(res, error.status, { error: error.message, code: error.status === 413 ? 'too-large' : 'invalid' })
@@ -55,6 +58,20 @@ function writeRouteError(res: ServerResponse, error: unknown, ioStatus: 500 | 50
   }
   if (error instanceof BackendError) {
     writeJson(res, backendErrorStatus(error, ioStatus), { error: error.message, code: error.code })
+    return
+  }
+  if (error instanceof NeedsPasswordError) {
+    // NOT 200 here: readJson on a 2xx body would treat the structured error
+    // as a successful listing. 500 makes the client throw HttpApiError(code).
+    writeJson(res, 500, { error: error.message, code: 'NEEDS_PASSWORD', secret: error.secret })
+    return
+  }
+  if (error instanceof HostKeyUnknownError) {
+    writeJson(res, 500, { error: error.message, code: 'HOST_KEY_UNKNOWN', hostKeyFingerprint: error.fingerprintSha256 })
+    return
+  }
+  if (error instanceof HostKeyMismatchError) {
+    writeJson(res, 500, { error: error.message, code: 'HOST_KEY_MISMATCH', hostKeyFingerprint: error.actual })
     return
   }
   writeJson(res, ioStatus, { error: error instanceof Error ? error.message : String(error), code: 'io' })
