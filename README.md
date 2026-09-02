@@ -35,17 +35,17 @@
 已发布到 npm（`0.1.2`，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
 
 ```sh
-dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+dsh plugin --profile web add @tiphareth/dsh-hardssh
 # 或 npx 形式（dsh 不在 PATH 时）
-npx --yes @deepseek-ai/dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
 ```
 
 开发/迭代用本机源码或本地 tarball：
 
 ```sh
-dsh plugin --profile <name> add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.1.2.tgz
+dsh plugin --profile web add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.1.2.tgz
 # 或源码链接（改代码重建 lib/ 后重启即生效，无需重新打包）
-dsh plugin --profile <name> add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
+dsh plugin --profile web add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
 ```
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh

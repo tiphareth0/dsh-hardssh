@@ -69,18 +69,18 @@ Published on npm (`0.1.2`, ships the required `cordis.patch.yml` and built
 artifacts) — one command:
 
 ```sh
-dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+dsh plugin --profile web add @tiphareth/dsh-hardssh
 # or via npx when `dsh` is not on PATH
-npx --yes @deepseek-ai/dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
 ```
 
 For development / local iteration, install from a local tarball or the source
 checkout:
 
 ```sh
-dsh plugin --profile <name> add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.1.2.tgz
+dsh plugin --profile web add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.1.2.tgz
 # or link the source (rebuild lib/ after code changes and restart; no re-packing)
-dsh plugin --profile <name> add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
+dsh plugin --profile web add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
 ```
 
 npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
