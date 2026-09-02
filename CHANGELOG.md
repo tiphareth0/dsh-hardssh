@@ -1,10 +1,10 @@
 # 更新日志（Changelog）
 
-> 自 v0.1.2 起开始记录；更早的迭代版本（0.1.0-alphaN）见 Git 提交历史。
+> 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
 ## v0.1.2 — 2026-09-02
 
-从 `dsh-sshworkspaces` 元项目拆分为独立插件后的首个版本。
+从 `dsh-sshworkspaces` 元项目拆分为独立插件后的首个版本，适配最新版Deepseek Harness（0.1.2-alpha.3）。
 
 - **拆分独立**：包名 `@tiphareth/dsh-hardssh`，独立 pnpm workspace，独立 `typecheck` / `build` / `test`。
 - **更通用的底座**：抽象出通用工作区底座（WorkspaceLedger / WorkspaceProvider / Registry / Router / WFS 切换），本地与远程工作区统一接入，便于其他插件复用。
