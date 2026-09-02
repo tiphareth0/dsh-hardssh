@@ -1,0 +1,134 @@
+{
+  "name": "@tiphareth/dsh-hardssh",
+  "description": "Generic workspace base for the dsh harness (local + remote workspace providers with per-workspace routing), with SSH as one concrete provider: enter SSH mode from the session header, browse/edit remote files in a new left panel, let the local harness operate the remote server through remote_* agent tools, and manage hosts through the ssh_* tools and the SSH panel (legacy dsh-ssh merged in).",
+  "version": "0.1.2",
+  "type": "module",
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "dsh-plugin",
+    "workspace",
+    "ssh",
+    "remote-development",
+    "sftp"
+  ],
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./fs": {
+      "types": "./lib/types/fs.d.ts",
+      "default": "./lib/fs.js"
+    },
+    "./subprocess": {
+      "types": "./lib/types/subprocess.d.ts",
+      "default": "./lib/subprocess.js"
+    },
+    "./client": {
+      "types": "./lib/types/client/index.d.ts",
+      "default": "./lib/client.js"
+    },
+    "./src/*": "./src/*",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-settings"
+      ],
+      "platform": "web"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b && tsdown",
+    "bundle": "tsdown",
+    "watch": "tsdown --watch",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "prepare": "tsdown"
+  },
+  "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "ssh2": "^1.17.0",
+    "ws": "^8.18.0"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-locale": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-runtime": "^0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-sidebar": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-fs": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-fs-sandbox": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-host-webserver": "^0.1.2-alpha.3",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-settings": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-subprocess": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-subprocess-local": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-system-prompt": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-timeout": "^0.1.2-alpha.3",
+    "@deepseek-ai/dsh-tools": "^0.1.2-alpha.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@deepseek-ai/cordis": "^4.0.2",
+    "@deepseek-ai/dsh-client-connection": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-locale": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-fs": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-fs-local": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-fs-sandbox": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-host-webserver": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-invariants": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-llm": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-sandbox": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-sandbox-policy": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-scope": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-settings": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-subprocess": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-subprocess-local": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-system-prompt": "0.1.2-alpha.3",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-timeout": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-tools": "0.1.2-alpha.3",
+    "@types/node": "^22.20.0",
+    "@types/react": "~18.3.1",
+    "@types/react-dom": "^18.3.5",
+    "@types/ssh2": "^1.15.5",
+    "@types/ws": "^8.5.13",
+    "jsdom": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "tsdown": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "files": [
+    "lib/*.js",
+    "lib/types/**/*.d.ts",
+    "src",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "license": "BSD-3-Clause"
+}

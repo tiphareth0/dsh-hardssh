@@ -1,0 +1,59 @@
+packages:
+  - 'packages/*'
+
+# One shared dev-toolchain version set for every workspace package.
+# Mirrors the source repo's catalog so tooling behaves identically.
+catalog:
+  typescript: 5.9.2
+  vitest: 4.1.8
+  jsdom: 30.0.1
+  tsdown: 0.22.14
+  react: 18.3.1
+  react-dom: 18.3.1
+
+# @deepseek-ai/* peer APIs resolve at runtime from the dsh profile tree;
+# never auto-install peer copies (module dual-instance).
+autoInstallPeers: false
+
+allowBuilds:
+  ssh2: true
+  esbuild: true
+  node-pty: true
+  cpu-features: true
+  koffi: true
+  '@deepseek-ai/dsh-subprocess-local': true
+
+# 0.1.2-alpha.3 (dsh web kernel 0.1.2-rc.2 line) is too fresh for the default
+# release-age gate; exclude every @deepseek-ai/* package we consume.
+minimumReleaseAgeExclude:
+  - '@deepseek-ai/cordis@4.0.2'
+  - '@deepseek-ai/cosmokit@1.8.3'
+  - '@deepseek-ai/dsh-client-connection@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-client-locale@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-client-runtime@0.1.1-rc.2'
+  - '@deepseek-ai/dsh-client-ui-conversation@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-client-ui-settings@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-client-ui-sidebar@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-client-ui-slots@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-client-ui-workspace@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-fs@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-fs-local@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-fs-sandbox@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-host-webserver@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-invariants@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-llm@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-sandbox@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-sandbox-policy@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-scope@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-settings@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-subprocess@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-subprocess-local@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-system-prompt@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-timeout@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-tools@0.1.2-alpha.3'
+  - '@deepseek-ai/schemastery@3.18.1'
+  - '@deepseek-ai/dsh-brand@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-credentials@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-typert-protocol@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-util-crypto@0.1.2-alpha.3'
+  - '@deepseek-ai/dsh-util-values@0.1.2-alpha.3'

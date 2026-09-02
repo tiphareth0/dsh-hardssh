@@ -1,0 +1,26 @@
+# @tiphareth/dsh-hardssh bundle patch: inserts the plugin row into the web
+# profile roster, and performs the SSH seam switch — disable the deployment's
+# local filesystem/subprocess providers and mount the mode-routing facades
+# (hardssh-fs / hardssh-subprocess) instead. Applied automatically as a
+# profile bundle layer (the `dsh.bundle.patch` manifest field) when this
+# package is installed — NO manual cordis.patch.yml editing needed.
+#
+# In SSH mode the model's read/write/edit/bash tools execute on the remote
+# host transparently; in local mode the facades delegate to the same sandboxed
+# local implementations the disabled rows mounted.
+- insert:
+    - id: hardssh
+      name: '@tiphareth/dsh-hardssh'
+
+- id: fs-sandbox
+  disabled: true
+
+- id: subprocess
+  disabled: true
+
+- insert:
+    - id: hardssh-fs
+      name: '@tiphareth/dsh-hardssh/fs'
+
+    - id: hardssh-subprocess
+      name: '@tiphareth/dsh-hardssh/subprocess'

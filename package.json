@@ -1,0 +1,18 @@
+{
+  "name": "dsh-hardssh-workspace",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Utility workspace for @tiphareth/dsh-hardssh — a generic workspace base (local/remote providers) for the dsh harness, with SSH as one provider.",
+  "packageManager": "pnpm@11.24.0",
+  "type": "module",
+  "scripts": {
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "pack": "pnpm -r pack"
+  },
+  "devDependencies": {
+    "lightningcss": "^1.32.0"
+  },
+  "license": "BSD-3-Clause"
+}
