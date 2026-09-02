@@ -65,15 +65,25 @@ panel (terminal, transfers, tunnels, cluster, host management) is included.
 
 ## Install
 
-The package is in active development (`0.1.x`, not yet published to npm).
-Install from source or a local tarball:
+Published on npm (`0.1.2`, ships the required `cordis.patch.yml` and built
+artifacts) — one command:
 
 ```sh
-# profile install (tarball or checkout)
+dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+# or via npx when `dsh` is not on PATH
+npx --yes @deepseek-ai/dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+```
+
+For development / local iteration, install from a local tarball or the source
+checkout:
+
+```sh
 dsh plugin --profile <name> add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.1.2.tgz
-# or a local checkout
+# or link the source (rebuild lib/ after code changes and restart; no re-packing)
 dsh plugin --profile <name> add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
 ```
+
+npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 Alternatively add the package to the profile's `dependencies` (`file:...` →
 tarball) and to `dsh.profile.bundles`, then restart `dsh web`.
