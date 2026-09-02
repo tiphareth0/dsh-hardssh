@@ -502,14 +502,13 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
   min-width: 0;
   /* The card sizes to its content so every input is fully visible without
      scrolling; only a viewport-smaller-than-content screen falls back to
-     the body scroll. No fixed pixel cap that clips mid-height dialogs. */
+     the body scroll. Native dsh card: 12px radius, hairline border, flat. */
   max-height: calc(100vh - 48px);
   min-height: 0;
   overflow: hidden;
   background: var(--dsw-alias-bg-base, #fff);
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.12));
-  border-radius: 6px;
-  box-shadow: var(--dsw-shadow-lv3, 0 8px 24px rgba(0, 0, 0, 0.12));
+  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
+  border-radius: 12px;
   color: #000000;
   font-family: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI',
     Roboto, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif);
@@ -562,7 +561,7 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
   flex-direction: column;
   gap: 12px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(77, 107, 254, 0.35) transparent;
+  scrollbar-color: var(--dsw-alias-label-caption, rgba(128, 128, 128, 0.5)) transparent;
 }
 
 .modalBody::-webkit-scrollbar {
@@ -570,7 +569,7 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 }
 
 .modalBody::-webkit-scrollbar-thumb {
-  background: rgba(77, 107, 254, 0.3);
+  background: var(--dsw-alias-label-caption, rgba(128, 128, 128, 0.5));
   border-radius: 6px;
 }
 
@@ -595,8 +594,8 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
   padding: 7px 18px;
   border: none;
   border-radius: 8px;
-  background: #4d6bfe;
-  color: #fff;
+  background: var(--dsw-alias-button-primary-fill, #0f1115);
+  color: var(--dsw-alias-label-primary-foreground, #fff);
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
@@ -605,7 +604,7 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 }
 
 .modalPrimary:hover:not(:disabled) {
-  background: #3f5cf2;
+  background: var(--dsw-alias-button-primary-hover, #2b2f36);
 }
 
 .modalPrimary:disabled {
@@ -616,9 +615,9 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 .modalGhost {
   padding: 7px 15px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.15));
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
-  color: #000;
+  color: var(--dsw-alias-label-primary, #0f1115);
   font-size: 13px;
   cursor: pointer;
   transition: background 0.15s ease;
@@ -626,7 +625,7 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 }
 
 .modalGhost:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06));
+  background: var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.05));
 }
 
 .modalGhost:disabled {
@@ -647,7 +646,7 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 .hint {
   font-size: 11.5px;
   line-height: 1.45;
-  color: #333333;
+  color: var(--dsw-alias-label-tertiary, #81858c);
 }
 
 .field {
@@ -658,33 +657,34 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 }
 
 .fieldLabel {
-  font-size: 12px;
-  font-weight: 600;
-  color: #000000;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary, #0f1115);
 }
 
 .input {
   padding: 7px 10px;
   width: 100%;
   min-width: 0;
+  min-height: 36px;
   box-sizing: border-box;
   font-size: 13px;
-  color: #000000;
-  background: var(--dsw-specific-input-major, #fff);
+  color: var(--dsw-alias-label-primary, #0f1115);
+  background: var(--dsw-alias-bg-layer-1, #fff);
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.14));
-  border-radius: 6px;
+  border-radius: 8px;
   outline: none;
   font-family: inherit;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .input:focus {
-  border-color: #4d6bfe;
-  box-shadow: 0 0 0 2px rgba(77, 107, 254, 0.15);
+  border-color: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6);
+  box-shadow: 0 0 0 2px rgba(65, 118, 230, 0.15);
 }
 
 .input::placeholder {
-  color: #666666;
+  color: var(--dsw-alias-label-tertiary, #81858c);
 }
 
 .input:disabled {
@@ -714,7 +714,7 @@ html[data-dsh-ssh-active] [data-pane='conversation'] > :not([data-dsh-ssh-view])
 }
 
 .radioLabel input[type='radio'] {
-  accent-color: #4d6bfe;
+  accent-color: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6);
 }
 
 /* --- terminal ----------------------------------------------------------------- */

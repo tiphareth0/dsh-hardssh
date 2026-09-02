@@ -1,7 +1,7 @@
-/* SSH workspace flow styles 閳?follow the dsh --dsw-* theme tokens so the
-   dialogs match the active GUI theme (light gray / white surface, dark text)
-   exactly like the rest of dsh. Small radii, flat minimal DeepSeek-blue
-   primary button, no glass, no glow. */
+/* SSH workspace flow styles — follow the dsh --dsw-* theme tokens so the
+   dialogs match the active GUI theme exactly like the rest of dsh: native
+   dsh cards (12px radius, hairline border, flat, no shadow), 8px controls,
+   near-black primary buttons, brand blue only for focus/accents. */
 
 .dialogGrid {
   display: grid;
@@ -16,19 +16,21 @@
 }
 
 .field > span {
-  font-size: 12px;
-  font-weight: 600;
-  color: #000000;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--dsw-alias-label-primary, #0f1115);
 }
 
 .field input,
 .field select {
   padding: 7px 10px;
+  min-height: 36px;
+  box-sizing: border-box;
   font-size: 13px;
-  color: #000000;
-  background: var(--dsw-specific-input-major, #fff);
+  color: var(--dsw-alias-label-primary, #0f1115);
+  background: var(--dsw-alias-bg-layer-1, #fff);
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.14));
-  border-radius: 6px;
+  border-radius: 8px;
   outline: none;
   font-family: inherit;
   transition: border-color 0.15s ease, box-shadow 0.15s ease;
@@ -36,18 +38,18 @@
 
 .field select option {
   background: var(--dsw-alias-bg-base, #fff);
-  color: #000000;
+  color: var(--dsw-alias-label-primary, #0f1115);
 }
 
 .field input::placeholder,
 .field select::placeholder {
-  color: #333333;
+  color: var(--dsw-alias-label-tertiary, #81858c);
 }
 
 .field input:focus,
 .field select:focus {
-  border-color: #4d6bfe;
-  box-shadow: 0 0 0 2px rgba(77, 107, 254, 0.15);
+  border-color: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6);
+  box-shadow: 0 0 0 2px rgba(65, 118, 230, 0.15);
 }
 
 .dialogFail {
@@ -80,9 +82,9 @@
 .button {
   padding: 7px 15px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.15));
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
-  color: #000000;
+  color: var(--dsw-alias-label-primary, #0f1115);
   font-size: 13px;
   cursor: pointer;
   transition: background 0.15s ease;
@@ -90,8 +92,7 @@
 }
 
 .button:hover:not(:disabled) {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06));
-  color: #000000;
+  background: var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.05));
 }
 
 .button:disabled {
@@ -100,22 +101,22 @@
 }
 
 .buttonPrimary {
-  background: #4d6bfe;
+  background: var(--dsw-alias-button-primary-fill, #0f1115);
   border-color: transparent;
-  color: #fff;
+  color: var(--dsw-alias-label-primary-foreground, #fff);
   font-weight: 600;
 }
 
 .buttonPrimary:hover:not(:disabled) {
-  background: #3f5cf2;
-  color: #fff;
+  background: var(--dsw-alias-button-primary-hover, #2b2f36);
+  color: var(--dsw-alias-label-primary-foreground, #fff);
 }
 
 .dialogHint {
   margin-top: 10px;
   font-size: 11.5px;
   line-height: 1.45;
-  color: #333333;
+  color: var(--dsw-alias-label-tertiary, #81858c);
 }
 
 .hostRow {
@@ -124,21 +125,20 @@
   gap: 8px;
   padding: 7px 10px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-base-2, rgba(0, 0, 0, 0.02));
-  color: #000000;
+  border-radius: 8px;
+  background: var(--dsw-alias-bg-base, rgba(0, 0, 0, 0.02));
+  color: var(--dsw-alias-label-primary, #0f1115);
   font-size: 13px;
 }
 
 .hostRow:hover {
-  background: rgba(77, 107, 254, 0.08);
-  border-color: rgba(77, 107, 254, 0.35);
+  background: var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.05));
 }
 
 .hostAlias {
-  font-weight: 600;
+  font-weight: 500;
   font-size: 13px;
-  color: #000000;
+  color: var(--dsw-alias-label-primary, #0f1115);
   white-space: nowrap;
 }
 
@@ -149,7 +149,7 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 12px;
-  color: #333333;
+  color: var(--dsw-alias-label-tertiary, #81858c);
 }
 
 .danger {
@@ -181,8 +181,7 @@
   transition: background 0.15s ease, border-color 0.15s ease;
 }
 .managerButton:hover {
-  background: var(--dsw-alias-interactive-bg-hover, rgba(0, 0, 0, 0.06));
-  border-color: rgba(77, 107, 254, 0.35);
+  background: var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.05));
 }
 .managerButton svg {
   flex: none;
@@ -190,23 +189,24 @@
 
 .managerMenuHeader {
   margin: 0 0 2px;
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 600;
-  color: #000000;
+  color: var(--dsw-alias-label-primary, #0f1115);
 }
 .managerMenuClose {
   float: right;
   border: none;
-  background: 0 0;
-  color: #333333;
+  background: transparent;
+  color: var(--dsw-alias-label-secondary, #61666b);
   cursor: pointer;
   font-size: 14px;
   line-height: 18px;
   padding: 0 2px;
 }
-.managerMenuClose:hover { color: #000000; }
+.managerMenuClose:hover { color: var(--dsw-alias-label-primary, #0f1115); }
 
-/* Dropdown panel: flat theme card with a slim DeepSeek-blue accent strip */
+/* Dropdown panel: native dsh flat card — 12px radius, hairline border,
+   no shadow. */
 .menuDropdown {
   position: fixed;
   z-index: 99999;
@@ -216,18 +216,17 @@
   overflow-x: hidden;
   overflow-y: auto;
   max-height: min(600px, calc(100vh - 64px));
-  padding: 6px;
-  border-radius: 6px;
-  background: var(--dsw-alias-bg-module-platform, var(--dsw-alias-bg-base, #fff));
-  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.12));
-  box-shadow: var(--dsw-shadow-lv3, 0 8px 24px rgba(0, 0, 0, 0.12));
-  color: #000000;
+  padding: 8px;
+  border-radius: 12px;
+  background: var(--dsw-alias-bg-base, #fff);
+  border: 1px solid var(--dsw-alias-border-l1, rgba(0, 0, 0, 0.04));
+  color: var(--dsw-alias-label-primary, #0f1115);
   font-family: var(--dsw-font-family, -apple-system, BlinkMacSystemFont, 'Segoe UI',
     Roboto, system-ui, 'PingFang SC', 'Microsoft YaHei', sans-serif);
   font-size: 13px;
   line-height: 20px;
   scrollbar-width: thin;
-  scrollbar-color: rgba(77, 107, 254, 0.3) transparent;
+  scrollbar-color: var(--dsw-alias-label-caption, rgba(128, 128, 128, 0.5)) transparent;
 }
 .menuItem {
   display: flex;
@@ -235,17 +234,17 @@
   gap: 9px;
   width: 100%;
   border: none;
-  background: 0 0;
-  color: #000000;
+  background: transparent;
+  color: var(--dsw-alias-label-primary, #0f1115);
   font: inherit;
   text-align: left;
   padding: 8px 11px;
-  border-radius: 6px;
+  border-radius: 8px;
   cursor: pointer;
   white-space: nowrap;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.menuItem:hover:not(:disabled) { background: rgba(77, 107, 254, 0.1); color: #000000; }
+.menuItem:hover:not(:disabled) { background: var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.05)); }
 .menuItem:disabled { opacity: 0.55; cursor: default; }
 .menuItemIcon { flex: none; font-size: 14px; line-height: 1; }
 .menuDivider { height: 1px; margin: 5px 9px; background: var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1)); }
@@ -274,9 +273,9 @@
   transition: background 0.12s ease, color 0.12s ease, border-color 0.12s ease;
 }
 .menuItemIconButton:hover:not(:disabled) {
-  background: rgba(77, 107, 254, 0.1);
-  border-color: rgba(77, 107, 254, 0.35);
-  color: var(--dsw-alias-label-primary, #1f2229);
+  background: var(--dsw-alias-bg-overlay, rgba(0, 0, 0, 0.06));
+  border-color: var(--dsw-alias-border-l3, rgba(0, 0, 0, 0.12));
+  color: var(--dsw-alias-label-primary, #0f1115);
 }
 .menuItemIconButton:disabled {
   opacity: 0.4;
