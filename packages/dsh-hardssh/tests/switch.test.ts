@@ -121,6 +121,36 @@ describe('SwitchSubprocessRuntime cwd routing', () => {
     switcher.spawn({ argv: ['true'], cwd: '/workspace/a', stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' }, graceMs: 1000 })
     expect(remoteSpawn).toHaveBeenCalledTimes(1)
   })
+
+  it('runs client-native binaries LOCALLY even from a bound workspace (pwsh etc.)', () => {
+    const localSpawn = vi.fn(() => ({ pid: 1 }) as unknown as SubprocessHandle)
+    const remoteSpawn = vi.fn(() => ({ pid: -1 }) as unknown as SubprocessHandle)
+    const local = { spawn: localSpawn } as unknown as SubprocessRuntime
+    const remote = { spawn: remoteSpawn } as unknown as SubprocessRuntime
+
+    const switcher = new SwitchSubprocessRuntime(new Context(), {
+      local,
+      worldFor: (cwd) => (cwd !== undefined && cwd.startsWith('/workspace/a') ? remote : local),
+      clientToolNames: ['pwsh'],
+    })
+    const st = (argv: string[]): Parameters<typeof switcher.spawn>[0] => ({
+      argv, cwd: '/workspace/a', stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' }, graceMs: 1000,
+    })
+    const anchor = 'C:\\Users\\me\\.dsh\\ssh-workspaces\\ws-1'
+
+    // Windows-format executables & declared client tools -> LOCAL.
+    switcher.spawn(st(['pwsh.exe', '-Command', 'Get-ChildItem', anchor]))
+    switcher.spawn(st(['C:\\Windows\\System32\\where.exe', 'pwsh']))
+    switcher.spawn(st(['pwsh', '-Command', '1+1', anchor]))
+    expect(localSpawn).toHaveBeenCalledTimes(3)
+    expect(remoteSpawn).toHaveBeenCalledTimes(0)
+
+    // Ordinary commands stay REMOTE in the bound session.
+    switcher.spawn(st(['bash', '-lc', 'ls', '/workspace/a']))
+    switcher.spawn(st(['python', 'x.py']))
+    expect(remoteSpawn).toHaveBeenCalledTimes(2)
+    expect(localSpawn).toHaveBeenCalledTimes(3)
+  })
 })
 
 describe('SshFileSystem cwd mapping', () => {

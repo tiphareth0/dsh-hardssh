@@ -23,6 +23,23 @@ export interface SwitchSubprocessDeps {
   local: SubprocessRuntime
   /** The runtime for a spawn cwd (undefined = local). */
   worldFor(cwd: string | undefined): SubprocessRuntime
+  /** Bare executable names that are CLIENT tools (run locally even in a
+   *  bound workspace) — e.g. 'pwsh', 'powershell', 'cmd'. Windows-format
+   *  executables (drive/backslash paths, `*.exe/*.cmd/*.bat/*.ps1`) are
+   *  detected automatically as client binaries. */
+  clientToolNames?: ReadonlyArray<string>
+}
+
+const DEFAULT_CLIENT_TOOL_NAMES = ['pwsh', 'powershell', 'cmd'] as const
+
+const CLIENT_EXECUTABLE_RE = /\.(exe|cmd|bat|ps1|com)$/i
+
+/** A client-native executable: Windows-format path/extension, or a bare name
+ *  on the declared client-tool list (remote POSIX hosts never carry these). */
+function isClientNativeExecutable(exe: string, names: ReadonlyArray<string>): boolean {
+  if (exe === '') return false
+  if (/^[a-zA-Z]:[\\/]/.test(exe) || exe.includes('\\') || CLIENT_EXECUTABLE_RE.test(exe)) return true
+  return names.includes(exe)
 }
 
 /** Workspace-routing subprocess facade. */
@@ -36,6 +53,18 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
     return this.deps.worldFor(cwd)
   }
 
+  /** Client binaries run on THIS machine even from a bound workspace — their
+   *  executables cannot exist on the remote POSIX host, and the spawn cwd is
+   *  the local anchor (which exists locally), so local execution is sound.
+   *  Everything else runs in the session's world (remote on a bound host). */
+  private effectiveRuntime(spec: { cwd?: string; argv?: readonly string[] }): SubprocessRuntime {
+    const runtime = this.runtimeFor(spec.cwd)
+    if (runtime === this.deps.local) return runtime
+    const names = this.deps.clientToolNames ?? DEFAULT_CLIENT_TOOL_NAMES
+    const exe = spec.argv !== undefined && spec.argv.length > 0 ? spec.argv[0] : ''
+    return isClientNativeExecutable(exe, names) ? this.deps.local : runtime
+  }
+
   /** @inheritdoc */
   resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
     // Executable resolution is not cwd-scoped; route by the caller's cwd is
@@ -47,12 +76,12 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
 
   /** @inheritdoc */
   spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
-    return this.runtimeFor(spec.cwd).spawn(spec)
+    return this.effectiveRuntime(spec).spawn(spec)
   }
 
   /** @inheritdoc */
   spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
-    return this.runtimeFor(spec.cwd).spawnTerminal(spec)
+    return this.effectiveRuntime(spec).spawnTerminal(spec)
   }
 }
 

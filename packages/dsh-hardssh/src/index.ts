@@ -75,12 +75,6 @@ export const Config: z<Config> = z.object({
 /** Order of the announcement section (right after the dsh-ssh section at 150). */
 const SECTION_ORDER = 160
 
-/** Tools that execute a WINDOWS-format binary locally and therefore cannot
- *  work when the spawn routes to a remote host (glob/grep spawn the packaged
- *  ripgrep, pwsh spawns powershell). Blocked with a clear error in SSH-bound
- *  sessions instead of failing with "No such file or directory". */
-const REMOTE_INCOMPATIBLE_TOOLS = new Set(['glob', 'grep', 'pwsh'])
-
 /** Minimal shape of the assembly context the guidance section reads. The DSH
  *  type (`AssembleContext`) only declares scope/signal, but the agent loop
  *  passes `{ agent, scope, signal }` (see dsh-agent assembleContextFor). */
@@ -222,17 +216,11 @@ export function apply(ctx: Context, config?: Config): void {
     }
   }, 'dsh-hardssh: tools')
 
-  // Global guard: deny glob/grep/pwsh in SSH-bound sessions with a clear
-  // reason (their executables are Windows-format and cannot run on the
-  // remote host); every other session is untouched.
-  ctx.effect(() => ctx.tools.guard((execution) => {
-    if (execution.agent === undefined || !REMOTE_INCOMPATIBLE_TOOLS.has(execution.name)) return undefined
-    const cwd = execution.agent.session?.header?.cwd
-    if (cwd === undefined || cwd === '') return undefined
-    const record = ledger.findByAnchorSync(cwd)
-    if (record === undefined) return undefined
-    return `当前会话绑定 SSH 远程工作区「${record.title}」（${record.alias} @ ${record.remoteRoot}），${execution.name} 的可执行文件是 Windows 格式、在远程主机上不存在，已被拦截。请改用 remote_search / remote_ls / ssh_exec 操作远程文件与命令，或使用 read / write / edit（自动路由到远程）。`
-  }), 'dsh-hardssh: remote-incompatible tool guard')
+  // Tool routing for SSH-bound sessions is handled by the fs/subprocess
+  // seams, not by tool guards: glob/grep operate through the routed fs
+  // (server data remote, declared client roots local — skills readable),
+  // and client-native binaries (pwsh.exe etc.) spawn locally via the
+  // subprocess switch. See switch-fs.ts / switch-subprocess.ts.
 
   if (resolved.announceToAgent) {
     ctx.systemPrompt.section({

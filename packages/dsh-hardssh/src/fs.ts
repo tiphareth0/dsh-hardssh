@@ -73,11 +73,11 @@ export function apply(ctx: Context): void {
   let warnedUnready = false
 
   // The SwitchFileSystem constructor registers the `fs` provide on ctx.
-  // Declared client roots stay local even in a bound workspace: `~/.dsh`
-  // holds the client's skills and harness state.
+  // Declared client roots stay local even in a bound workspace:
+  // `~/.dsh` (harness state) and `~/.agents` (the dsh skills directory).
   new SwitchFileSystem(ctx, {
     local: localFs,
-    localRoots: [join(homedir(), '.dsh')],
+    localRoots: [join(homedir(), '.dsh'), join(homedir(), '.agents')],
     worldFor: (cwd) => {
       if (!core.seams.isReady() && !warnedUnready && cwd !== undefined && isPathUnderAnchor(anchorRoot, cwd)) {
         warnedUnready = true
