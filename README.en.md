@@ -10,6 +10,15 @@
 
 **SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).**
 
+## Screenshots
+
+<div align="center">
+  <img src="./image/SSH工作区预览.png" alt="SSH workspace preview" width="720px"/>
+  <p><em>Turn a server directory into a workspace — file I/O and commands route transparently to the remote host</em></p>
+  <img src="./image/SSH工作区管理.png" alt="SSH workspace manager" width="720px"/>
+  <p><em>Manage SSH workspaces grouped by server: connection state, edit/delete servers, add a new server</em></p>
+</div>
+
 ## How it works (seam replacement)
 
 The plugin **does not modify the official core**. Following DSH's cordis plugin

@@ -8,6 +8,15 @@
 
 **【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】**
 
+## 界面预览
+
+<div align="center">
+  <img src="./image/SSH工作区预览.png" alt="SSH 工作区预览" width="720px"/>
+  <p><em>把服务器上的目录变成工作区：会话内的文件读写、命令执行透明路由到远端主机</em></p>
+  <img src="./image/SSH工作区管理.png" alt="SSH 工作区管理" width="720px"/>
+  <p><em>按服务器分组管理 SSH 工作区：连接状态、编辑/删除服务器、新建服务器</em></p>
+</div>
+
 ## 实现原理（seam 替换）
 
 本插件**不修改官方内核**，遵循 DSH 的 cordis 插件理念：通过 `cordis.patch.yml` 将官方
