@@ -4,7 +4,7 @@
 
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.1.2-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.1.2--alpha-4D6BFE)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
 
@@ -88,8 +88,7 @@ panel (terminal, transfers, tunnels, cluster, host management) is included.
 
 ## Install
 
-Published on npm (`0.1.2`, ships the required `cordis.patch.yml` and built
-artifacts) — one command:
+Published on npm (stable line `0.1.2`, development line `0.1.2-alpha`; both ship the required `cordis.patch.yml` and built artifacts) — one command:
 
 ```sh
 dsh plugin --profile web add @tiphareth/dsh-hardssh

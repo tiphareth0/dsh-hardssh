@@ -2,6 +2,13 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.1.2-alpha — 2026-09-02（开发线）
+
+面向市场发布准备：npm 仓库关联（`repository`/`homepage`）补全；peer 依赖放宽为全版本
+dsh 内核兼容（`@deepseek-ai/dsh-*` → `*`）。功能与 v0.1.2 一致，另含：
+README 界面预览与「实现原理（seam 替换）」说明、连接门弹窗可重复唤起修复、
+工作区悬停显示远端目录、dsh 原生风格 UI。
+
 ## v0.1.2 — 2026-09-02
 
 从 `dsh-sshworkspaces` 元项目拆分为独立插件后的首个版本，适配最新版Deepseek Harness（0.1.2-alpha.3）。

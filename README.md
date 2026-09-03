@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.1.2-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.1.2--alpha-4D6BFE)](CHANGELOG.md)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
 
@@ -51,7 +51,7 @@ API，**兼容全版本 dsh 内核**（当前最新内核版本为 `0.1.2-alpha.
 
 ## 安装
 
-已发布到 npm（`0.1.2`，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
+已发布到 npm（稳定线 `0.1.2`，开发线 `0.1.2-alpha`；均含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
 
 ```sh
 dsh plugin --profile web add @tiphareth/dsh-hardssh

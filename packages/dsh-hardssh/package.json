@@ -1,8 +1,16 @@
 {
   "name": "@tiphareth/dsh-hardssh",
   "description": "Generic workspace base for the dsh harness (local + remote workspace providers with per-workspace routing), with SSH as one concrete provider: enter SSH mode from the session header, browse/edit remote files in a new left panel, let the local harness operate the remote server through remote_* agent tools, and manage hosts through the ssh_* tools and the SSH panel (legacy dsh-ssh merged in).",
-  "version": "0.1.2",
+  "version": "0.1.2-alpha",
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/tiphareth0/dsh-hardssh.git"
+  },
+  "homepage": "https://github.com/tiphareth0/dsh-hardssh",
+  "bugs": {
+    "url": "https://github.com/tiphareth0/dsh-hardssh/issues"
+  },
   "keywords": [
     "dsh",
     "deepseek-harness",
