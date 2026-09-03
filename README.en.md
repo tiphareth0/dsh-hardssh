@@ -10,6 +10,20 @@
 
 **SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).**
 
+## How it works (seam replacement)
+
+The plugin **does not modify the official core**. Following DSH's cordis plugin
+model, it replaces the official `dsh-fs` / `dsh-subprocess` service seams via
+`cordis.patch.yml` with `dsh-hardssh`'s local/remote switching implementation.
+Once a session is bound to an SSH workspace, its `fs` / `subprocess` calls are
+**transparently routed to the remote host** (SFTP reads/writes + remote shell)
+while local sessions stay untouched. As a result, **any plugin that works
+through the standard fs/subprocess interfaces runs on the remote server inside
+an SSH workspace with no extra adaptation** — a natural property of cordis
+dependency injection and seam replacement. For the same reason the plugin does
+not depend on the internal API of any specific core version: it **supports all
+dsh core versions** (the latest core is `0.1.2-alpha.3`).
+
 Manage several SSH hosts inside the DSH Web GUI, turn any directory on a host
 into an **SSH workspace**: once bound, file I/O and command execution in that
 session are transparently routed to the remote host (SFTP reads/writes, remote
@@ -88,7 +102,8 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 Alternatively add the package to the profile's `dependencies` (`file:...` →
 tarball) and to `dsh.profile.bundles`, then restart `dsh web`.
 
-> Requires dsh core `>= 0.1.2-alpha.3` (the plugin targets that API).
+> Compatible with all dsh core versions (latest core: `0.1.2-alpha.3`; see
+> "How it works (seam replacement)" above — no per-core-version adaptation).
 
 ## Quick start
 

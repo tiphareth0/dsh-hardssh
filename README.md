@@ -8,6 +8,16 @@
 
 **【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】**
 
+## 实现原理（seam 替换）
+
+本插件**不修改官方内核**，遵循 DSH 的 cordis 插件理念：通过 `cordis.patch.yml` 将官方
+`dsh-fs` / `dsh-subprocess` 等服务的 seam 替换为 `dsh-hardssh` 的「本地/远端」切换实现。
+会话绑定 SSH 工作区后，其 `fs` / `subprocess` 调用经 seam **透明路由到远端主机**
+（SFTP 读写 + 远端 shell），本地会话保持原样。因此**任何通过标准 fs/subprocess 接口
+工作的插件，都能在 SSH 工作区中无需额外适配、直接运行在服务器上**——这是 cordis
+依赖注入与 seam 替换带来的天然能力。也正因如此，插件不依赖某个具体内核版本的内部
+API，**兼容全版本 dsh 内核**（当前最新内核版本为 `0.1.2-alpha.3`）。
+
 在 DSH Web GUI 中管理若干台 SSH 服务器，把服务器上的任意目录变成 **SSH 工作区**：绑定后，会话内的文件读写、命令执行透明路由到远端主机，你（以及 agent）就像在本机一样操作——同时保留完整的 SSH 运维面板（终端、传输、隧道、集群、主机管理）。
 
 - **SSH 工作区**：任意 `user@host` 的目录即可成为工作区。绑定后该会话的 `fs` / `subprocess` 经过 seam 自动落到远端（SFTP 读写、远端 bash），本地会话不受影响。
@@ -53,7 +63,7 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 或手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
 `dsh.profile.bundles` 列表，重启 `dsh web` 生效。
 
-> 要求：dsh 内核 `>= 0.1.2-alpha.3`（插件针对该版本 API 适配）。
+> 兼容全版本 dsh 内核（当前最新内核版本为 `0.1.2-alpha.3`；seam 替换机制见上文「实现原理」，无需按内核版本做适配）。
 
 ## 快速开始
 

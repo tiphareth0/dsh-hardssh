@@ -59,18 +59,20 @@ export function mountWorkspaceBadges(
   const byTitle = new Map<string, { alias: string; remoteRoot: string }>()
   for (const workspace of workspaces) byTitle.set(workspace.title, workspace)
 
-  /** Decorate one project row (idempotent: skip rows already tagged). */
+  /** Decorate one project row: ALWAYS keep the row tooltip = the REMOTE
+   *  directory (server), never the local anchor path the shell would show;
+   *  mount the badge once (idempotent via the guard). Re-runs on every scan,
+   *  so a shell re-render that resets <title> gets corrected. */
   const decorate = (row: HTMLElement): void => {
-    if (row.querySelector('[data-ssh-badge]') !== null) return
     const titleEl = row.querySelector<HTMLElement>(TITLE_SELECTOR)
     if (titleEl === null || titleEl === undefined) return
     const title = titleEl.textContent?.trim() ?? ''
     const target = byTitle.get(title)
     if (target === undefined) return
+    const desiredTitle = `${target.remoteRoot}（${target.alias}）`
+    if (row.title !== desiredTitle) row.title = desiredTitle
+    if (row.querySelector('[data-ssh-badge]') !== null) return
     const isConnected = connected?.has(target.alias) ?? false
-    // Hovering the row shows the REMOTE directory (not the local anchor path
-    // the shell would otherwise display).
-    row.title = `${target.remoteRoot}（${target.alias}）`
     titleEl.appendChild(makeBadge(target.alias, target.remoteRoot, isConnected))
   }
 
@@ -81,9 +83,10 @@ export function mountWorkspaceBadges(
     }
   }
 
-  // Watch the whole document for the sidebar column arriving / re-rendering.
+  // Watch the whole document for the sidebar column arriving / re-rendering,
+  // including <title> attribute changes (the shell may reset row tooltips).
   const observer = new MutationObserver(() => { scan() })
-  observer.observe(document.body, { childList: true, subtree: true })
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] })
   scan()
 
   return () => {
