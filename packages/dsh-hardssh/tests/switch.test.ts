@@ -61,7 +61,7 @@ describe('SwitchFileSystem cwd routing', () => {
     await expect(facade.readText(target, undefined)).rejects.toThrow(/cannot route target/)
   })
 
-  it('routes by workspace membership (no OS heuristics): client paths stay local, workspace tree remote', async () => {
+  it('routes by declared localRoots only: client infra stays local, everything else remote', async () => {
     const localResolve = vi.fn(async (p: string) => ({ targetKey: `local:${p}`, displayPath: p }))
     const remoteResolve = vi.fn(async (p: string) => ({ targetKey: `remote:${p}`, displayPath: p }))
     const local = { resolve: localResolve, lstat: vi.fn(), readText: vi.fn() } as unknown as FileSystem
@@ -70,40 +70,36 @@ describe('SwitchFileSystem cwd routing', () => {
 
     const facade = new SwitchFileSystem(new Context(), {
       local,
-      localRoots: ['/remote/r/.dsh'],
-      extraRemoteRoots: ['/data/other'],
+      // The client's own dsh home, in both syntaxes (POSIX / Windows
+      // clients), plus a declared root inside the remote tree.
+      localRoots: ['/Users/me/.dsh', 'C:\\Users\\me\\.dsh', '/remote/r/.dsh'],
       worldFor: (cwd) => (cwd !== undefined && cwd.startsWith('/workspace/a') ? world : { backend: local, namespace: '' }),
       worldForNamespace: (ns) => (ns === namespace ? world : undefined),
     })
     const remoteCwd = { cwd: '/workspace/a' }
 
-    // Client files (any client OS syntax: POSIX or Windows absolute) stay
-    // LOCAL — skills / harness state under ~/.dsh keep working.
+    // Declared client roots stay LOCAL on any client OS syntax.
     const posixClient = await facade.resolve('/Users/me/.dsh/skills/x.md', remoteCwd)
     expect(String(posixClient.targetKey)).toBe('local:/Users/me/.dsh/skills/x.md')
     const winClient = await facade.resolve('C:\\Users\\me\\.dsh\\skills\\x.md', remoteCwd)
     expect(String(winClient.targetKey)).toBe('local:C:\\Users\\me\\.dsh\\skills\\x.md')
-
     // A declared client root forces LOCAL even inside the remote tree.
     const localRoot = await facade.resolve('/remote/r/.dsh/skills/a.md', remoteCwd)
     expect(String(localRoot.targetKey)).toBe('local:/remote/r/.dsh/skills/a.md')
 
-    // The workspace's own tree routes REMOTE: under remoteRoot, under the
-    // anchor (translated), relative paths, and declared extra remote roots.
+    // Everything else routes REMOTE (the default): workspace tree, relative
+    // paths, other server dirs, system files.
     const underRoot = await facade.resolve('/remote/r/sub', remoteCwd)
     expect(String(underRoot.targetKey)).toBe('ssh:ws-1:remote:/remote/r/sub')
     const underAnchor = await facade.resolve('/workspace/a/x.txt', remoteCwd)
     expect(String(underAnchor.targetKey)).toBe('ssh:ws-1:remote:/remote/r/x.txt') // anchor→remoteRoot translation
     await facade.resolve('src/util.ts', remoteCwd)
-    expect(remoteResolve).toHaveBeenCalledTimes(3)
-    const extra = await facade.resolve('/data/other/y', remoteCwd)
-    expect(String(extra.targetKey)).toBe('ssh:ws-1:remote:/data/other/y')
-    expect(remoteResolve).toHaveBeenCalledTimes(4)
+    await facade.resolve('/data/other/y', remoteCwd)
+    const system = await facade.resolve('/etc/passwd', remoteCwd)
+    expect(String(system.targetKey)).toBe('ssh:ws-1:remote:/etc/passwd')
 
-    // Foreign absolute paths outside the workspace default to LOCAL — the
-    // remote terminal covers server paths outside the workspace.
-    const foreign = await facade.resolve('/etc/passwd', remoteCwd)
-    expect(String(foreign.targetKey)).toBe('local:/etc/passwd')
+    expect(localResolve).toHaveBeenCalledTimes(3)
+    expect(remoteResolve).toHaveBeenCalledTimes(5)
   })
 })
 

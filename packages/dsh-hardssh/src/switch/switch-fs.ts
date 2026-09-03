@@ -59,12 +59,10 @@ export interface SwitchFsDeps {
   /** The world owning one namespaced target key (never undefined: every
    *  key this facade issued maps back). */
   worldForNamespace(namespace: string): WorkspaceWorld | undefined
-  /** Client-side roots that must stay LOCAL even when they fall inside a
-   *  remote world's tree (dsh's own `~/.dsh`, harness data, …). */
+  /** Client-side roots that must stay LOCAL even in a bound workspace (dsh's
+   *  own `~/.dsh` with skills & harness state, plugin configs, …). Default
+   *  routing in a remote world is REMOTE for everything else. */
   localRoots?: ReadonlyArray<string>
-  /** Additional REMOTE prefixes beyond each workspace's own anchor/root —
-   *  e.g. another directory on the same server that sessions may read. */
-  extraRemoteRoots?: ReadonlyArray<string>
 }
 
 function normalizeForEquality(path: string): string {
@@ -83,29 +81,15 @@ function isUnder(root: string | undefined, path: string): boolean {
   return np === nr || np.startsWith(nr + '/')
 }
 
-function isRelativePath(path: string): boolean {
-  return !/^[a-zA-Z]:[\\/]/.test(path) // Windows drive
-    && !/^[\\/]/.test(path)            // POSIX / UNC
-}
-
-/** Membership test for a REMOTE world: which paths belong to it?
- *   - relative paths (resolved under the remote cwd) and the workspace's own
- *     tree (anchor / remoteRoot / declared extra roots) route remote;
- *   - declared client roots force LOCAL even inside that tree;
- *   - everything else (an absolute path outside the workspace on either
- *     side) stays LOCAL by default — client files like `~/.dsh/skills` keep
- *     working on any client OS, and the remote terminal covers server paths
- *     outside the workspace. No host-OS syntax guessing. */
-function belongsToRemoteWorld(
-  world: WorkspaceWorld,
-  path: string,
-  deps: Pick<SwitchFsDeps, 'localRoots' | 'extraRemoteRoots'>,
-): boolean {
-  if (isRelativePath(path)) return true
+/** Membership test for a REMOTE world. Default: EVERYTHING routes remote —
+ *   a bound session's work lives on the server (including absolute paths
+ *   outside the workspace tree, e.g. another project dir on that host).
+ *   The ONLY exclusion is the DECLARED client infrastructure (`localRoots`:
+ *   dsh's own `~/.dsh` with skills + harness state, plugin configs, …),
+ *   which stays local on any client OS. No host-OS syntax guessing. */
+function belongsToRemoteWorld(path: string, deps: Pick<SwitchFsDeps, 'localRoots'>): boolean {
   if (deps.localRoots !== undefined && deps.localRoots.some((root) => isUnder(root, path))) return false
-  if (isUnder(world.anchorPath, path) || isUnder(world.remoteRoot, path)) return true
-  if (deps.extraRemoteRoots !== undefined && deps.extraRemoteRoots.some((root) => isUnder(root, path))) return true
-  return false
+  return true
 }
 
 /** The routing filesystem facade. */
@@ -166,7 +150,7 @@ export class SwitchFileSystem extends FileSystem {
     // backend — client files like ~/.dsh/skills keep working in a bound
     // workspace (see belongsToRemoteWorld; localRoots/extraRemoteRoots
     // configure the boundaries declaratively, no OS heuristics).
-    if (world.namespace !== '' && !belongsToRemoteWorld(world, path, this.deps)) {
+    if (world.namespace !== '' && !belongsToRemoteWorld(path, this.deps)) {
       const raw = await this.local.resolve(path, opts)
       return { targetKey: String(raw.targetKey) as FsTarget['targetKey'], displayPath: raw.displayPath }
     }
@@ -241,7 +225,7 @@ export class SwitchFileSystem extends FileSystem {
 
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
     const world = this.deps.worldFor(opts?.cwd)
-    if (world.namespace !== '' && !belongsToRemoteWorld(world, path, this.deps)) {
+    if (world.namespace !== '' && !belongsToRemoteWorld(path, this.deps)) {
       return this.local.lstat(path, opts, signal)
     }
     const effectivePath = world.anchorPath !== undefined && world.remoteRoot !== undefined
