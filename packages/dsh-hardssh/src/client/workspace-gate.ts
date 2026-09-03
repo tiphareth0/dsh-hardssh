@@ -62,7 +62,10 @@ function gateActive(alias: string, now: number): boolean {
 }
 
 /** Mount a dialog component into a fresh portal root; returns its closer.
- *  The dialog's onClose prop is forced to the closer so cancel works. */
+ *  The dialog's onClose prop is CHAINED: the caller's handler (resolving its
+ *  promise) runs first, then the portal is torn down. Without the chaining a
+ *  cancel would unmount the dialog but never resolve the caller's promise,
+ *  leaving the alias stuck "in flight" so later clicks stop prompting. */
 function mountModal(node: ReactElement): () => void {
   const host = document.createElement('div')
   host.dataset.sshGateDialog = ''
@@ -72,7 +75,11 @@ function mountModal(node: ReactElement): () => void {
     root.unmount()
     host.remove()
   }
-  root.render(createElement(node.type, { ...node.props, onClose: close }))
+  const callerOnClose = (node.props as { onClose?: () => void }).onClose
+  const chainedOnClose = callerOnClose !== undefined
+    ? () => { callerOnClose(); close() }
+    : close
+  root.render(createElement(node.type, { ...node.props, onClose: chainedOnClose }))
   return close
 }
 
