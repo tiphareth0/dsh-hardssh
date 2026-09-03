@@ -22,6 +22,8 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { HardsshCore } from './core.ts'
 import { isPathUnderAnchor } from './ledger.ts'
 import type { WorkspaceState } from './protocol.ts'
@@ -71,8 +73,11 @@ export function apply(ctx: Context): void {
   let warnedUnready = false
 
   // The SwitchFileSystem constructor registers the `fs` provide on ctx.
+  // Declared client roots stay local even in a bound workspace: `~/.dsh`
+  // holds the client's skills and harness state.
   new SwitchFileSystem(ctx, {
     local: localFs,
+    localRoots: [join(homedir(), '.dsh')],
     worldFor: (cwd) => {
       if (!core.seams.isReady() && !warnedUnready && cwd !== undefined && isPathUnderAnchor(anchorRoot, cwd)) {
         warnedUnready = true
