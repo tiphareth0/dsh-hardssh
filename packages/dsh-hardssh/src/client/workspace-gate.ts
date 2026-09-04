@@ -112,7 +112,7 @@ function promptFingerprint(api: SshApi, alias: string, fingerprintSha256: string
   })
 }
 
-function promptSecret(api: SshApi, alias: string, secret: 'password' | 'passphrase'): Promise<boolean> {
+function promptSecret(api: SshApi, alias: string, secret: 'password' | 'passphrase', reason?: string): Promise<boolean> {
   return new Promise((resolve) => {
     let closed = false
     const finish = (ok: boolean): void => {
@@ -126,6 +126,7 @@ function promptSecret(api: SshApi, alias: string, secret: 'password' | 'passphra
         alias,
         user,
         secret,
+        reason,
         onClose: () => { finish(false) },
         onProvided: () => { close(); finish(true) },
       }))
@@ -136,7 +137,10 @@ function promptSecret(api: SshApi, alias: string, secret: 'password' | 'passphra
 /**
  * Probe + prompt until connected. Resolves true when the alias may proceed
  * (the gate passed); false when the user cancelled or the failure is not
- * interactive (banner left behind).
+ * interactive (banner left behind). When a credential was already supplied
+ * and the retry still fails (wrong password, unreachable host, network drop,
+ * …), the password dialog re-opens WITH the failure reason shown, VSCode
+ * style — no more silent "stuck" states.
  */
 function ensureConnected(api: SshApi, alias: string, row: HTMLElement | null): Promise<boolean> {
   const now = Date.now()
@@ -145,6 +149,8 @@ function ensureConnected(api: SshApi, alias: string, row: HTMLElement | null): P
   if (inFlight !== undefined) return inFlight
 
   const attempt = (async (): Promise<boolean> => {
+    let secretKind: 'password' | 'passphrase' | undefined
+    let lastFailure: string | null = null
     for (let i = 0; i < MAX_ATTEMPTS; i++) {
       try {
         const result = await api.testHost(alias)
@@ -153,10 +159,15 @@ function ensureConnected(api: SshApi, alias: string, row: HTMLElement | null): P
           return true
         }
         if (result.code === 'NEEDS_PASSWORD' && (result.secret === 'password' || result.secret === 'passphrase')) {
-          if (await promptSecret(api, alias, result.secret)) continue
+          secretKind = result.secret
+          if (await promptSecret(api, alias, result.secret, lastFailure ?? undefined)) {
+            lastFailure = null
+            continue
+          }
           return false
         }
-        showBanner(row, alias, result.error ?? 'connection failed')
+        lastFailure = result.error ?? 'connection failed'
+        showBanner(row, alias, lastFailure)
         return false
       } catch (cause) {
         if (cause instanceof SshApiError && (cause.code === 'HOST_KEY_UNKNOWN' || cause.code === 'HOST_KEY_MISMATCH')) {
@@ -165,17 +176,62 @@ function ensureConnected(api: SshApi, alias: string, row: HTMLElement | null): P
           if (fingerprint === '') showBanner(row, alias, cause.message)
           return false
         }
-        showBanner(row, alias, cause instanceof Error ? cause.message : String(cause))
+        lastFailure = cause instanceof Error ? cause.message : String(cause)
+        if (secretKind !== undefined) {
+          // Credential already entered but this attempt failed — re-prompt
+          // with the concrete reason instead of a bare banner.
+          if (await promptSecret(api, alias, secretKind, lastFailure)) {
+            lastFailure = null
+            continue
+          }
+          return false
+        }
+        showBanner(row, alias, lastFailure)
         return false
       }
     }
-    showBanner(row, alias, tt('gate.retryLimit'))
+    showBanner(row, alias, lastFailure ?? tt('gate.retryLimit'))
     return false
   })()
 
   pending.set(alias, attempt)
   void attempt.finally(() => { pending.delete(alias) })
   return attempt
+}
+
+/** One shared <style> with the spinner keyframes (injected once). */
+let spinStyle: HTMLStyleElement | null = null
+function ensureSpinKeyframes(): void {
+  if (spinStyle !== null) return
+  spinStyle = document.createElement('style')
+  spinStyle.dataset.sshGateSpin = ''
+  spinStyle.textContent = '@keyframes dshh-spin { to { transform: rotate(360deg); } }'
+  document.head.appendChild(spinStyle)
+}
+
+/** A pending-connection spinner next to the row's title (created once per
+ *  row, removed when connecting ends). */
+const connectingSpinners = new WeakMap<HTMLElement, HTMLElement>()
+function setRowConnecting(row: HTMLElement | null, connecting: boolean): void {
+  if (row === null) return
+  const existing = connectingSpinners.get(row)
+  if (!connecting) {
+    if (existing !== undefined) { existing.remove(); connectingSpinners.delete(row) }
+    return
+  }
+  if (existing !== undefined) return
+  ensureSpinKeyframes()
+  const spinner = document.createElement('span')
+  spinner.dataset.sshConnecting = ''
+  spinner.setAttribute(
+    'style',
+    'display:inline-block;width:10px;height:10px;margin-left:6px;border:2px solid rgba(65,118,230,0.25);border-top-color:#4176e6;border-radius:50%;animation:dshh-spin 0.8s linear infinite;flex:none;vertical-align:middle',
+  )
+  spinner.title = '连接中…'
+  const titleEl = row.querySelector<HTMLElement>(TITLE_SELECTOR)
+  if (titleEl !== null && titleEl !== undefined) titleEl.appendChild(spinner)
+  else row.appendChild(spinner)
+  connectingSpinners.set(row, spinner)
 }
 
 /** Silent prompt-only connection gate (no row / banner) for flows that
@@ -207,7 +263,12 @@ export function mountWorkspaceGates(
       if (gateActive(alias, Date.now())) return // passed: let the native click through
       event.preventDefault()
       event.stopPropagation()
+      // Show the connecting spinner while the gate probes/prompts (the
+      // password dialog has its own feedback; the spinner covers the silent
+      // connect phase after submitting the credential).
+      setRowConnecting(row, true)
       void ensureConnected(api, alias, row).then((ok) => {
+        setRowConnecting(row, false)
         if (ok) row.click() // re-dispatch; the guard now lets it through
       })
     }, true)

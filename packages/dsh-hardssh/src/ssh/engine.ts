@@ -348,7 +348,14 @@ function connectClient(
       fn()
     }
     client.once('ready', () => settle(() => resolve(client)))
-    client.once('error', (error) => {
+    // PERMANENT listener (not `once`): a Client that already settled its
+    // connect promise must never emit an unattended 'error' (e.g. the
+    // network drops right after the pooled connection was handed over, or a
+    // jump hop dies) — an unhandled 'error' on the EventEmitter CRASHES the
+    // whole node process. Post-ready errors are the pool's job (breakRecord);
+    // here we only reject while the connect is still in flight.
+    client.on('error', (error) => {
+      if (settled) return
       const raw = error instanceof Error ? error : new Error(String(error))
       settle(() => reject(rewriteHostKeyError(raw, context.outcome)))
     })

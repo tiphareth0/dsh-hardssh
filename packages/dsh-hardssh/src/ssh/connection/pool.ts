@@ -184,6 +184,14 @@ export class ConnectionPool implements SshConnectionService {
 
     client.on('error', breakRecord)
     client.on('close', breakRecord)
+    // Jump hops carry the same lifetime handlers: a hop dying (network
+    // switch, server stop) must mark the record broken and tear the whole
+    // chain down — never let a hop emit an unattended 'error' (or 'close')
+    // that would either crash the process or leave a zombie pool entry.
+    for (const hop of hops) {
+      hop.on('error', breakRecord)
+      hop.on('close', breakRecord)
+    }
 
     // An invalidate may land while the handshake is in flight; a stale
     // generation connection must not re-enter the pool afterwards.

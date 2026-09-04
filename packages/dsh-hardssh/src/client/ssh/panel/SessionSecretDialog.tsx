@@ -19,13 +19,16 @@ export interface SessionSecretDialogProps {
   user?: string
   /** Which secret the connection needs. */
   secret: 'password' | 'passphrase'
+  /** A previous attempt's failure to show at the top (re-prompt with a
+   *  reason — wrong password, unreachable host, …), VSCode-style. */
+  reason?: string
   onClose: () => void
   /** Called after the secret was provided (retry the operation). */
   onProvided: () => void
 }
 
 /** Prompt for a session-only credential. */
-export function SessionSecretDialog({ api, alias, user, secret, onClose, onProvided }: SessionSecretDialogProps) {
+export function SessionSecretDialog({ api, alias, user, secret, reason, onClose, onProvided }: SessionSecretDialogProps) {
   const [value, setValue] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +60,7 @@ export function SessionSecretDialog({ api, alias, user, secret, onClose, onProvi
           </h3>
         </div>
         <div className={css.modalBody}>
+          {reason !== undefined && reason !== '' && <p className={css.formError}>{reason}</p>}
           <input
             className={css.input}
             type="password"
