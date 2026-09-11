@@ -69,13 +69,23 @@ export interface WorkspaceRecord {
   extensions?: Record<string, unknown>
 }
 
-/** One provider capability key (extensible via module augmentation). */
+/** Provider API major implemented by the generic workspace foundations. */
+export const WORKSPACE_PROVIDER_API_VERSION = 2 as const
+
+/**
+ * Provider capability augmentation point. Runtime packages add their official
+ * capability types here; the platform-neutral base deliberately defines none.
+ */
 export interface WorkspaceCapabilityMap {
-  'workspace.fs': import('./capability.ts').WorkspaceFileSystem
-  'workspace.process': import('./capability.ts').WorkspaceProcessRuntime
-  'workspace.terminal': import('./capability.ts').WorkspaceTerminalService
-  'workspace.search': import('./capability.ts').WorkspaceSearchService
+  /** Unaugmented providers may carry private keys; runtime-known keys gain precise types through augmentation. */
+  [capability: string]: unknown
 }
+
+/** Input accepted when creating a record; identity and timestamps are ledger-owned. */
+export type WorkspaceCreateInput = Omit<WorkspaceRecord, 'id' | 'createdAt' | 'updatedAt'> & { id?: WorkspaceId }
+
+/** Mutable record fields; identity, schema, and creation time remain immutable. */
+export type WorkspaceUpdate = Partial<Pick<WorkspaceRecord, 'title' | 'provider' | 'location' | 'anchor' | 'labels' | 'extensions'>>
 
 /** A resolved, open connection to one workspace's provider. */
 export interface WorkspaceConnection {
@@ -101,8 +111,8 @@ export interface WorkspaceProvider {
   readonly manifest: WorkspaceProviderManifest
   /** Validate a record before open (e.g. root shape, ref resolvable). */
   validate(record: WorkspaceRecord): void | Promise<void>
-  /** Open a connection for one record. */
-  open(record: WorkspaceRecord, context?: WorkspaceOpenContext): Promise<WorkspaceConnection>
+  /** Open a connection for one record under the router-owned lifecycle context. */
+  open(record: WorkspaceRecord, context: WorkspaceOpenContext): Promise<WorkspaceConnection>
 }
 
 /** Static provider identity, checked before any plugin code runs. */
@@ -114,5 +124,5 @@ export interface WorkspaceProviderManifest {
   apiVersion: number
   displayName: string
   /** Capabilities this provider implements. */
-  capabilities: Array<keyof WorkspaceCapabilityMap | string>
+  capabilities: string[]
 }

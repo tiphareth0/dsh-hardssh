@@ -9,3 +9,10 @@ lib/
 # Local working docs (not published; see CHANGELOG.md for releases)
 PLAN.md
 RECON.md
+# Internal review / planning artifacts: kept on disk for the maintainer, never
+# part of the published repository (they go stale and mislead outside readers).
+CODE-REVIEW-REPORT-*.md
+GENERIC-PROVIDER-MIGRATION-PLAN.md
+MIGRATION-HANDOVER.md
+修改方案.md
+.internal/

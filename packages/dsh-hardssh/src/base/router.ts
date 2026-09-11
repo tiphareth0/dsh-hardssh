@@ -33,11 +33,3 @@ export interface WorkspaceRouter {
   /** Map a route back to a resolution (used by the switch to re-encode child keys). */
   resolveRoute(route: WorkspaceRoute): WorkspaceResolution | undefined
 }
-
-/** Convenience base: default codec wiring plus helper for resolution lookup. */
-export abstract class BaseWorkspaceRouter implements WorkspaceRouter {
-  abstract readonly codec: WorkspaceNamespaceCodec
-  abstract fromNamespace(key: string): WorkspaceResolution | undefined
-  abstract fromAnchor(cwd: string | undefined): WorkspaceConnection | undefined
-  abstract resolveRoute(route: WorkspaceRoute): WorkspaceResolution | undefined
-}

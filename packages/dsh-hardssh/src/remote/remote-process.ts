@@ -4,7 +4,7 @@
  * engine's streaming ExecSession.
  */
 
-import { PassThrough } from 'node:stream'
+import { PassThrough, type Writable } from 'node:stream'
 import type { SshEngine, ExecSession } from '../ssh/engine.ts'
 import type {
   SubprocessCollect,
@@ -36,6 +36,10 @@ async function buildCommand(engine: SshEngine, alias: string, state: WorkspaceSt
   return `cd -- ${quoteShellArg(resolveRemoteCwd(state, spec.cwd))} && exec env -i -- ${environment} ${argv}`
 }
 
+function toError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error))
+}
+
 /** SSH-backed subprocess handle. The channel does not expose a remote pid, so `pid` is `-1`. */
 export class SshSubprocessHandle implements SubprocessHandle {
   readonly stdin: PassThrough | undefined
@@ -48,7 +52,13 @@ export class SshSubprocessHandle implements SubprocessHandle {
   private readonly stdoutCollector: SshOutputCollector | undefined
   private readonly stderrCollector: SshOutputCollector | undefined
   private session: ExecSession | undefined
+  private inputSink: Writable | undefined
+  private inputErrorListener: ((error: unknown) => void) | undefined
+  private terminationPhase: 'none' | 'term' | 'kill' = 'none'
   private graceTimer: NodeJS.Timeout | undefined
+  private forceTimer: NodeJS.Timeout | undefined
+  private resolveForced: ((outcome: SubprocessOutcome) => void) | undefined
+  private forceClosed = false
   private settled = false
 
   constructor(
@@ -73,8 +83,11 @@ export class SshSubprocessHandle implements SubprocessHandle {
     }
     this.stdin = spec.stdio.stdin === 'pipe' ? new PassThrough() : undefined
 
+    const forced = new Promise<SubprocessOutcome>((resolve) => { this.resolveForced = resolve })
     spec.signal?.addEventListener('abort', this.onAbort, { once: true })
-    this.done = this.run()
+    // The force branch exists from construction time, so runtime disposal can
+    // settle `done` even while environment lookup/openExec is still pending.
+    this.done = Promise.race([this.run(), forced]).finally(() => { this.settle() })
     void this.done.catch(() => {})
     if (spec.signal?.aborted === true) this.terminate()
   }
@@ -88,17 +101,14 @@ export class SshSubprocessHandle implements SubprocessHandle {
   terminate(): void {
     if (this.settled || this.terminationController.signal.aborted) return
     this.terminationController.abort(new Error('subprocess-ssh: command terminated'))
-    const session = this.session
-    if (session !== undefined) this.signalTerm(session)
+    this.startTermination()
   }
 
   /** @inheritdoc */
   waitForExit(signal?: AbortSignal): Promise<boolean> {
     if (this.settled) return Promise.resolve(true)
     if (signal?.aborted === true) return Promise.resolve(false)
-    if (signal === undefined) {
-      return this.done.then(() => true, () => true)
-    }
+    if (signal === undefined) return this.done.then(() => true, () => true)
     return new Promise<boolean>((resolve) => {
       const onAbort = (): void => { cleanup(); resolve(false) }
       const cleanup = (): void => { signal.removeEventListener('abort', onAbort) }
@@ -109,95 +119,147 @@ export class SshSubprocessHandle implements SubprocessHandle {
 
   private readonly onAbort = (): void => { this.terminate() }
 
-  private signalTerm(session: ExecSession): void {
-    try {
-      session.signal('TERM')
-    } catch {
-      // The channel closed before the signal could be delivered; close is authoritative.
-    }
+  private signalCurrentPhase(session: ExecSession): void {
+    if (this.terminationPhase === 'none') return
+    try { session.signal(this.terminationPhase === 'term' ? 'TERM' : 'KILL') } catch { /* channel already closed */ }
+  }
+
+  private startTermination(): void {
+    if (this.terminationPhase !== 'none' || this.settled) return
+    this.terminationPhase = 'term'
+    if (this.session !== undefined) this.signalCurrentPhase(this.session)
     this.graceTimer = setTimeout(() => {
-      try {
-        session.signal('KILL')
-      } catch {
-        // Escalation after a graceful close is a no-op.
-      }
+      if (this.settled) return
+      this.terminationPhase = 'kill'
+      if (this.session !== undefined) this.signalCurrentPhase(this.session)
+      this.forceTimer = setTimeout(() => { this.forceClose() }, this.spec.graceMs)
+      this.forceTimer.unref?.()
     }, this.spec.graceMs)
+    this.graceTimer.unref?.()
+  }
+
+  /** Immediately close the owned channel and settle `done`, including while
+   * openExec is still pending. A late-opened channel observes forceClosed and
+   * closes itself before any stream wiring is installed. */
+  forceClose(): void {
+    if (this.settled || this.forceClosed) return
+    this.forceClosed = true
+    const error = new Error('subprocess-ssh: command forcibly closed during teardown')
+    if (!this.terminationController.signal.aborted) this.terminationController.abort(error)
+    try { this.session?.close() } catch { /* channel already closed */ }
+    this.resolveForced?.({ exitCode: null, signal: 'SIGKILL' })
   }
 
   private settle(): void {
     if (this.settled) return
     this.settled = true
     if (this.graceTimer !== undefined) clearTimeout(this.graceTimer)
+    if (this.forceTimer !== undefined) clearTimeout(this.forceTimer)
     this.graceTimer = undefined
+    this.forceTimer = undefined
+    this.resolveForced = undefined
+    if (this.inputSink !== undefined && this.inputErrorListener !== undefined) {
+      this.inputSink.off('error', this.inputErrorListener)
+    }
+    if (this.stdin !== undefined && this.inputSink !== undefined) this.stdin.unpipe(this.inputSink)
+    this.stdin?.destroy()
+    this.inputSink = undefined
+    this.inputErrorListener = undefined
+    this.stdout?.end()
+    this.stderr?.end()
     this.stdoutCollector?.seal()
     this.stderrCollector?.seal()
     this.spec.signal?.removeEventListener('abort', this.onAbort)
   }
 
   private async run(): Promise<SubprocessOutcome> {
-    let session: ExecSession
-    try {
-      const state = this.getState()
-      if (state.mode !== 'remote' || state.alias === undefined) {
-        throw new Error('subprocess-ssh: not in remote mode — switch the GUI to SSH mode first')
-      }
-      const command = await buildCommand(this.engine, state.alias, state, this.spec)
-      session = await this.engine.openExec(state.alias, command)
-    } catch (error) {
-      this.settle()
-      throw error
+    const state = this.getState()
+    if (state.mode !== 'remote' || state.alias === undefined) {
+      throw new Error('subprocess-ssh: not in remote mode — switch the GUI to SSH mode first')
     }
+    const command = await buildCommand(this.engine, state.alias, state, this.spec)
+    const session = await this.engine.openExec(state.alias, command)
     this.session = session
-    if (this.terminationController.signal.aborted) this.signalTerm(session)
-
-    this.wireStdout(session)
-    this.wireStderr(session)
-    if (this.stdin !== undefined) {
-      this.stdin.pipe({
-        write: (chunk: Buffer, encoding: BufferEncoding, callback?: (error?: Error | null) => void) => {
-          try {
-            session.send(chunk.toString(encoding ?? 'utf8'))
-            callback?.()
-          } catch (error) {
-            callback?.(error instanceof Error ? error : new Error(String(error)))
-          }
-        },
-        end: (callback?: () => void) => {
-          session.end()
-          callback?.()
-        },
-      } as unknown as NodeJS.WritableStream)
-    } else if (typeof this.spec.stdio.stdin === 'object') {
-      session.end(this.spec.stdio.stdin.data)
+    if (this.forceClosed) {
+      try { session.close() } catch { /* channel already closed */ }
+      throw new Error('subprocess-ssh: command opened after its owner was disposed')
     }
+    if (this.terminationController.signal.aborted) {
+      if (this.terminationPhase === 'none') this.startTermination()
+      else this.signalCurrentPhase(session)
+    }
+    return this.runSession(session)
+  }
 
-    return await new Promise<SubprocessOutcome>((resolve, reject) => {
+  /** Install every callback under one ownership boundary. Any synchronous
+   * wiring failure or async stdin sink failure closes the established session
+   * and rejects the handle instead of leaking it. */
+  private runSession(session: ExecSession): Promise<SubprocessOutcome> {
+    return new Promise<SubprocessOutcome>((resolve, reject) => {
+      let finished = false
+      const fail = (error: unknown): void => {
+        if (finished) return
+        finished = true
+        try { session.close() } catch { /* retain the primary error */ }
+        reject(toError(error))
+      }
       session.onExit = (code: number | null, error?: string) => {
-        this.settle()
-        if (error !== undefined) {
-          reject(new Error(`subprocess-ssh: ${error}`))
+        if (finished) return
+        finished = true
+        if (error !== undefined) reject(new Error(`subprocess-ssh: ${error}`))
+        else resolve({ exitCode: code, signal: null })
+      }
+
+      try {
+        this.wireStdout(session)
+        this.wireStderr(session)
+        if (this.stdin !== undefined) {
+          this.inputSink = session.stdin
+          this.inputErrorListener = fail
+          session.stdin.once('error', fail)
+          this.stdin.pipe(session.stdin)
+        } else if (typeof this.spec.stdio.stdin === 'object') {
+          session.stdin.end(this.spec.stdio.stdin.data)
         } else {
-          resolve({ exitCode: code, signal: null })
+          // `ignore` is remote /dev/null semantics: close fd 0 immediately so
+          // commands waiting for EOF cannot hang forever.
+          session.stdin.end()
         }
+      } catch (error) {
+        fail(error)
       }
     })
+  }
+
+  /** Route one stream through the engine's leak guard before it reaches the
+   *  consumer. Without this, a remote `bash`/subprocess channel bypassed the
+   *  redaction that every exec/cluster result already applies. Redaction is
+   *  exact-match over known secrets, so it is best-effort and may change byte
+   *  length — the same trade-off the PTY route documents. */
+  private redactBytes(data: Buffer): Buffer {
+    if (typeof this.engine.redact !== 'function') return data
+    const text = data.toString('utf8')
+    const safe = this.engine.redact(text)
+    return safe === text ? data : Buffer.from(safe, 'utf8')
   }
 
   private wireStdout(session: ExecSession): void {
     const mode = this.spec.stdio.stdout
     session.onData = (data: Buffer) => {
-      if (mode === 'pipe') this.stdout?.write(data)
-      else if (mode === 'inherit') process.stdout.write(data)
-      else this.stdoutCollector?.push(data)
+      const safe = this.redactBytes(data)
+      if (mode === 'pipe') this.stdout?.write(safe)
+      else if (mode === 'inherit') process.stdout.write(safe)
+      else this.stdoutCollector?.push(safe)
     }
   }
 
   private wireStderr(session: ExecSession): void {
     const mode = this.spec.stdio.stderr
     session.onErrData = (data: Buffer) => {
-      if (mode === 'pipe') this.stderr?.write(data)
-      else if (mode === 'inherit') process.stderr.write(data)
-      else this.stderrCollector?.push(data)
+      const safe = this.redactBytes(data)
+      if (mode === 'pipe') this.stderr?.write(safe)
+      else if (mode === 'inherit') process.stderr.write(safe)
+      else this.stderrCollector?.push(safe)
     }
   }
 }

@@ -1,71 +1,88 @@
 /**
- * The `ctx.subprocess` switch row: provides the workspace-routing subprocess
- * facade in the host scope. The local runtime is mounted in an isolated
- * child scope; every SSH-bound workspace record gets its OWN remote runtime
- * bound to that record's alias + remote root; the facade routes each spawn by
- * its cwd. The facade auto-provides `subprocess` here because the plain
- * subprocess row is disabled by the profile patch.
+ * The `ctx.subprocess` switch row: provides the generic WorkspaceCore-routing
+ * subprocess facade in the host scope. The local runtime is mounted in an
+ * isolated child scope; each spawn resolves by cwd through the same workspace
+ * router used by the filesystem seam.
  *
- * Routing and per-record remote runtimes are owned by the SHARED seam state
- * (hardsshCore.seams): the row binds its per-record runtime factory and reads
- * the state on every spawn. The seam state re-applies the ledger snapshot
- * synchronously on every commit, so creating or removing an SSH workspace
- * takes effect without a plugin restart and the fs/subprocess seams can never
- * disagree. Before the initial ledger load finishes, routing degrades to
- * local with a one-time warning for anchor-root paths.
+ * A bound connection supplies `workspace.process`. Before the core is ready,
+ * or for an unowned cwd beneath the managed SSH anchor root, spawning fails
+ * closed rather than executing on the client machine.
  *
  * @module dsh-hardssh/subprocess
  */
 
 import type { Context } from '@deepseek-ai/cordis'
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
-import type { HardsshCore } from './core.ts'
-import { isPathUnderAnchor } from './ledger.ts'
-import type { WorkspaceState } from './protocol.ts'
-import { SshSubprocessRuntime } from './remote/remote-subprocess.ts'
+import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
+import { anchorRoot, isPathUnderAnchor } from './ledger.ts'
 import { SwitchSubprocessRuntime } from './switch/switch-subprocess.ts'
-
-declare module '@deepseek-ai/cordis' {
-  interface Context {
-    hardsshCore: HardsshCore
-  }
-}
+import type { WorkspaceCore } from './runtime/workspace-core.ts'
+import type { WorkspaceRecord } from './base/model.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'hardssh-subprocess'
 
-/** Services required: the shared workspace core (mode store + engine). */
-export const inject = ['hardsshCore']
+/** Workspace routing is exclusively provided by the generic core. */
+export const inject = ['workspaceCore']
 
-/** A remote runtime fixed to one SSH workspace's alias + remote root. */
-function fixedRemoteState(alias: string, remoteRoot: string): () => WorkspaceState {
-  return () => ({ mode: 'remote' as const, alias, remoteRoot })
+/** The record behind a router connection (sync snapshot lookup). */
+function genericRecordFor(core: WorkspaceCore, id: string): WorkspaceRecord | undefined {
+  return core.ledger.snapshotSync().records.find(record => record.id === id)
 }
 
-/** Mount the switching subprocess facade. */
-export function apply(ctx: Context): void {
-  const core = ctx.hardsshCore
+/** Resolve the subprocess runtime owning a cwd, or undefined when local. */
+export function genericSubprocessFor(
+  core: WorkspaceCore,
+  cwd: string | undefined,
+  reservedAnchorRoots: readonly string[],
+): SubprocessRuntime | undefined {
+  if (!core.isReady()) {
+    if (cwd !== undefined && reservedAnchorRoots.some(root => isPathUnderAnchor(root, cwd))) {
+      throw new Error('subprocess-ssh: workspace routing is unavailable while the generic workspace core is not ready (anchor path fails closed)')
+    }
+    return undefined
+  }
+  const connection = core.router.fromAnchor(cwd)
+  if (connection === undefined) return undefined
+  const record = genericRecordFor(core, connection.workspaceId)
+  if (record === undefined) throw new Error(`subprocess-workspace: routed workspace '${connection.workspaceId}' is missing from the ledger`)
+  const runtime = connection.get('workspace.process') as SubprocessRuntime | undefined
+  if (runtime === undefined) throw new Error(`subprocess-workspace: workspace '${record.id}' provides no workspace.process capability`)
+  return runtime
+}
 
-  // Local runtime in an isolated scope (its `subprocess` provide shadows only
-  // below this scope). Construct directly and keep the instance.
+/** Mount the generic switching subprocess facade. */
+export function apply(ctx: Context): void {
   const localCtx = ctx.isolate('subprocess')
   const localSubprocess = new LocalSubprocessRuntime(localCtx)
-
-  // Bind the per-record remote runtime builder into the shared seam state;
-  // instances are built lazily on first route and reused across refreshes.
-  core.seams.bindSub((record) => new SshSubprocessRuntime(ctx.isolate('subprocess'), core.engine, fixedRemoteState(record.alias, record.remoteRoot)))
-
-  const anchorRoot = core.ledger.anchorsRoot()
+  const ws = ctx.workspaceCore
+  const anchorRootDir = anchorRoot()
   let warnedUnready = false
 
   new SwitchSubprocessRuntime(ctx, {
     local: localSubprocess,
+    // `undefined` means LOCAL. Returning the local runtime here instead would
+    // force the facade to identity-compare it against `deps.local`, and that
+    // comparison is not reliable for a container-provided service — it once
+    // made the client-search refusal fire for local sessions and broke
+    // glob/grep in every session.
     worldFor: (cwd) => {
-      if (!core.seams.isReady() && !warnedUnready && cwd !== undefined && isPathUnderAnchor(anchorRoot, cwd)) {
-        warnedUnready = true
-        console.warn('[dsh-hardssh] subprocess routing is not ready yet (workspace ledger still loading) — running locally until the snapshot is applied')
+      if (!ws.isReady()) {
+        if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
+          if (!warnedUnready) {
+            warnedUnready = true
+            console.warn('[dsh-hardssh] subprocess routing is not ready yet (workspace core still initializing or failed) — refusing to run beneath the workspace anchor root')
+          }
+          throw new Error('subprocess-ssh: workspace routing is unavailable while the generic workspace core is not ready (anchor path fails closed)')
+        }
+        return undefined
       }
-      return core.seams.runtimeForSub(cwd) ?? localSubprocess
+      const runtime = genericSubprocessFor(ws, cwd, [anchorRootDir])
+      if (runtime !== undefined) return runtime
+      if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
+        throw new Error(`subprocess-ssh: '${cwd}' is inside the workspace anchor root but no registered workspace owns it (fail closed)`)
+      }
+      return undefined
     },
   })
 }

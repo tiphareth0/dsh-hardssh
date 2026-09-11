@@ -1,21 +1,22 @@
 /**
  * SSH operations browser surfaces, hosted inside dsh-hardssh's client bundle
- * (migrated from the legacy dsh-ssh package): the 'dsh-ssh'
- * locale dictionaries, the sidebar entry row, and the SSH operations panel
- * in the center column. Mounted from src/client/index.ts alongside the
- * workspace surfaces; a DOM failure here degrades the SSH panel only, never
- * the GUI.
+ * (migrated from the legacy dsh-ssh package): the 'dsh-ssh' locale
+ * dictionaries and the SSH operations console mounted as a RIGHT-Sidebar page
+ * tab.
+ *
+ * Nothing here touches the DOM. The old build injected a sidebar row and a
+ * panel container by selector, which the 0.1.5 shell no longer renders — the
+ * surfaces are standard plugin extension points now (see ./ops-tab.tsx).
  */
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: pulls the locale plugin's Context merge (ctx.locale).
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 // Type-only: pulls the LocaleNamespaceMap merge table.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
-import { SshApi } from './api.ts'
+import type { SshApi } from './api.ts'
 import { en, zh } from './locales.ts'
-import { mountPanel } from './mount.tsx'
-import { PanelController } from './panel/controller.ts'
-import { mountSidebarEntry } from './sidebar-entry.ts'
+import { registerOperationsTab } from './ops-tab.tsx'
+import type { SessionSshTargetSource } from './session-target.ts'
 
 /** Locale namespace this capability owns (kept as 'dsh-ssh'). */
 export const NS = 'dsh-ssh'
@@ -28,23 +29,21 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /**
- * Mount the SSH operations surfaces (sidebar entry + operations panel).
- * @param ctx - client root context (locale service).
+ * Mount the SSH operations surfaces (locale dictionaries + the right-Sidebar tab).
+ * @param ctx - client root context (locale service, slot registry, tab registry).
+ * @param api - shared SSH API client.
+ * @param target - selected Session's fixed SSH target, or null for local Sessions.
  */
-export function mountSshOperations(ctx: ClientContext): void {
-  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-ssh: dictionaries')
-
-  const controller = new PanelController()
-  const api = new SshApi()
-  const disposers: Array<() => void> = []
+export function mountSshOperations(
+  ctx: ClientContext,
+  api: SshApi,
+  target: SessionSshTargetSource,
+): void {
   try {
-    disposers.push(mountSidebarEntry(controller))
-    disposers.push(mountPanel(controller, api))
+    registerOperationsTab(ctx, api, target)
   } catch (error) {
-    // DOM failures degrade the panel, never the GUI.
-    console.warn('[dsh-ssh] mount failed:', error)
+    // A wiring failure degrades the SSH operations tab only, never the GUI.
+    console.warn('[dsh-ssh] operations tab registration failed:', error)
   }
-  ctx.effect(() => () => {
-    for (const dispose of disposers.splice(0)) dispose()
-  }, 'dsh-ssh: ui mounts')
+  ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'dsh-ssh: dictionaries')
 }

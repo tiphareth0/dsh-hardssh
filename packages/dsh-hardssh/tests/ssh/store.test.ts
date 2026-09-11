@@ -100,7 +100,7 @@ describe('CRUD', () => {
     const store = makeStore()
     const entry = store.create({ ...basePayload, auth: { kind: 'key', keyPath: '~/keys/id' } })
     expect(entry.auth.keyPath).not.toContain('~')
-    expect(entry.auth.keyPath).toContain('keys/id')
+    expect(entry.auth.keyPath).toContain(join('keys', 'id'))
   })
 })
 
@@ -177,8 +177,11 @@ describe('file safety', () => {
   it('writes the store with owner-only permissions', () => {
     const store = makeStore()
     store.create(basePayload)
-    const mode = statSync(store.path).mode & 0o777
-    expect(mode).toBe(0o600)
+    const stat = statSync(store.path)
+    expect(stat.isFile()).toBe(true)
+    if (process.platform !== 'win32') {
+      expect(stat.mode & 0o777).toBe(0o600)
+    }
   })
 
   it('renames a corrupt store aside instead of silently overwriting it', () => {
@@ -221,7 +224,7 @@ describe('partial updates', () => {
     const store = makeStore()
     store.create({ ...basePayload, auth: { kind: 'key', keyPath: '~/keys/old', passphrase: 'secret' } })
     const switched = store.update('web-01', { auth: { kind: 'key', keyPath: '~/keys/new' } })
-    expect(switched.auth.keyPath).toContain('keys/new')
+    expect(switched.auth.keyPath).toContain(join('keys', 'new'))
     expect(switched.auth.passphrase).toBeUndefined()
   })
 

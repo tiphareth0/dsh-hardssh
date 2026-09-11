@@ -14,6 +14,9 @@
  * @module @tiphareth/dsh-hardssh/providers/ssh
  */
 
+import { posix } from 'node:path'
+import type { Context } from '@deepseek-ai/cordis'
+import { WORKSPACE_PROVIDER_API_VERSION } from '../../base/model.ts'
 import type {
   WorkspaceCapabilityMap,
   WorkspaceConnection,
@@ -25,231 +28,231 @@ import type {
 import type {
   WorkspaceFileSystem,
   WorkspaceProcessRuntime,
-  WorkspaceSearchService,
-  WorkspaceStat,
-  WorkspaceTerminalService,
-  WorkspaceDirEntry,
   WorkspaceSearchHit,
+  WorkspaceSearchService,
 } from '../../base/capability.ts'
 import type { SshEngine } from '../../ssh/engine.ts'
+import type { WorkspaceState } from '../../protocol.ts'
+import { decodeCanonicalPath, SshFileSystem } from '../../remote/remote-fs.ts'
+import { SshSubprocessRuntime } from '../../remote/remote-subprocess.ts'
 import { RemoteSearchService } from '../../remote-search.ts'
 
-/** The ssh provider manifest. */
+/** The ssh provider manifest (provider API v2, no separate terminal capability — terminals live on `workspace.process`). */
 export const sshProviderManifest: WorkspaceProviderManifest = {
   id: 'ssh',
   version: '0.1.0',
-  apiVersion: 1,
+  apiVersion: WORKSPACE_PROVIDER_API_VERSION,
   displayName: 'SSH remote workspace',
-  capabilities: ['workspace.fs', 'workspace.process', 'workspace.terminal', 'workspace.search'],
+  capabilities: ['workspace.fs', 'workspace.process', 'workspace.search'],
 }
 
 /** One open SSH workspace connection. */
 export class SshWorkspaceConnection implements WorkspaceConnection {
   readonly providerId = 'ssh'
 
+  private state: 'connecting' | 'ready' | 'degraded' | 'closed' = 'ready'
+  private fsInstance: unknown
+  private processInstance: unknown
+  private searchInstance: unknown
+  /** One workspace is one fixed remote execution world for every capability instance. */
+  private readonly stateOf: () => WorkspaceState
+
   constructor(
     readonly workspaceId: string,
     private readonly engine: SshEngine,
     private readonly alias: string,
     private readonly remoteRoot: string,
-  ) {}
+    private readonly cordisContext: Context,
+  ) {
+    // Assigned in the constructor body so the closure captures the parameter
+    // properties after they are initialized.
+    this.stateOf = () => ({ mode: 'remote', alias: this.alias, remoteRoot: this.remoteRoot })
+  }
 
   get<K extends keyof WorkspaceCapabilityMap>(capability: K): WorkspaceCapabilityMap[K] | undefined {
+    if (this.state === 'closed') return undefined
     switch (capability) {
       case 'workspace.fs': return this.fs() as WorkspaceCapabilityMap[K]
       case 'workspace.process': return this.process() as WorkspaceCapabilityMap[K]
-      case 'workspace.terminal': return this.terminal() as WorkspaceCapabilityMap[K]
       case 'workspace.search': return this.search() as WorkspaceCapabilityMap[K]
       default: return undefined
     }
   }
 
   private fs(): WorkspaceFileSystem {
-    return new SshWorkspaceFileSystem(this.engine, this.alias, this.remoteRoot)
+    if (this.fsInstance === undefined) {
+      // The capability is the production DSH FileSystem that DSH fs consumers
+      // (read/write/edit, glob/grep) already speak: remote/remote-fs.ts
+      // SshFileSystem (atomic writes, versions, streams). The workspace root is
+      // passed as the confinement boundary, so the capability can never escape
+      // `location.root` — lexically or canonically.
+      this.fsInstance = new SshFileSystem(this.cordisContext.isolate('fs'), this.engine, this.stateOf, this.remoteRoot)
+    }
+    return this.fsInstance as WorkspaceFileSystem
   }
 
   private process(): WorkspaceProcessRuntime {
-    return new SshWorkspaceProcess(this.engine, this.alias, this.remoteRoot)
+    if (this.processInstance === undefined) {
+      // The capability is the production DSH SubprocessRuntime:
+      // remote/remote-subprocess.ts SshSubprocessRuntime owns the full
+      // structured argv/env/stdio/terminal protocol plus handle teardown.
+      this.processInstance = new SshSubprocessRuntime(this.cordisContext.isolate('subprocess'), this.engine, this.stateOf)
+    }
+    return this.processInstance as WorkspaceProcessRuntime
   }
 
-  private terminal(): WorkspaceTerminalService {
-    return new SshWorkspaceTerminal(this.engine, this.alias, this.remoteRoot)
-  }
-
-  private search(): WorkspaceSearchService {
-    return new SshWorkspaceSearch(this.engine, this.alias, this.remoteRoot)
+  private search(): SshWorkspaceSearch {
+    if (this.searchInstance === undefined) {
+      // SshWorkspaceSearch is stateless apart from engine/alias/root, so one
+      // cached wrapper serves every get() (RemoteSearchService is shared too).
+      this.searchInstance = new SshWorkspaceSearch(this.engine, this.alias, this.remoteRoot)
+    }
+    return this.searchInstance as SshWorkspaceSearch
   }
 
   status(): 'connecting' | 'ready' | 'degraded' | 'closed' {
-    // The engine owns the connection pool; a resolved workspace whose host
-    // is configured is treated as ready (connectivity is verified lazily by
-    // the exec/search calls, which report degraded results).
-    return 'ready'
+    // Derived from this connection's own state instead of a constant: the
+    // object only exists after open() resolved, so 'ready' is truthful here and
+    // close() moves it to 'closed'. 'connecting' is therefore unobservable for
+    // this provider, and 'degraded' is never faked — the engine establishes and
+    // re-establishes connections lazily per operation, so this connection has
+    // no observable health signal to report.
+    return this.state
   }
 
   async close(): Promise<void> {
-    // The engine owns the shared connection pool; per-workspace close is a
-    // no-op here (pool invalidation is host-store driven).
+    if (this.state === 'closed') return
+    this.state = 'closed'
+    const processInstance = this.processInstance
+    if (processInstance instanceof SshSubprocessRuntime) {
+      // Releases only this workspace's own live processes/PTYs/streams;
+      // SshEngine.dispose() is deliberately NOT called because the shared
+      // connection pool belongs to the engine (plan §5.5/§6.3).
+      await processInstance.close()
+    }
+    this.fsInstance = undefined
+    this.processInstance = undefined
+    this.searchInstance = undefined
   }
 }
 
 /** POSIX-join a remote root with a relative path, confining to the root. */
 export function joinRemoteRoot(root: string, path: string): string {
-  if (path.startsWith('/')) {
-    // Absolute path must still be under the root? SSH workspaces allow
-    // arbitrary absolute remote paths (the root is the model's own habit,
-    // not a sandbox). Keep absolute paths verbatim for the SSH provider.
-    return root === '/' ? path : path
+  const normalizedRoot = posix.resolve('/', root)
+  const candidate = path.startsWith('/') ? posix.resolve('/', path) : posix.resolve(normalizedRoot, path)
+  if (normalizedRoot !== '/' && candidate !== normalizedRoot && !candidate.startsWith(`${normalizedRoot}/`)) {
+    throw new Error(`workspace.ssh-outside-root: '${path}' is outside '${normalizedRoot}'`)
   }
-  const base = root === '/' ? '' : root
-  return `${base}/${path}`.replace(/\/{2,}/g, '/')
+  return candidate
 }
 
-/** Wrap engine FS calls as the generic WorkspaceFileSystem. */
-export class SshWorkspaceFileSystem implements WorkspaceFileSystem {
-  constructor(
-    private readonly engine: SshEngine,
-    private readonly alias: string,
-    private readonly root: string,
-  ) {}
-
-  private full(path: string): string {
-    return joinRemoteRoot(this.root, path)
+async function canonicalRemotePath(
+  engine: SshEngine,
+  alias: string,
+  root: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  signal?.throwIfAborted()
+  const candidate = joinRemoteRoot(root, path)
+  const canonical = async (value: string): Promise<string> => {
+    const result = await engine.exec(alias, `set -o pipefail; realpath -mz -- ${quote(value)} | base64 -w0`, 10_000)
+    signal?.throwIfAborted()
+    if (!result.success || result.exitCode !== 0) throw new Error(result.stderr || `realpath failed for '${value}'`)
+    return decodeCanonicalPath(result.stdout.trim())
   }
-
-  async stat(path: string, signal?: AbortSignal): Promise<WorkspaceStat | undefined> {
-    const result = await this.engine.stat(this.alias, this.full(path))
-    return { type: result.type, size: result.size, mtimeMs: result.mtimeMs, mode: result.mode }
+  const [canonicalRoot, canonicalCandidate] = await Promise.all([canonical(joinRemoteRoot(root, '.')), canonical(candidate)])
+  if (canonicalRoot !== '/' && canonicalCandidate !== canonicalRoot && !canonicalCandidate.startsWith(`${canonicalRoot}/`)) {
+    throw new Error(`workspace.ssh-outside-root: '${path}' resolves outside '${canonicalRoot}'`)
   }
-
-  async list(path: string, signal?: AbortSignal): Promise<WorkspaceDirEntry[]> {
-    return this.engine.ls(this.alias, this.full(path))
-  }
-
-  async readFile(path: string, signal?: AbortSignal): Promise<Uint8Array> {
-    const { content } = await this.engine.readFile(this.alias, this.full(path))
-    return content
-  }
-
-  async writeFile(path: string, data: Uint8Array, signal?: AbortSignal): Promise<void> {
-    await this.engine.writeFile(this.alias, this.full(path), Buffer.from(data))
-  }
-
-  async mkdir(path: string, options?: { recursive?: boolean; signal?: AbortSignal }): Promise<void> {
-    await this.engine.mkdir(this.alias, this.full(path))
-  }
-
-  async rm(path: string, options?: { recursive?: boolean; signal?: AbortSignal }): Promise<void> {
-    await this.engine.rm(this.alias, this.full(path), options?.recursive ?? false)
-  }
-
-  async rename(from: string, to: string, signal?: AbortSignal): Promise<void> {
-    await this.engine.rename(this.alias, this.full(from), this.full(to))
-  }
+  return canonicalCandidate
 }
 
-/** Wrap engine exec as the generic WorkspaceProcessRuntime. */
-export class SshWorkspaceProcess implements WorkspaceProcessRuntime {
-  constructor(
-    private readonly engine: SshEngine,
-    private readonly alias: string,
-    private readonly root: string,
-  ) {}
-
-  async exec(command: string, options?: { timeoutMs?: number; cwd?: string; signal?: AbortSignal }): Promise<{ stdout: string; stderr: string; exitCode: number; timedOut?: boolean; durationMs?: number }> {
-    const cwd = options?.cwd !== undefined ? this.full(options.cwd) : this.root
-    // cd into the resolved cwd (relative paths resolved against the root).
-    const result = await this.engine.exec(this.alias, `cd ${quote(cwd)} && ${command}`, options?.timeoutMs)
-    return {
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exitCode ?? 1,
-      timedOut: result.timedOut,
-      durationMs: result.durationMs,
-    }
-  }
-
-  private full(path: string): string {
-    return joinRemoteRoot(this.root, path)
-  }
-}
-
-/** Wrap engine PTY as the generic WorkspaceTerminalService. */
-export class SshWorkspaceTerminal implements WorkspaceTerminalService {
-  constructor(
-    private readonly engine: SshEngine,
-    private readonly alias: string,
-    private readonly root: string,
-  ) {}
-
-  async openTerminal(cols: number, rows: number): Promise<import('../../base/capability.ts').WorkspaceTerminalHandle> {
-    const session = await this.engine.openShell(this.alias, { cols, rows })
-    let exited = false
-    const exitHandlers = new Set<(event: { exitCode: number }) => void>()
-    const onDataHandlers = new Set<(data: string) => void>()
-    const enc = new TextDecoder()
-    session.onData = (data: Buffer) => {
-      for (const handler of onDataHandlers) handler(enc.decode(data))
-    }
-    session.onExit = (code: number | null) => {
-      exited = true
-      for (const handler of exitHandlers) handler({ exitCode: code ?? -1 })
-    }
-    return {
-      shell: 'ssh',
-      write(data: string) { if (!exited) session.send(data) },
-      resize(c: number, r: number) { session.resize(c, r) },
-      kill() {
-        try { session.signal('KILL') } catch { /* closed */ }
-        try { session.close() } catch { /* closed */ }
-      },
-      onData(handler) {
-        onDataHandlers.add(handler)
-        return { dispose: () => { onDataHandlers.delete(handler) } }
-      },
-      onExit(handler) {
-        exitHandlers.add(handler)
-        return { dispose: () => { exitHandlers.delete(handler) } }
-      },
-    }
-  }
-}
-
-/** Wrap the remote search service as the generic WorkspaceSearchService. */
+/** Wrap the shared RemoteSearchService as the generic WorkspaceSearchService. */
 export class SshWorkspaceSearch implements WorkspaceSearchService {
   private readonly service: RemoteSearchService
 
   constructor(
     private readonly engine: SshEngine,
     private readonly alias: string,
-    private readonly root: string,
+    private readonly remoteRoot: string,
   ) {
     this.service = new RemoteSearchService(engine)
   }
 
+  /** Workspace-relative POSIX search base → absolute remote root. */
+  private searchBase(workspaceRelative: string | undefined, signal?: AbortSignal): Promise<string> {
+    return canonicalRemotePath(this.engine, this.alias, this.remoteRoot, workspaceRelative ?? '.', signal)
+  }
+
+  /** Absolute path → path relative to `base`, or undefined when outside it. */
+  private relativeTo(absPath: string, base: string): string | undefined {
+    if (base === '/') return absPath.replace(/^\/+/, '')
+    if (absPath === base) return ''
+    const prefix = base.endsWith('/') ? base : `${base}/`
+    if (!absPath.startsWith(prefix)) return undefined
+    return absPath.slice(prefix.length)
+  }
+
   async glob(pattern: string, options?: { root?: string; maxDepth?: number; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }> {
-    const result = await this.service.glob({ alias: this.alias, root: this.root }, pattern)
-    return {
-      hits: result.hits.map(path => ({ path, rel: path, isDir: false })),
-      truncated: result.truncated,
+    options?.signal?.throwIfAborted()
+    const [base, workspaceRoot] = await Promise.all([
+      this.searchBase(options?.root, options?.signal),
+      this.searchBase('.', options?.signal),
+    ])
+    const result = await this.service.glob({ alias: this.alias, root: base }, pattern, options?.signal)
+    options?.signal?.throwIfAborted()
+    const hits: WorkspaceSearchHit[] = []
+    for (const absPath of result.hits) {
+      // RemoteSearchService.glob caps depth/bytes itself but takes no
+      // root/maxDepth/signal options, so the wrapper enforces them here: only
+      // hits under the requested search base survive, deeper-than-maxDepth
+      // results are clipped, and the abort signal is checked around the call.
+      const baseRelative = this.relativeTo(absPath, base)
+      if (baseRelative === undefined) continue
+      if (options?.maxDepth !== undefined && this.depthOf(baseRelative) > options.maxDepth) continue
+      const rel = this.relativeTo(absPath, workspaceRoot)
+      if (rel === undefined) continue
+      hits.push({ path: absPath, rel, isDir: false })
     }
+    return { hits, truncated: result.truncated }
   }
 
   async grep(fixedPhrase: string, options?: { root?: string; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }> {
-    const result = await this.service.grepFixed({ alias: this.alias, root: this.root }, fixedPhrase)
-    return {
-      hits: result.lines.map(line => {
-        const colon = line.indexOf(':')
-        const path = colon >= 0 ? line.slice(0, colon) : line
-        return { path, rel: path, isDir: false }
-      }),
-      truncated: result.truncated,
+    options?.signal?.throwIfAborted()
+    const [base, workspaceRoot] = await Promise.all([
+      this.searchBase(options?.root, options?.signal),
+      this.searchBase('.', options?.signal),
+    ])
+    const result = await this.service.grepFixed({ alias: this.alias, root: base }, fixedPhrase, options?.signal)
+    options?.signal?.throwIfAborted()
+    const hits: WorkspaceSearchHit[] = []
+    for (const line of result.lines) {
+      // grepFixed returns `absolute-path:line:content` records; the first
+      // colon splits the path from the line/content remainder. The whole raw
+      // record is preserved as `match` so capability consumers (e.g. the
+      // remote_search agent tool) can render matched snippets.
+      const colon = line.indexOf(':')
+      const absPath = colon >= 0 ? line.slice(0, colon) : line
+      if (this.relativeTo(absPath, base) === undefined) continue
+      const rel = this.relativeTo(absPath, workspaceRoot)
+      if (rel === undefined) continue
+      hits.push({ path: absPath, rel, isDir: false, match: line })
     }
+    return { hits, truncated: result.truncated }
+  }
+
+  /** Depth of a base-relative path (root-level entries are depth 1, find -maxdepth style). */
+  private depthOf(baseRelative: string): number {
+    if (baseRelative === '') return 0
+    return baseRelative.split('/').length
   }
 }
 
-/** The ssh provider factory. */
-export function createSshWorkspaceProvider(engine: SshEngine): WorkspaceProvider {
+/** The ssh provider factory. `context` is mandatory: the provider serves only
+ *  the real DSH FileSystem/SubprocessRuntime capabilities, which need a Cordis
+ *  scope to isolate each workspace's resources. */
+export function createSshWorkspaceProvider(engine: SshEngine, context: Context): WorkspaceProvider {
   return {
     manifest: sshProviderManifest,
     validate(record: WorkspaceRecord): void {
@@ -259,9 +262,9 @@ export function createSshWorkspaceProvider(engine: SshEngine): WorkspaceProvider
       }
       if (record.location.root === '') throw new Error('ssh workspace record is missing location.root')
     },
-    async open(record: WorkspaceRecord, context?: WorkspaceOpenContext): Promise<WorkspaceConnection> {
+    async open(record: WorkspaceRecord, _context: WorkspaceOpenContext): Promise<WorkspaceConnection> {
       const alias = record.provider.connectionRef!.id
-      return new SshWorkspaceConnection(record.id, engine, alias, record.location.root)
+      return new SshWorkspaceConnection(record.id, engine, alias, record.location.root, context)
     },
   }
 }

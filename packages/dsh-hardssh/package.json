@@ -1,11 +1,12 @@
 {
   "name": "@tiphareth/dsh-hardssh",
-  "description": "Generic workspace base for the dsh harness (local + remote workspace providers with per-workspace routing), with SSH as one concrete provider: enter SSH mode from the session header, browse/edit remote files in a new left panel, let the local harness operate the remote server through remote_* agent tools, and manage hosts through the ssh_* tools and the SSH panel (legacy dsh-ssh merged in).",
-  "version": "0.1.2-alpha",
+  "description": "Generic workspace base for the dsh harness (local + remote workspace providers with per-workspace routing), with SSH as one concrete provider: bind a server directory as an SSH workspace so the session's file I/O and commands run on that host, manage hosts and workspaces in the GUI, and operate remote servers through the ssh_* / remote_* agent tools",
+  "version": "0.2.2",
   "type": "module",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tiphareth0/dsh-hardssh.git"
+    "url": "git+https://github.com/tiphareth0/dsh-hardssh.git",
+    "directory": "packages/dsh-hardssh"
   },
   "homepage": "https://github.com/tiphareth0/dsh-hardssh",
   "bugs": {
@@ -25,6 +26,9 @@
   },
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
+  "bin": {
+    "dsh-hardssh-export-legacy": "./scripts/export-legacy-workspaces.mjs"
+  },
   "exports": {
     ".": {
       "types": "./lib/types/index.d.ts",
@@ -37,6 +41,14 @@
     "./subprocess": {
       "types": "./lib/types/subprocess.d.ts",
       "default": "./lib/subprocess.js"
+    },
+    "./workspace": {
+      "types": "./lib/types/workspace.d.ts",
+      "default": "./lib/workspace.js"
+    },
+    "./base": {
+      "types": "./lib/types/base/index.d.ts",
+      "default": "./lib/base/index.js"
     },
     "./client": {
       "types": "./lib/types/client/index.d.ts",
@@ -53,17 +65,20 @@
       "inject": [
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
         "@deepseek-ai/dsh-client-ui-settings"
       ],
       "platform": "web"
     }
   },
   "scripts": {
-    "build": "tsc -b && tsdown",
+    "clean": "node ./scripts/clean-build.mjs",
+    "build": "pnpm run clean && tsc -b && tsdown",
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
+    "workspace:export-legacy": "node ./scripts/export-legacy-workspaces.mjs",
     "prepare": "tsdown"
   },
   "dependencies": {
@@ -79,8 +94,11 @@
     "@deepseek-ai/dsh-client-runtime": "*",
     "@deepseek-ai/dsh-client-ui-settings": "*",
     "@deepseek-ai/dsh-client-ui-sidebar": "*",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "*",
     "@deepseek-ai/dsh-client-ui-slots": "*",
+    "@deepseek-ai/dsh-client-ui-layout": "*",
     "@deepseek-ai/dsh-fs": "*",
+    "@deepseek-ai/dsh-fs-local": "*",
     "@deepseek-ai/dsh-fs-sandbox": "*",
     "@deepseek-ai/dsh-host-webserver": "*",
     "@deepseek-ai/schemastery": "^3.18.1",
@@ -98,11 +116,13 @@
     "@deepseek-ai/dsh-client-connection": "0.1.2-alpha.3",
     "@deepseek-ai/dsh-client-locale": "0.1.2-alpha.3",
     "@deepseek-ai/dsh-client-runtime": "0.1.1-rc.2",
-    "@deepseek-ai/dsh-client-ui-conversation": "0.1.2-alpha.3",
-    "@deepseek-ai/dsh-client-ui-settings": "0.1.2-alpha.3",
-    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.2-alpha.3",
-    "@deepseek-ai/dsh-client-ui-slots": "0.1.2-alpha.3",
-    "@deepseek-ai/dsh-client-ui-workspace": "0.1.2-alpha.3",
+    "@deepseek-ai/dsh-client-ui-conversation": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-layout": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-sidebar-right": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "0.1.5-rc.1",
+    "@deepseek-ai/dsh-client-ui-workspace": "0.1.5-rc.1",
     "@deepseek-ai/dsh-fs": "0.1.2-alpha.3",
     "@deepseek-ai/dsh-fs-local": "0.1.2-alpha.3",
     "@deepseek-ai/dsh-fs-sandbox": "0.1.2-alpha.3",
@@ -133,10 +153,13 @@
   },
   "files": [
     "lib/*.js",
+    "lib/base/*.js",
     "lib/types/**/*.d.ts",
     "src",
+    "scripts/export-legacy-workspaces.mjs",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "SKILLS.md"
   ],
   "license": "BSD-3-Clause"
 }

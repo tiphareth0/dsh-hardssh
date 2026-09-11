@@ -30,6 +30,13 @@ import type { WorkspaceState } from '../protocol.ts'
 import { quoteShellArg } from './environment.ts'
 
 const BINARY_SAMPLE_BYTES = 8192
+/** Hard cap on a whole-file `readText` (default reads are bounded so no
+ *  caller can force an unbounded `Buffer.concat` of a huge remote file). */
+const FULL_READ_MAX_BYTES = 32 * 1024 * 1024
+/** Exclusive bound for the contextual-diff basis read; mirrors the local
+ *  backend's `diffBasisMaxBytes` (an over-limit file skips the diff basis and
+ *  falls back to a whole-file diff instead of failing the write). */
+const DIFF_BASIS_MAX_BYTES = 10 * 1024 * 1024
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
 /** Shape of one remote stat the provider works with (engine-normalized). */
@@ -73,7 +80,7 @@ function decodeText(bytes: Uint8Array, displayPath: string): string {
 }
 
 /** Decode a base64-wrapped NUL-terminated canonical path from `realpath -mz`. */
-function decodeCanonicalPath(encoded: string): string {
+export function decodeCanonicalPath(encoded: string): string {
   if (encoded.length === 0 || !BASE64.test(encoded)) {
     throw new Error('fs-ssh: canonical path transport returned invalid base64')
   }
@@ -151,13 +158,31 @@ function isNotFound(error: unknown): boolean {
  */
 export class SshFileSystem extends FileSystem {
   private readonly locks = new Map<string, Promise<unknown>>()
+  /** When set, every resolved target must stay under this root (the SSH
+   *  workspace's `location.root`). Absent for the legacy/global SSH seam,
+   *  which intentionally addresses the whole host. */
+  private readonly confineRoot: string | undefined
 
   constructor(
     ctx: Context,
     private readonly engine: SshEngine,
     private readonly getState: () => WorkspaceState,
+    confineRoot?: string,
   ) {
     super(ctx)
+    this.confineRoot = confineRoot === undefined ? undefined : posix.normalize(confineRoot)
+  }
+
+  /** Root-confinement gate for the workspace capability: reject any canonical
+   *  path that escapes `confineRoot` (including via an in-root symlink whose
+   *  realpath lands outside). Mirrors the local provider's fail-closed rule. */
+  private confine(path: string): string {
+    if (this.confineRoot === undefined) return path
+    const root = this.confineRoot.endsWith('/') ? this.confineRoot : `${this.confineRoot}/`
+    if (path !== this.confineRoot && !path.startsWith(root)) {
+      throw new Error(`workspace.ssh-outside-root: '${path}' is outside '${this.confineRoot}'`)
+    }
+    return path
   }
 
   /** The active remote execution world (throws when not in remote mode). */
@@ -189,6 +214,9 @@ export class SshFileSystem extends FileSystem {
     try {
       const targetKey = await this.canonicalPath(displayPath, opts?.signal)
       assertNotAborted(opts?.signal, 'resolve')
+      // Root confinement is checked on the CANONICAL target so a symlink that
+      // escapes the workspace root fails closed instead of being followed.
+      this.confine(targetKey)
       return { targetKey: FsTargetKey(targetKey), displayPath }
     } catch (error: unknown) {
       throw mapError(error, 'resolve', displayPath, opts?.signal)
@@ -196,7 +224,7 @@ export class SshFileSystem extends FileSystem {
   }
 
   override processPath(target: FsTarget): string {
-    return String(target.targetKey)
+    return this.confine(String(target.targetKey))
   }
 
   override fileUrl(target: FsTarget): string {
@@ -212,10 +240,11 @@ export class SshFileSystem extends FileSystem {
 
   override async stat(target: FsTarget, signal?: AbortSignal): Promise<FsInfo | undefined> {
     assertNotAborted(signal, 'stat')
-    const stats = await this.probe(String(target.targetKey), target.displayPath, signal)
+    const targetPath = String((await this.canonicalTarget(target, signal)).targetKey)
+    const stats = await this.probe(targetPath, target.displayPath, signal)
     if (stats === undefined) return undefined
     return {
-      version: entryVersion(stats, String(target.targetKey)),
+      version: entryVersion(stats, targetPath),
       type: entryType(stats),
       ...(stats.isFile() ? { size: stats.size } : {}),
     }
@@ -227,7 +256,8 @@ export class SshFileSystem extends FileSystem {
     const displayPath = posix.resolve(this.resolveRemoteCwd(opts?.cwd), path)
     const { alias } = this.current()
     try {
-      const info = await this.engine.lstat(alias, displayPath)
+      this.confine(displayPath)
+      const info = await this.engine.lstat(alias, displayPath, signal)
       assertNotAborted(signal, 'lstat')
       if (info === undefined) return undefined
       const type = info.type === 'symlink' ? 'symlink' as const : info.type === 'directory' ? 'directory' as const : info.type === 'file' ? 'file' as const : 'other' as const
@@ -243,8 +273,11 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async readText(target: FsTarget, signal?: AbortSignal): Promise<string> {
-    await this.requireRegular(target, signal)
-    const bytes = await this.readBytesRaw(target, signal, Number.POSITIVE_INFINITY)
+    const info = await this.requireRegular(target, signal)
+    if (info.size !== undefined && info.size > FULL_READ_MAX_BYTES) {
+      throw new FsError(`cannot read "${target.displayPath}": ${info.size} bytes exceeds the ${FULL_READ_MAX_BYTES}-byte read limit`, 'FS_TOO_LARGE')
+    }
+    const bytes = await this.readBytesRaw(target, signal, FULL_READ_MAX_BYTES)
     assertNotAborted(signal, 'read')
     return decodeText(bytes, target.displayPath)
   }
@@ -260,15 +293,27 @@ export class SshFileSystem extends FileSystem {
   }
 
   override async streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>> {
-    await this.requireRegular(target, signal)
-    const { alias } = this.current()
+    const filesystem = this
     const displayPath = target.displayPath
-    const stream = await this.engine.readStream(alias, String(target.targetKey))
     return {
       async *[Symbol.asyncIterator](): AsyncGenerator<string> {
+        let stream: import('node:stream').Readable | undefined
+        let onAbort: (() => void) | undefined
         const decoder = new TextDecoder('utf-8', { fatal: true })
         let sampledBytes = 0
         try {
+          // Acquire both the stat/read lease lazily: merely receiving the
+          // iterable owns no network resource. Every iterator owns and closes
+          // its own stream, including break/throw/abort paths.
+          const safeTarget = await filesystem.canonicalTarget(target, signal)
+          await filesystem.requireRegular(safeTarget, signal)
+          const { alias } = filesystem.current()
+          stream = await filesystem.engine.readStream(alias, String(safeTarget.targetKey), signal)
+          if (signal !== undefined) {
+            onAbort = () => { try { stream?.destroy(signal.reason instanceof Error ? signal.reason : undefined) } catch { /* already closed */ } }
+            signal.addEventListener('abort', onAbort, { once: true })
+            if (signal.aborted) onAbort()
+          }
           for await (const chunk of stream) {
             assertNotAborted(signal, 'read')
             const bytes = Buffer.from(chunk as Uint8Array)
@@ -284,6 +329,9 @@ export class SshFileSystem extends FileSystem {
               throw new FsError(`cannot read "${displayPath}": invalid UTF-8 text`, 'FS_NOT_TEXT', { cause: error })
             }
           }
+          // destroy() may end quietly when AbortSignal.reason is not an Error;
+          // classification must still come from the caller-owned signal.
+          assertNotAborted(signal, 'read')
           try {
             decoder.decode()
           } catch (error: unknown) {
@@ -291,28 +339,33 @@ export class SshFileSystem extends FileSystem {
           }
         } catch (error: unknown) {
           throw mapError(error, 'read', displayPath, signal)
+        } finally {
+          if (signal !== undefined && onAbort !== undefined) signal.removeEventListener('abort', onAbort)
+          if (stream !== undefined && !stream.destroyed) stream.destroy()
         }
       },
     }
   }
 
   override async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {
-    const info = await this.stat(target, signal)
+    const safeTarget = await this.canonicalTarget(target, signal)
+    const info = await this.stat(safeTarget, signal)
     if (info === undefined) throw new FsError(`cannot list "${target.displayPath}": not found`, 'FS_NOT_FOUND')
     if (info.type !== 'directory') throw new FsError(`cannot list "${target.displayPath}": not a directory`, 'FS_NOT_DIRECTORY')
     const { alias } = this.current()
     try {
-      const listed = await this.engine.ls(alias, String(target.targetKey))
+      const listed = await this.engine.ls(alias, String(safeTarget.targetKey), signal)
       assertNotAborted(signal, 'list')
       const displayPaths = listed.map(entry => posix.join(target.displayPath, entry.name))
       // One batch SFTP pass instead of one `realpath` exec per entry (P1-26);
       // symlink canonicalization is kept — target keys stay jail-safe.
-      const canonicalPaths = await this.engine.realpaths(alias, displayPaths)
+      const canonicalPaths = await this.engine.realpaths(alias, displayPaths, signal)
       const entries: FsDirEntry[] = []
       for (let i = 0; i < listed.length; i += 1) {
         const entry = listed[i]!
         const displayPath = displayPaths[i]!
         const canonical = canonicalPaths[i]!
+        this.confine(canonical)
         const stats = this.asStats({
           type: entry.type === 'dir' ? 'directory' : entry.type === 'file' ? 'file' : 'other',
           size: entry.size,
@@ -339,7 +392,9 @@ export class SshFileSystem extends FileSystem {
     expected?: FsWriteIntent,
     signal?: AbortSignal,
   ): Promise<FsWriteOutcome> {
-    return this.withLock(String(target.targetKey), async () => {
+    target = await this.canonicalTarget(target, signal)
+    const targetPath = this.processPath(target)
+    return this.withLock(targetPath, async () => {
       const existing = await this.probe(String(target.targetKey), target.displayPath, signal)
       if (existing !== undefined && !existing.isFile()) {
         throw new FsError(`cannot write "${target.displayPath}": not a regular file`, 'FS_NOT_REGULAR_FILE')
@@ -362,7 +417,9 @@ export class SshFileSystem extends FileSystem {
     expected?: { version: ReturnType<typeof FsVersion> },
     signal?: AbortSignal,
   ): Promise<FsEditOutcome> {
-    return this.withLock(String(target.targetKey), async () => {
+    target = await this.canonicalTarget(target, signal)
+    const targetPath = this.processPath(target)
+    return this.withLock(targetPath, async () => {
       const existing = await this.probe(String(target.targetKey), target.displayPath, signal)
       if (existing === undefined) {
         throw new FsError(`cannot edit "${target.displayPath}": file changed since it was read`, 'FS_STALE_VERSION')
@@ -394,9 +451,15 @@ export class SshFileSystem extends FileSystem {
     }
   }
 
+  private async canonicalTarget(target: FsTarget, signal?: AbortSignal): Promise<FsTarget> {
+    const canonical = await this.canonicalPath(String(target.targetKey), signal)
+    this.confine(canonical)
+    return { targetKey: FsTargetKey(canonical), displayPath: target.displayPath }
+  }
+
   private async canonicalPath(path: string, signal?: AbortSignal): Promise<string> {
     const { alias } = this.current()
-    const result = await this.engine.exec(alias, `set -o pipefail; realpath -mz -- ${quoteShellArg(path)} | base64 -w0`, 10_000)
+    const result = await this.engine.exec(alias, `set -o pipefail; realpath -mz -- ${quoteShellArg(path)} | base64 -w0`, { timeoutMs: 10_000, signal })
     signal?.throwIfAborted()
     if (!result.success || result.exitCode !== 0) throw new Error(result.stderr || `realpath failed for ${path}`)
     return decodeCanonicalPath(result.stdout.trim())
@@ -406,7 +469,7 @@ export class SshFileSystem extends FileSystem {
     assertNotAborted(signal, 'stat')
     const { alias } = this.current()
     try {
-      const info = await this.engine.stat(alias, path)
+      const info = await this.engine.stat(alias, path, signal)
       assertNotAborted(signal, 'stat')
       return this.asStats({ type: info.type, size: info.size, mtimeMs: info.mtimeMs, mode: info.mode })
     } catch (error: unknown) {
@@ -425,7 +488,8 @@ export class SshFileSystem extends FileSystem {
   private async readBytesRaw(target: FsTarget, signal: AbortSignal | undefined, maxBytes: number): Promise<Uint8Array> {
     const { alias } = this.current()
     try {
-      const data = await this.engine.readFile(alias, String(target.targetKey))
+      const safeTarget = await this.canonicalTarget(target, signal)
+      const data = await this.engine.readFile(alias, String(safeTarget.targetKey), maxBytes, signal)
       assertNotAborted(signal, 'read')
       if (data.content.length > maxBytes) {
         throw new FsError(`cannot read "${target.displayPath}": content exceeds the ${maxBytes}-byte limit`, 'FS_TOO_LARGE')
@@ -449,15 +513,17 @@ export class SshFileSystem extends FileSystem {
 
   private async readForDiff(target: FsTarget, signal?: AbortSignal): Promise<string | null> {
     try {
-      return normalizeLineEndings(decodeText(await this.readBytesRaw(target, signal, Number.POSITIVE_INFINITY), target.displayPath))
+      return normalizeLineEndings(decodeText(await this.readBytesRaw(target, signal, DIFF_BASIS_MAX_BYTES), target.displayPath))
     } catch (error: unknown) {
-      if (error instanceof FsError && error.code === 'FS_NOT_TEXT') return null
+      // A non-text or over-limit prior file yields no contextual diff basis but
+      // the write still succeeds (presentation falls back to a whole-file diff).
+      if (error instanceof FsError && (error.code === 'FS_NOT_TEXT' || error.code === 'FS_TOO_LARGE')) return null
       throw mapError(error, 'read', target.displayPath, signal)
     }
   }
 
   private async readForEdit(target: FsTarget, signal?: AbortSignal): Promise<string> {
-    return decodeText(await this.readBytesRaw(target, signal, Number.POSITIVE_INFINITY), target.displayPath)
+    return decodeText(await this.readBytesRaw(target, signal, FULL_READ_MAX_BYTES), target.displayPath)
   }
 
   private async writeAtomic(
@@ -473,45 +539,68 @@ export class SshFileSystem extends FileSystem {
     const stagingDirectory = posix.join(posix.dirname(targetPath), `.dsh-${randomUUID()}.tmp`)
     const temporary = posix.join(stagingDirectory, 'content')
     let stagingCreated = false
+    let published = false
     try {
-      await this.engine.mkdir(alias, stagingDirectory)
+      await this.engine.mkdir(alias, stagingDirectory, signal)
       stagingCreated = true
-      await this.engine.writeFile(alias, temporary, Buffer.from(content, 'utf8'))
+      await this.engine.writeFile(alias, temporary, Buffer.from(content, 'utf8'), undefined, signal)
       assertNotAborted(signal, 'write')
       const mode = existing === undefined ? 0o600 : existing.mode & 0o777
-      await this.engine.exec(alias, `chmod ${mode.toString(8)} -- ${quoteShellArg(temporary)}`, 10_000)
+      const chmod = await this.engine.exec(alias, `chmod ${mode.toString(8)} -- ${quoteShellArg(temporary)}`, { timeoutMs: 10_000, signal })
+      if (!chmod.success || chmod.exitCode !== 0) {
+        throw new Error(chmod.stderr || `chmod failed with exit code ${chmod.exitCode}`)
+      }
       assertNotAborted(signal, 'write')
       if (createIfAbsent) {
         const publication = await this.engine.exec(
           alias,
           `if ln -T -- ${quoteShellArg(temporary)} ${quoteShellArg(targetPath)}; then printf created; elif test -e ${quoteShellArg(targetPath)} || test -L ${quoteShellArg(targetPath)}; then printf exists; else exit 1; fi`,
-          10_000,
+          { timeoutMs: 10_000, signal },
         )
+        if (!publication.success || publication.exitCode !== 0) {
+          throw new Error(publication.stderr || `guarded create failed with exit code ${publication.exitCode}`)
+        }
         if (publication.stdout.trim() === 'exists') {
           throw new FsError(`cannot overwrite existing "${target.displayPath}" without reading it first`, 'FS_NOT_OBSERVED')
         }
         if (publication.stdout.trim() !== 'created') throw new Error('guarded create returned an invalid publication result')
+        published = true
       } else {
-        await this.engine.rename(alias, temporary, targetPath)
+        await this.engine.rename(alias, temporary, targetPath, signal)
+        published = true
       }
-      assertNotAborted(signal, 'write')
+      // Publication is the commit point. Cancellation after it must not report
+      // rollback while the target already contains the new content.
       await this.removeStaging(stagingDirectory)
-      const committed = await this.probe(targetPath, target.displayPath, signal)
+      stagingCreated = false
+      const committed = await this.probe(targetPath, target.displayPath)
       if (committed === undefined) throw new FsError(`cannot write "${target.displayPath}": commit produced no file`, 'FS_IO_ERROR')
       return entryVersion(committed, targetPath)
     } catch (error: unknown) {
-      if (stagingCreated) await this.removeStaging(stagingDirectory)
+      let cleanupError: unknown
+      if (stagingCreated) {
+        try { await this.removeStaging(stagingDirectory) } catch (cleanup) { cleanupError = cleanup }
+      }
+      if (cleanupError !== undefined) {
+        const state = published ? 'write was committed but staging cleanup failed' : 'write failed and staging cleanup also failed'
+        throw new FsError(`cannot write "${target.displayPath}": ${state}`, 'FS_IO_ERROR', {
+          cause: new AggregateError([error, cleanupError], state),
+        })
+      }
+      if (published) {
+        // Once publication succeeded, cancellation or a first transient cleanup
+        // error cannot truthfully turn the operation into an uncommitted failure.
+        const reconciled = await this.probe(targetPath, target.displayPath)
+        if (reconciled !== undefined) return entryVersion(reconciled, targetPath)
+        throw new FsError(`cannot write "${target.displayPath}": publication could not be reconciled`, 'FS_IO_ERROR', { cause: error })
+      }
       throw mapError(error, 'write', target.displayPath, signal)
     }
   }
 
   private async removeStaging(directory: string): Promise<void> {
     const { alias } = this.current()
-    try {
-      await this.engine.rm(alias, directory, true)
-    } catch {
-      // The target is already committed; an empty private directory cannot turn that write into a failure.
-    }
+    await this.engine.rm(alias, directory, true)
   }
 
   /** Normalize an engine stat/ls shape into the RemoteStats the helpers expect. */

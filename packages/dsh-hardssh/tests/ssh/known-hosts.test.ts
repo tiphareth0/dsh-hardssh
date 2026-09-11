@@ -15,12 +15,19 @@ import {
   HostKeyPolicy,
   HostKeyUnknownError,
   KnownHostsStore,
+  keyTypeOf,
   normalizeFingerprint,
 } from '../../src/ssh/known-hosts.ts'
 
-/** A fake server key blob (any raw bytes hash to a stable fingerprint). */
-function fakeKey(seed: number): Buffer {
-  return Buffer.from(`ssh-ed25519 AAAA-fake-${seed}`)
+/** A real SSH wire public-key blob: `string algorithm, byte[] key`. */
+function fakeKey(seed: number, algorithm = 'ssh-ed25519'): Buffer {
+  const name = Buffer.from(algorithm, 'latin1')
+  const length = Buffer.alloc(4)
+  length.writeUInt32BE(name.length, 0)
+  const payload = Buffer.from(`AAAA-fake-${seed}`, 'latin1')
+  const payloadLength = Buffer.alloc(4)
+  payloadLength.writeUInt32BE(payload.length, 0)
+  return Buffer.concat([length, name, payloadLength, payload])
 }
 
 describe('fingerprint helpers', () => {
@@ -76,6 +83,18 @@ describe('KnownHostsStore', () => {
   })
 })
 
+describe('keyTypeOf (real SSH wire blobs)', () => {
+  it('reads the algorithm string from the wire length prefix, not the text form', () => {
+    expect(keyTypeOf(fakeKey(1))).toBe('ssh-ed25519')
+    expect(keyTypeOf(fakeKey(2, 'ssh-rsa'))).toBe('ssh-rsa')
+    expect(keyTypeOf(fakeKey(3, 'ecdsa-sha2-nistp256'))).toBe('ecdsa-sha2-nistp256')
+    // The authorized_keys text form is NOT a wire blob.
+    expect(keyTypeOf(Buffer.from('ssh-ed25519 AAAA-fake-1'))).toBe('ssh-unknown')
+    expect(keyTypeOf(Buffer.alloc(0))).toBe('ssh-unknown')
+    expect(keyTypeOf(Buffer.from([0, 0, 0, 9, 1, 2]))).toBe('ssh-unknown')
+  })
+})
+
 describe('HostKeyPolicy', () => {
   it('unknown on first encounter (records pending), trusted after trust, mismatch on change', () => {
     const dir = mkdtempSync(join(tmpdir(), 'known-hosts-'))
@@ -91,6 +110,26 @@ describe('HostKeyPolicy', () => {
 
     const changed = policy.check('web-01', fakeKey(2))
     expect(changed.kind).toBe('mismatch')
+  })
+
+  it('records the real host/port/keyType on first encounter and backfills a legacy record', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'known-hosts-'))
+    const store = new KnownHostsStore(join(dir, 'known.json'))
+    const policy = new HostKeyPolicy(store)
+
+    policy.check('web-01', fakeKey(1), { host: '10.0.0.5', port: 2222 })
+    const record = store.lookup('web-01')
+    expect(record).toMatchObject({ host: '10.0.0.5', port: 2222, keyType: 'ssh-ed25519' })
+
+    // A record observed before the target was known gets completed on the next
+    // check without changing its pending status.
+    store.forget('web-01')
+    store.observe('web-01', { host: '', port: 0, keyType: 'ssh-unknown', fingerprintSha256: fingerprintOf(fakeKey(1)) })
+    policy.check('web-01', fakeKey(1), { host: 'web-01.internal', port: 22 })
+    expect(store.lookup('web-01')).toMatchObject({ host: 'web-01.internal', port: 22, keyType: 'ssh-ed25519', status: 'pending' })
+
+    store.trust('web-01', { host: 'ignored', port: 9999 })
+    expect(store.lookup('web-01')).toMatchObject({ host: 'web-01.internal', port: 22, status: 'trusted' })
   })
 })
 

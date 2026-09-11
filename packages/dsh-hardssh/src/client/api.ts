@@ -5,25 +5,25 @@
  * origin 鈥?the only data path the panel components use.
  */
 
-import { HttpApiError, buildQuery, readJson } from '../client-http.ts'
+import { HttpApiError, buildQuery, readJson, type HttpErrorBody } from '../client-http.ts'
 import {
   WORKSPACE_API,
-  type DirListing,
-  type FileRead,
-  type FileWriteResult,
   type RemoteDirEntry,
-  type SearchView,
   type SshWorkspaceRecord,
 } from '../protocol.ts'
 
-/** Error carrying the route's JSON error message and stable code/status. */
+/**
+ * Workspace-route error: the shared transport error under this family's name.
+ * It adds no parsing — `readJson` in ../client-http.ts owns status/body
+ * decoding for both route families.
+ */
 export class WorkspaceApiError extends HttpApiError {
   constructor(
     message: string,
-    code?: string,
     status?: number,
+    body?: HttpErrorBody,
   ) {
-    super(message, code, status)
+    super(message, status, body)
     this.name = 'WorkspaceApiError'
   }
 }
@@ -79,34 +79,6 @@ export class WorkspaceApi {
     const response = await fetch(WORKSPACE_API.sshWorkspaceDir + buildQuery({ alias, path }))
     const body = await readJson<{ path: string; entries: RemoteDirEntry[] }>(response)
     return body
-  }
-
-  async list(root: string, path: string): Promise<DirListing> {
-    const response = await fetch(WORKSPACE_API.tree + buildQuery({ root, path }))
-    const body = await readJson<{ listing: DirListing }>(response)
-    return body.listing
-  }
-
-  async read(root: string, path: string): Promise<FileRead> {
-    const response = await fetch(WORKSPACE_API.file + buildQuery({ root, path }))
-    const body = await readJson<{ file: FileRead }>(response)
-    return body.file
-  }
-
-  async write(root: string, path: string, content: string, expectedMtime?: number): Promise<FileWriteResult> {
-    const response = await fetch(WORKSPACE_API.file, {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ root, path, content, expectedMtime }),
-    })
-    const body = await readJson<{ result: FileWriteResult }>(response)
-    return body.result
-  }
-
-  async search(root: string, queryText: string): Promise<SearchView> {
-    const response = await fetch(WORKSPACE_API.search + buildQuery({ root, query: queryText }))
-    const body = await readJson<{ search: SearchView }>(response)
-    return body.search
   }
 }
 

@@ -36,21 +36,10 @@ describe('LedgerWorkspaceRouter', () => {
     providers.register(createLocalWorkspaceProvider())
     await ledger.create(recordIn(dir, 'ws-1'))
 
-    const router = new LedgerWorkspaceRouter(ledger, {
-      listWorkspaces: () => ledger.list(),
-      subscribe: (listener) => ledger.subscribe(change => listener(change.record)),
-      register: (provider) => providers.register(provider),
-      provider: (id) => providers.get(id),
-      providers: () => providers.list(),
-    }, {
-      open: async (record) => {
-        const provider = providers.get(record.provider.id)
-        return provider === undefined ? undefined : provider.open(record)
-      },
-    })
+    const router = new LedgerWorkspaceRouter(ledger, providers)
 
-    // Pre-open so the cwd anchor resolves (router's fromAnchor path).
-    await router.ensureOpen(recordIn(dir, 'ws-1'))
+    // initialize() owns persisted preopen and readiness in provider API v2.
+    await router.initialize()
 
     // Explicit wfs:// namespace resolves.
     const resolution = router.fromNamespace('wfs://ws-1/src/index.ts')
@@ -76,19 +65,8 @@ describe('LedgerWorkspaceRouter', () => {
     await ledger.create(record)
     await ledger.load()
 
-    const router = new LedgerWorkspaceRouter(ledger, {
-      listWorkspaces: () => ledger.list(),
-      subscribe: (listener) => ledger.subscribe(change => listener(change.record)),
-      register: (provider) => providers.register(provider),
-      provider: (id) => providers.get(id),
-      providers: () => providers.list(),
-    }, {
-      open: async (record) => {
-        const provider = providers.get(record.provider.id)
-        return provider === undefined ? undefined : provider.open(record)
-      },
-    })
-    await router.ensureOpen(record)
+    const router = new LedgerWorkspaceRouter(ledger, providers)
+    await router.initialize()
 
     const connection = router.fromAnchor(record.anchor!.path)
     expect(connection?.workspaceId).toBe('ws-2')

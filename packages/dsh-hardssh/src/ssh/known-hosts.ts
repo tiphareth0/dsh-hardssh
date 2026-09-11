@@ -110,10 +110,18 @@ export class KnownHostsStore {
     return this.records.get(alias)
   }
 
-  /** First encounter: record as pending (non-destructive re-observe keeps status). */
+  /** First encounter: record as pending. Re-observing keeps the recorded
+   *  status/fingerprint but backfills a previously empty host/port. */
   observe(alias: string, meta: { host: string; port: number; keyType: string; fingerprintSha256: string }): void {
     const existing = this.records.get(alias)
-    if (existing !== undefined) return // keep pending/trusted as-is
+    if (existing !== undefined) {
+      let changed = false
+      if (existing.host === '' && meta.host !== '') { existing.host = meta.host; changed = true }
+      if (existing.port === 0 && meta.port > 0) { existing.port = meta.port; changed = true }
+      if (existing.keyType === 'ssh-unknown' && meta.keyType !== 'ssh-unknown') { existing.keyType = meta.keyType; changed = true }
+      if (changed) this.save()
+      return
+    }
     this.records.set(alias, {
       alias,
       host: meta.host,
@@ -127,10 +135,13 @@ export class KnownHostsStore {
     this.save()
   }
 
-  /** pending → trusted (must match the recorded fingerprint). */
-  trust(alias: string): void {
+  /** pending → trusted (must match the recorded fingerprint). Optional
+   *  host/port backfill completes a record whose first observe had no target. */
+  trust(alias: string, target?: { host?: string; port?: number }): void {
     const record = this.records.get(alias)
     if (record === undefined) throw new Error(`no host-key record for '${alias}'`)
+    if (record.host === '' && target?.host !== undefined && target.host !== '') record.host = target.host
+    if (record.port === 0 && target?.port !== undefined && target.port > 0) record.port = target.port
     record.status = 'trusted'
     record.confirmedAt = Date.now()
     this.save()
@@ -151,36 +162,49 @@ export class KnownHostsStore {
 export class HostKeyPolicy {
   constructor(private readonly knownHosts: KnownHostsStore) {}
 
-  /** Evaluate one server key: trusted / unknown (records pending) / mismatch. */
-  check(alias: string, rawKey: Buffer): HostKeyCheck {
+  /** Evaluate one server key: trusted / unknown (records pending) / mismatch.
+   *  `target` supplies the host/port the engine is actually connecting to so
+   *  the audit record is complete instead of `''`/0. */
+  check(alias: string, rawKey: Buffer, target?: { host?: string; port?: number }): HostKeyCheck {
     const recorded = this.knownHosts.lookup(alias)
     const actual = fingerprintOf(rawKey)
     if (recorded === undefined) {
       // First encounter: remember as pending, but NOT trusted — the caller
       // must refuse the connection until the operator confirms.
       this.knownHosts.observe(alias, {
-        host: '', // host/port are filled by the engine's richer record on confirm
-        port: 0,
+        host: target?.host ?? '',
+        port: target?.port ?? 0,
         keyType: keyTypeOf(rawKey),
         fingerprintSha256: actual,
       })
       return { kind: 'unknown', fingerprintSha256: actual }
     }
-    if (recorded.status !== 'trusted') return { kind: 'unknown', fingerprintSha256: recorded.fingerprint }
+    if (recorded.status !== 'trusted') {
+      this.knownHosts.observe(alias, {
+        host: target?.host ?? '',
+        port: target?.port ?? 0,
+        keyType: keyTypeOf(rawKey),
+        fingerprintSha256: recorded.fingerprint,
+      })
+      return { kind: 'unknown', fingerprintSha256: recorded.fingerprint }
+    }
     if (fingerprintsEqual(recorded.fingerprint, actual)) return { kind: 'trusted' }
     return { kind: 'mismatch', expected: recorded.fingerprint, actual }
   }
 }
 
-/** Best-effort key type label from the raw blob's base64 header. */
-function keyTypeOf(rawKey: Buffer): string {
-  try {
-    const base64 = rawKey.toString('base64')
-    const decoded = Buffer.from(base64, 'base64').toString('utf8')
-    const end = decoded.indexOf(' ')
-    if (end > 0) return decoded.slice(0, end)
-  } catch { /* fall through */ }
-  return 'ssh-unknown'
+/**
+ * Parse the key type out of a real SSH wire public-key blob. The blob is
+ * `string algorithm, byte[] key` where every string is a 4-byte big-endian
+ * length followed by raw bytes — NOT the `ssh-ed25519 AAAA…` authorized_keys
+ * text form, so a text-oriented decode would always yield 'ssh-unknown'.
+ */
+export function keyTypeOf(rawKey: Buffer): string {
+  if (rawKey.length < 4) return 'ssh-unknown'
+  const length = rawKey.readUInt32BE(0)
+  if (length === 0 || length > 64 || 4 + length > rawKey.length) return 'ssh-unknown'
+  const algorithm = rawKey.subarray(4, 4 + length).toString('latin1')
+  return /^[a-z0-9@.\-]+$/u.test(algorithm) ? algorithm : 'ssh-unknown'
 }
 
 function isRecord(value: unknown): value is KnownHostRecord {

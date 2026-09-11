@@ -7,7 +7,7 @@
  * @module dsh-hardssh/remote-subprocess
  */
 
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, posix } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
@@ -34,12 +34,23 @@ function requireRepresentableGrace(graceMs: number): void {
   }
 }
 
+/** Hard upper bound for plugin/workspace teardown, independent of a caller's
+ * potentially very large per-process TERM/KILL grace setting. */
+export const SUBPROCESS_DISPOSE_DEADLINE_MS = 5_000
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => {
+    const timer = setTimeout(resolve, ms)
+    timer.unref?.()
+  })
+}
+
 /** SSH command manager registered as `ctx.subprocess` (remote mode). */
 export class SshSubprocessRuntime extends SubprocessRuntime {
   private readonly live = new Set<SshSubprocessHandle>()
   private readonly terminals = new Set<SshTerminalHandle>()
   private readonly spillDir = mkdtempSync(join(tmpdir(), 'dsh-subprocess-ssh-'))
-  private disposing = false
+  private closePromise: Promise<void> | undefined
 
   constructor(
     ctx: Context,
@@ -48,22 +59,54 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
   ) {
     super(ctx)
     ctx.effect(() => async () => {
-      this.disposing = true
-      const handles = [...this.live]
-      const terminals = [...this.terminals]
-      const pending: Promise<unknown>[] = []
-      for (const handle of handles) {
-        handle.terminate()
-        pending.push(handle.waitForExit().then(() => { this.live.delete(handle) }))
-      }
-      for (const terminal of terminals) {
-        pending.push(terminal.terminate().then(() => { this.terminals.delete(terminal) }))
-      }
-      const outcomes = await Promise.allSettled(pending)
+      // The effect's own body would duplicate close(); delegating keeps one
+      // idempotent teardown path for host shutdown and on-demand connection close.
+      await this.close()
+    }, 'ssh subprocess teardown')
+  }
+
+  /**
+   * Public idempotent close that releases every workspace-owned live process
+   * and terminal. The ctx.effect teardown cannot be invoked by a workspace
+   * connection (it only runs when the cordis scope disposes, which would also
+   * tear down the shared engine's scope), so a SshWorkspaceConnection calls
+   * this on-demand close() instead — the engine pool itself stays untouched.
+   */
+  close(): Promise<void> {
+    this.closePromise ??= this.closeOwnedResources()
+    return this.closePromise
+  }
+
+  private async closeOwnedResources(): Promise<void> {
+    const handles = [...this.live]
+    const terminals = [...this.terminals]
+    const pending: Promise<unknown>[] = []
+    for (const handle of handles) {
+      handle.terminate()
+      pending.push(handle.waitForExit().then(() => { this.live.delete(handle) }))
+    }
+    for (const terminal of terminals) {
+      pending.push(terminal.terminate().then(() => { this.terminals.delete(terminal) }))
+    }
+
+    const all = Promise.allSettled(pending)
+    const graceful = await Promise.race([
+      all.then(outcomes => ({ outcomes })),
+      delay(SUBPROCESS_DISPOSE_DEADLINE_MS).then(() => undefined),
+    ])
+    if (graceful === undefined) {
+      for (const handle of handles) handle.forceClose()
+      for (const terminal of terminals) terminal.forceClose()
+    }
+
+    try {
+      const outcomes = graceful?.outcomes ?? await all
       const failures = outcomes.flatMap<unknown>(outcome => outcome.status === 'rejected' ? [outcome.reason as unknown] : [])
       if (failures.length === 1) throw failures[0]
       if (failures.length > 1) throw new AggregateError(failures, 'subprocess-ssh: teardown failed')
-    }, 'ssh subprocess teardown')
+    } finally {
+      rmSync(this.spillDir, { recursive: true, force: true })
+    }
   }
 
   /** @inheritdoc */
@@ -113,7 +156,7 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
 
   /** @inheritdoc */
   spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
-    if (this.disposing) throw new Error('subprocess-ssh: service is disposing')
+    if (this.closePromise !== undefined) throw new Error('subprocess-ssh: service is disposing')
     const program = spec.argv[0]
     if (program === undefined || program.length === 0) {
       throw new Error('invalid argv: expected a non-empty program name at argv[0]')
@@ -134,7 +177,7 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
 
   /** @inheritdoc */
   async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
-    if (this.disposing) throw new Error('subprocess-ssh: service is disposing')
+    if (this.closePromise !== undefined) throw new Error('subprocess-ssh: service is disposing')
     const program = spec.argv[0]
     if (program === undefined || program.length === 0) {
       throw new Error('subprocess-ssh: terminal argv must contain a program')
@@ -142,7 +185,7 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     requireRepresentableGrace(spec.graceMs)
     spec.signal?.throwIfAborted()
     const terminal = await spawnSshTerminal(this.engine, this.getState, spec)
-    if (this.disposing) {
+    if (this.closePromise !== undefined) {
       await terminal.terminate()
       throw new Error('subprocess-ssh: service disposed during terminal setup')
     }

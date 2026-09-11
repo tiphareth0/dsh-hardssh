@@ -48,7 +48,7 @@ import type {
 const memoryManifest: WorkspaceProviderManifest = {
   id: 'memory',
   version: '1.0.0',
-  apiVersion: 1,
+  apiVersion: 2,
   displayName: 'In-memory workspace (3rd-party fixture)',
   capabilities: ['workspace.fs'],
 }
@@ -171,12 +171,7 @@ function buildStack() {
     provider: (id: string) => providers.get(id),
     providers: () => providers.list(),
   }
-  const router = new LedgerWorkspaceRouter(ledger, registry, {
-    open: async (record) => {
-      const provider = providers.get(record.provider.id)
-      return provider === undefined ? undefined : provider.open(record)
-    },
-  })
+  const router = new LedgerWorkspaceRouter(ledger, providers)
   const host = new WorkspacePluginHost({ workspaces: registry })
   return { providers, ledger, registry, router, host }
 }
@@ -215,7 +210,7 @@ describe('Phase 3: third-party non-SSH plugin integration', () => {
     // connections opened via ensureOpen (the DSH adapter pre-warms at mount).
     const realRecord = await ledger.get('mem-1')
     expect(realRecord).toBeDefined()
-    await router.ensureOpen(realRecord!)
+    await router.initialize()
     const connection = router.fromAnchor(join(tmpdir(), 'p3-anchor-mem-1'))
     expect(connection?.providerId).toBe('memory')
 
@@ -250,7 +245,7 @@ describe('Phase 3: third-party non-SSH plugin integration', () => {
 
     // The real record (with seed) must be the one the router opens, and it
     // must be pre-warmed so anchor routing finds the cached connection.
-    await router.ensureOpen(workspace)
+    await router.initialize()
 
     const connection = router.fromAnchor(workspace.anchor!.path)
     if (connection === undefined) {
@@ -285,5 +280,22 @@ describe('Phase 3: third-party non-SSH plugin integration', () => {
 
     // Router still routes (workspace persisted) but opening now fails closed.
     void router
+  })
+
+  it('unload releases only the provider this plugin registered', async () => {
+    const { providers, host } = buildStack()
+    // A builtin-style registration that predates the plugin owns the id. The
+    // plugin's same-version registration must be a duplicate with no ownership,
+    // so unload must not delete the pre-existing provider.
+    const builtin = new MemoryWorkspaceProvider()
+    const releaseBuiltin = providers.register(builtin)
+    await host.load(thirdPartyPlugin)
+    expect(providers.get('memory')).toBe(builtin)
+
+    await host.unload('fixture.memory-plugin')
+    expect(providers.get('memory')).toBe(builtin)
+
+    releaseBuiltin()
+    expect(providers.get('memory')).toBeUndefined()
   })
 })

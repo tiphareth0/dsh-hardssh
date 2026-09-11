@@ -4,6 +4,9 @@
  * plugin startup), and the execute/render contracts must not drift.
  */
 
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { ToolDefinition } from '@deepseek-ai/dsh-tools'
@@ -25,6 +28,8 @@ class StubEngine {
   execResult: ExecResult = { success: true, exitCode: 0, timedOut: false, stdout: 'hello out', stderr: '', durationMs: 5 }
   tunnelStartError: Error | undefined
   tunnelExists = true
+  uploadedLocalPath: string | undefined
+  downloadedLocalPath: string | undefined
 
   list(): SshHostSummary[] {
     return this.hosts
@@ -39,10 +44,12 @@ class StubEngine {
   async cluster(): Promise<unknown[]> {
     return []
   }
-  async upload(): Promise<{ bytes: number; files: number }> {
+  async upload(_alias: string, localPath: string): Promise<{ bytes: number; files: number }> {
+    this.uploadedLocalPath = localPath
     return { bytes: 12, files: 1 }
   }
-  async download(): Promise<{ bytes: number }> {
+  async download(_alias: string, _remotePath: string, localPath: string): Promise<{ bytes: number }> {
+    this.downloadedLocalPath = localPath
     return { bytes: 34 }
   }
   listTunnels(): TunnelInfo[] {
@@ -65,9 +72,11 @@ class StubEngine {
 
 const engine = (stub: StubEngine): SshEngine => stub as unknown as SshEngine
 
-/** ToolDefinition.execute needs a ToolRunContext; tests pass a dummy. */
-function run(tool: ToolDefinition, args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  return tool.execute(args, {} as never) as Promise<Record<string, unknown>>
+/** ToolDefinition.execute needs a ToolRunContext. Transfer tests attach the
+ * invoking session's validated cwd through the same structural path as DSH. */
+function run(tool: ToolDefinition, args: Record<string, unknown>, cwd?: string): Promise<Record<string, unknown>> {
+  const exec = cwd === undefined ? {} : { agent: { session: { header: { cwd } } } }
+  return tool.execute(args, exec as never) as Promise<Record<string, unknown>>
 }
 
 function render(tool: ToolDefinition, value: unknown): string {
@@ -188,26 +197,93 @@ describe('uniform tool envelope (P1-20)', () => {
   it('tunnel parameter errors return envelopes, not throws', async () => {
     const stub = new StubEngine()
     const tool = sshTunnelTool(engine(stub))
+    // Reachable through the harness: a valid action with missing fields.
     const missing = await run(tool, { action: 'start' })
     expect(missing.ok).toBe(false)
     expect(missing.error).toContain('alias and remotePort')
-    const unknown = await run(tool, { action: 'bogus' })
-    expect(unknown.ok).toBe(false)
-    expect(unknown.error).toContain('unknown action')
+    // An INVALID enum is rejected by the harness' own argument validation
+    // before the body runs (ToolArgsError), so it can never reach the tool's
+    // defensive branch; the envelope contract applies to valid arguments.
+    await expect(run(tool, { action: 'bogus' })).rejects.toThrow(/must be one of/)
+    const missingTunnelId = await run(tool, { action: 'stop' })
+    expect(missingTunnelId.ok).toBe(false)
+    expect(missingTunnelId.error).toContain('tunnelId')
   })
 })
 
-describe('ssh_upload / ssh_download', () => {
-  it('maps engine outcomes into ok results', async () => {
-    const stub = new StubEngine()
-    const upload = sshUploadTool(engine(stub))
-    const up = await run(upload, { alias: 'web-01', localPath: '/tmp/a', remotePath: '/tmp/b' })
-    expect(up.ok).toBe(true)
-    expect(up.transferredBytes).toBe(12)
+describe('ssh_upload / ssh_download local workspace boundary', () => {
+  it('allows canonical paths inside the invoking session workspace', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'hardssh-tool-root-'))
+    try {
+      const source = join(root, 'source.txt')
+      const destination = join(root, 'nested', 'download.txt')
+      writeFileSync(source, 'payload')
+      const stub = new StubEngine()
 
-    const download = sshDownloadTool(engine(stub))
-    const down = await run(download, { alias: 'web-01', remotePath: '/tmp/b', localPath: '/tmp/a' })
-    expect(down.ok).toBe(true)
-    expect(down.bytes).toBe(34)
+      const up = await run(sshUploadTool(engine(stub)), { alias: 'web-01', localPath: source, remotePath: '/tmp/b' }, root)
+      expect(up.ok).toBe(true)
+      expect(up.transferredBytes).toBe(12)
+      expect(stub.uploadedLocalPath).toBe(source)
+
+      const down = await run(sshDownloadTool(engine(stub)), { alias: 'web-01', remotePath: '/tmp/b', localPath: destination }, root)
+      expect(down.ok).toBe(true)
+      expect(down.bytes).toBe(34)
+      expect(stub.downloadedLocalPath).toBe(destination)
+    } finally {
+      rmSync(root, { recursive: true, force: true })
+    }
+  })
+
+  it('fails closed without an invoking Agent cwd and blocks outside paths', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'hardssh-tool-boundary-'))
+    const root = join(base, 'workspace')
+    const outside = join(base, 'workspace-prefix-collision.txt')
+    mkdirSync(root)
+    writeFileSync(outside, 'secret')
+    try {
+      const stub = new StubEngine()
+      const tool = sshUploadTool(engine(stub))
+      const noContext = await run(tool, { alias: 'web-01', localPath: outside, remotePath: '/tmp/b' })
+      expect(noContext).toMatchObject({ ok: false })
+      expect(String(noContext.error)).toContain('no invoking session workspace')
+
+      const escaped = await run(tool, { alias: 'web-01', localPath: outside, remotePath: '/tmp/b' }, root)
+      expect(escaped).toMatchObject({ ok: false })
+      expect(String(escaped.error)).toContain('outside the invoking session workspace')
+      expect(stub.uploadedLocalPath).toBeUndefined()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks upload and download through an in-workspace symlink or junction', async () => {
+    const base = mkdtempSync(join(tmpdir(), 'hardssh-tool-symlink-'))
+    const root = join(base, 'workspace')
+    const outside = join(base, 'outside')
+    mkdirSync(root)
+    mkdirSync(outside)
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    const link = join(root, 'escape')
+    symlinkSync(outside, link, process.platform === 'win32' ? 'junction' : 'dir')
+    try {
+      const stub = new StubEngine()
+      const upload = await run(
+        sshUploadTool(engine(stub)),
+        { alias: 'web-01', localPath: join(link, 'secret.txt'), remotePath: '/tmp/b' },
+        root,
+      )
+      expect(upload).toMatchObject({ ok: false })
+
+      const download = await run(
+        sshDownloadTool(engine(stub)),
+        { alias: 'web-01', remotePath: '/tmp/b', localPath: join(link, 'new.txt') },
+        root,
+      )
+      expect(download).toMatchObject({ ok: false })
+      expect(stub.uploadedLocalPath).toBeUndefined()
+      expect(stub.downloadedLocalPath).toBeUndefined()
+    } finally {
+      rmSync(base, { recursive: true, force: true })
+    }
   })
 })

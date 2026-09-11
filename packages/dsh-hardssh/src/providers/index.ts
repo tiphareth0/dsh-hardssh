@@ -10,21 +10,25 @@ import type { WorkspaceProvider } from '../base/model.ts'
 import type { WorkspaceProviderRegistry } from '../base/registry.ts'
 import type { SshEngine } from '../ssh/engine.ts'
 import type { HostStoreView } from '../core.ts'
+import type { Context } from '@deepseek-ai/cordis'
 import { createSshWorkspaceProvider } from './ssh/provider.ts'
 import { createLocalWorkspaceProvider } from './local/provider.ts'
 
-/** Register both built-in providers. Returns per-provider disposers. */
+/** Register both built-in providers. Returns per-provider disposers. The
+ *  Cordis context is mandatory: both providers serve only the real DSH
+ *  fs/process capabilities, which need a per-workspace Cordis scope. */
 export function registerBuiltinProviders(
   registry: WorkspaceProviderRegistry,
-  deps: { engine?: SshEngine; hosts?: HostStoreView } = {},
+  deps: { engine?: SshEngine; hosts?: HostStoreView },
+  context: Context,
 ): Array<() => void> {
   const disposers: Array<() => void> = []
   // Local first: always available, no external state.
-  disposers.push(registry.register(createLocalWorkspaceProvider()))
+  disposers.push(registry.register(createLocalWorkspaceProvider(context)))
   // SSH requires the engine; when absent (headless / partial load) it is
   // simply not registered — the base keeps working for local workspaces.
   if (deps.engine !== undefined) {
-    disposers.push(registry.register(createSshWorkspaceProvider(deps.engine)))
+    disposers.push(registry.register(createSshWorkspaceProvider(deps.engine, context)))
   }
   return disposers
 }

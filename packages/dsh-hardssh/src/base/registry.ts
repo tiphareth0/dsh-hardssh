@@ -1,20 +1,13 @@
-/**
- * Workspace provider registry — the single place providers register and are
- * looked up by id. The registry is provider-agnostic: SSH, local, and any
- * future provider all register here, and the switch layer resolves
- * workspaces through the registry without knowing which provider backs them.
- *
- * Registration is idempotent per (id, version, apiVersion): re-registering
- * the same provider is a no-op / reuse; registering a different or
- * incompatible implementation with the same id is an error.
- *
- * @module @tiphareth/dsh-hardssh/base/registry
- */
+/** Provider-neutral registry with observable, ownership-safe registration lifecycle. */
 
 import type { WorkspaceProvider, WorkspaceProviderManifest } from './model.ts'
 
-/** Fired when a provider registers (for surface mounts / cache invalidation). */
-export type ProviderListener = (provider: WorkspaceProvider) => void
+/** Provider registration lifecycle event consumed by routers. */
+export type ProviderChange =
+  | { type: 'registered'; provider: WorkspaceProvider }
+  | { type: 'unregistered'; provider: WorkspaceProvider }
+
+export type ProviderListener = (change: ProviderChange) => void
 
 /** Duplicate / incompatible registration error. */
 export class ProviderRegistrationError extends Error {
@@ -29,7 +22,7 @@ export class WorkspaceProviderRegistry {
   private readonly providers = new Map<string, WorkspaceProvider>()
   private readonly listeners = new Set<ProviderListener>()
 
-  /** Register a provider. Throws on id collision with an incompatible impl. */
+  /** Register a provider and return a disposer that only removes that exact registration. */
   register(provider: WorkspaceProvider): () => void {
     const id = provider.manifest.id
     const existing = this.providers.get(id)
@@ -41,15 +34,18 @@ export class WorkspaceProviderRegistry {
           `provider '${id}' already registered (${existing.manifest.version}, api ${existing.manifest.apiVersion}); refusing incompatible duplicate`,
         )
       }
-      // Same version: reuse. No-op.
-      return () => { /* already registered */ }
+      return () => { /* The original registration retains ownership. */ }
     }
     this.providers.set(id, provider)
-    const disposer = () => { this.providers.delete(id) }
-    for (const listener of [...this.listeners]) {
-      try { listener(provider) } catch { /* listener isolation */ }
+    this.emit({ type: 'registered', provider })
+    let disposed = false
+    return () => {
+      if (disposed) return
+      disposed = true
+      if (this.providers.get(id) !== provider) return
+      this.providers.delete(id)
+      this.emit({ type: 'unregistered', provider })
     }
-    return disposer
   }
 
   /** Look up a provider by id. */
@@ -57,10 +53,19 @@ export class WorkspaceProviderRegistry {
     return this.providers.get(id)
   }
 
-  /** Unregister a provider by id (no-op when absent or different version). */
+  /**
+   * Remove a provider by id, whoever registered it.
+   *
+   * Ownership-unsafe by construction: callers that registered a provider must
+   * use the disposer returned by register() instead, otherwise teardown can
+   * delete a provider owned by another plugin. Kept for whole-registry
+   * operations (tests, process-level resets).
+   */
   unregister(id: string): void {
-    if (!this.providers.has(id)) return
+    const provider = this.providers.get(id)
+    if (provider === undefined) return
     this.providers.delete(id)
+    this.emit({ type: 'unregistered', provider })
   }
 
   /** All registered providers. */
@@ -68,10 +73,15 @@ export class WorkspaceProviderRegistry {
     return [...this.providers.values()]
   }
 
-  /** Subscribe to registrations. Returns a disposer. */
+  /** Subscribe must expose both registration and removal, which the old registration-only listener could not report. */
   subscribe(listener: ProviderListener): () => void {
     this.listeners.add(listener)
-    return () => { this.listeners.delete(listener) }
+    let disposed = false
+    return () => {
+      if (disposed) return
+      disposed = true
+      this.listeners.delete(listener)
+    }
   }
 
   /** True when a provider id is registered. */
@@ -83,27 +93,25 @@ export class WorkspaceProviderRegistry {
   manifestOf(id: string): WorkspaceProviderManifest | undefined {
     return this.providers.get(id)?.manifest
   }
+
+  /** register() cannot safely repeat listener isolation for both lifecycle directions, so emit centralizes it. */
+  private emit(change: ProviderChange): void {
+    for (const listener of [...this.listeners]) {
+      try { listener(change) } catch { /* listener isolation */ }
+    }
+  }
 }
 
-/** The process-wide shared registry. */
-export const globalWorkspaceRegistry = new WorkspaceProviderRegistry()
-
-/**
- * Workspace registry surface used by plugins: list / watch workspace records
- * and register providers. Implemented by the runtime over the ledger + the
- * provider registry.
- */
+/** Plugin-facing workspace registry surface. */
 export interface WorkspaceRegistry {
-  /** All known workspace records (provider-agnostic). */
   listWorkspaces(): Promise<import('./model.ts').WorkspaceRecord[]>
-  /** Subscribe to workspace record changes. Returns a disposer. */
   subscribe(listener: (workspace: import('./model.ts').WorkspaceRecord) => void): () => void
-  /** Register a provider (idempotent same-version; throws on conflict). */
-  register(provider: WorkspaceProvider): void
-  /** Unregister a provider by id (no-op when absent). */
+  register(provider: WorkspaceProvider): () => void
+  /**
+   * Ownership-unsafe id-based removal; plugin teardown must release the
+   * disposer returned by `register()` instead of calling this.
+   */
   unregister?(providerId: string): void
-  /** Look up a provider by id. */
   provider(id: string): WorkspaceProvider | undefined
-  /** All registered providers. */
   providers(): WorkspaceProvider[]
 }

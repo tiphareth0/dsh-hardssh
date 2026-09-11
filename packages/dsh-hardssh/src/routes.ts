@@ -1,11 +1,14 @@
 /**
- * The /api/dsh-hardssh route family: SSH-bound workspace CRUD, remote
- * directory browsing for the picker, plus the workspace file ops (tree /
- * file / search) served through the gated WorkspaceFileService — every file
- * op is bound to an EXACT SSH workspace anchor; there is no implicit local
- * fallback. Every route carries the same loopback-only trust fence as
- * /api/dsh-ssh — these endpoints can read and write files on remote servers,
- * so LAN-exposed dsh web deployments must not serve them.
+ * The /api/dsh-hardssh route family: SSH-bound workspace CRUD and remote
+ * directory browsing for the workspace-creation picker. Every route carries
+ * the same loopback-only trust fence as /api/dsh-ssh — these endpoints can
+ * read and write files on remote servers, so LAN-exposed dsh web deployments
+ * must not serve them.
+ *
+ * The per-workspace file tree / file content / search HTTP surface that used
+ * to live here was superseded by the provider-neutral file browsing in the
+ * dsh-workbench plugin (which consumes `workspace.fs`/`workspace.search`
+ * capabilities directly) and had no remaining UI consumer, so it was removed.
  */
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { posix } from 'node:path'
@@ -14,14 +17,8 @@ import type { HostStore } from './ssh/store.ts'
 import { NeedsPasswordError, type SshEngine } from './ssh/engine.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from './ssh/known-hosts.ts'
 import { isLoopbackRequest, queryParam, readJsonBody as readJsonBodyShared, writeJson } from './host-http.ts'
-import type { SshWorkspaceLedger } from './ledger.ts'
-import {
-  BackendError,
-  backendErrorStatus,
-  normalizeRel,
-  sortWorkspaceEntries,
-  type WorkspaceFileService,
-} from './backend.ts'
+import type { WorkspaceStoreView } from './backend.ts'
+import { BackendError, backendErrorStatus, sortWorkspaceEntries } from './backend.ts'
 import { WORKSPACE_API } from './protocol.ts'
 
 /** Cap on JSON request bodies (file writes carry content). */
@@ -77,13 +74,61 @@ function writeRouteError(res: ServerResponse, error: unknown, ioStatus: 500 | 50
   writeJson(res, ioStatus, { error: error instanceof Error ? error.message : String(error), code: 'io' })
 }
 
-/** Required query parameter (missing/empty -> invalid BackendError). */
-function requiredQuery(url: URL, name: string): string {
-  const value = queryParam(url, name)
-  if (value === undefined || value === '') {
-    throw new BackendError('invalid', `${name} query parameter is required`)
+/** One record whose host-workspace (re)registration failed. */
+export interface HostWorkspaceReconcileFailure {
+  id: string
+  error: string
+}
+
+/** Result of replaying host-workspace registration for every stored record. */
+export interface HostWorkspaceReconcileReport {
+  registered: number
+  failures: HostWorkspaceReconcileFailure[]
+  /** Set when the record source itself could not be listed (startup path
+   *  tolerates it; the route surfaces it as an I/O failure). */
+  listError?: string
+}
+
+/** Registration replay dependencies (the route and the startup path share it). */
+export interface HostWorkspaceReconcileDeps {
+  workspaces: WorkspaceStoreView
+  registerHostWorkspace?: (anchorPath: string, title: string) => Promise<void>
+}
+
+/**
+ * Replay host-workspace registration for every stored record. Registration
+ * happens only on create/delete, so a process restart (or a registration that
+ * failed before compensation existed) leaves records whose sidebar entry is
+ * missing; `registerHostWorkspace` is create-if-missing, so this is the
+ * idempotent startup/retry compensation. Per-record failures are reported and
+ * never thrown: a broken host registry must not break plugin startup.
+ *
+ * Shared by the `/reconcile` route and the boot path so the two halves cannot
+ * drift.
+ */
+export async function reconcileHostWorkspaces(deps: HostWorkspaceReconcileDeps): Promise<HostWorkspaceReconcileReport> {
+  let records: Awaited<ReturnType<WorkspaceStoreView['list']>>
+  try {
+    records = await deps.workspaces.list()
+  } catch (error) {
+    // A corrupt/unavailable record source must not break plugin startup.
+    return { registered: 0, failures: [], listError: error instanceof Error ? error.message : String(error) }
   }
-  return value
+  const failures: HostWorkspaceReconcileFailure[] = []
+  let registered = 0
+  for (const record of records) {
+    try {
+      // No host registry (headless profile): there is no sidebar entry to
+      // create, so the desired state already holds for every record.
+      if (deps.registerHostWorkspace !== undefined) {
+        await deps.registerHostWorkspace(record.anchorPath, record.title)
+      }
+      registered += 1
+    } catch (error) {
+      failures.push({ id: record.id, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return { registered, failures }
 }
 
 /** Route family dependencies. */
@@ -91,9 +136,9 @@ export interface WorkspaceRoutesDeps {
   /** Read-only host surface (list only; the SSH routes own the write path). */
   hosts: import('./core.ts').HostStoreView
   engine: SshEngine
-  ledger: SshWorkspaceLedger
-  /** Gated workspace file service (tree / file / search). */
-  files: WorkspaceFileService
+  /** SSH-workspace record source: the generic WorkspaceCore-backed
+   *  projection store (the only runtime). */
+  workspaces: WorkspaceStoreView
   /** Register the anchor dir as a HOST workspace (sidebar visibility). */
   registerHostWorkspace?: (anchorPath: string, title: string) => Promise<void>
   /** Drop the host workspace registration for an anchor dir. */
@@ -101,12 +146,11 @@ export interface WorkspaceRoutesDeps {
 }
 
 /**
- * Build every /api/dsh-hardssh route.
- * @param deps - host store (alias listing), ssh engine, workspace ledger, file service.
- * @returns the routes to register.
+ * Build every /api/dsh-hardssh route (workspace CRUD + remote directory
+ * browsing for the picker; the per-workspace file surface was removed).
  */
 export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
-  const { hosts, engine, ledger, files } = deps
+  const { hosts, engine, workspaces } = deps
 
   const guard = (req: IncomingMessage, res: ServerResponse, method: string): boolean => {
     if (!isLoopbackRequest(req)) {
@@ -148,7 +192,7 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
         return
       }
       if (req.method === 'GET') {
-        writeJson(res, 200, { workspaces: await ledger.list() })
+        writeJson(res, 200, { workspaces: await workspaces.list() })
         return
       }
       if (req.method === 'POST') {
@@ -175,17 +219,35 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
           return
         }
         try {
-          const record = await ledger.create({ title, alias, remoteRoot })
+          const record = await workspaces.create({ title, alias, remoteRoot })
           // Make the anchor a REAL host workspace so it appears in the
           // sidebar and can host sessions (the seams route it remote by its
-          // anchor path). Registration failure does not roll back the ledger
-          // record — the workspace still binds for tool routing.
-          try {
-            if (deps.registerHostWorkspace !== undefined) {
+          // anchor path). The two stores have no shared transaction, so a
+          // registration failure is COMPENSATED by deleting the record just
+          // created: returning 200 here would leave a binding the sidebar
+          // cannot reach, and returning 5xx while keeping the record would
+          // make a retry create a duplicate.
+          if (deps.registerHostWorkspace !== undefined) {
+            try {
               await deps.registerHostWorkspace(record.anchorPath, record.title)
+            } catch (error) {
+              const registration = error instanceof Error ? error.message : String(error)
+              try {
+                await workspaces.remove(record.id)
+              } catch (rollbackError) {
+                const rollback = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
+                writeJson(res, 500, {
+                  error: `host workspace registration failed for '${record.title}' (${registration}); rollback also failed (${rollback}) — workspace '${record.id}' still exists`,
+                  code: 'HOST_REGISTRATION_ROLLBACK_FAILED',
+                })
+                return
+              }
+              writeJson(res, 502, {
+                error: `host workspace registration failed for '${record.title}': ${registration}`,
+                code: 'HOST_REGISTRATION_FAILED',
+              })
+              return
             }
-          } catch (error) {
-            console.warn(`[dsh-hardssh] host workspace registration failed for ${record.title}: ${error instanceof Error ? error.message : String(error)}`)
           }
           writeJson(res, 200, { workspace: record })
         } catch (error) {
@@ -225,7 +287,7 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
           writeJson(res, 400, { error: 'title is required' })
           return
         }
-        const record = await ledger.rename(id, title)
+        const record = await workspaces.rename(id, title)
         if (record === undefined) {
           writeJson(res, 404, { error: `workspace '${id}' not found` })
           return
@@ -234,16 +296,43 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
         return
       }
       if (req.method === 'DELETE') {
-        const record = await ledger.get(id)
-        const removed = await ledger.remove(id)
-        if (removed && record !== undefined && deps.unregisterHostWorkspace !== undefined) {
+        const record = await workspaces.get(id)
+        if (record === undefined) {
+          writeJson(res, 404, { error: `workspace '${id}' not found` })
+          return
+        }
+
+        // Unregister first. If this fails the authoritative ledger record —
+        // including its original id and anchor — remains completely untouched.
+        if (deps.unregisterHostWorkspace !== undefined) {
           try {
             await deps.unregisterHostWorkspace(record.anchorPath)
           } catch (error) {
-            console.warn(`[dsh-hardssh] host workspace unregistration failed for ${record.title}: ${error instanceof Error ? error.message : String(error)}`)
+            const unregistration = error instanceof Error ? error.message : String(error)
+            writeJson(res, 502, {
+              error: `host workspace unregistration failed for '${record.title}': ${unregistration}`,
+              code: 'HOST_UNREGISTRATION_FAILED',
+            })
+            return
           }
         }
-        writeJson(res, removed ? 200 : 404, removed ? { ok: true } : { error: `workspace '${id}' not found` })
+
+        // The cross-store order deliberately leaves this recovery asymmetric:
+        // if persistence fails after sidebar removal, the original ledger
+        // record remains and the existing startup reconcile re-registers its
+        // exact id/anchor. Creating a compensating record here would invent a
+        // new identity and orphan the old sidebar binding.
+        try {
+          const removed = await workspaces.remove(id)
+          if (!removed) {
+            writeJson(res, 404, { error: `workspace '${id}' not found` })
+            return
+          }
+        } catch (error) {
+          writeRouteError(res, error, 500)
+          return
+        }
+        writeJson(res, 200, { ok: true })
         return
       }
       writeJson(res, 405, { error: `method not allowed: ${req.method}` })
@@ -292,104 +381,36 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
     },
   }
 
-  /** List a directory below an exact SSH workspace anchor. */
-  const treeRoute: WebRoute = {
+  /**
+   * Replay host-workspace registration for every stored record. Registration
+   * happens only on create/delete, so a process restart (or a registration
+   * that failed before compensation existed) leaves records whose sidebar
+   * entry is missing; `registerHostWorkspace` is create-if-missing, so this is
+   * the idempotent startup/retry compensation. Per-record failures are
+   * reported, never fatal.
+   */
+  const reconcileRoute: WebRoute = {
     kind: 'exact',
-    path: WORKSPACE_API.tree,
+    path: WORKSPACE_API.sshWorkspaces + '/reconcile',
     handler: async (req, res) => {
-      if (!guard(req, res, 'GET')) return
+      if (!guard(req, res, 'POST')) return
       try {
-        const url = new URL(req.url ?? '/', 'http://localhost')
-        const root = requiredQuery(url, 'root')
-        const rel = queryParam(url, 'path') ?? ''
-        // Explicit resolution keeps authorization visible at the route seam.
-        await files.resolveContext(root)
-        const listing = await files.list(root, normalizeRel(rel))
-        writeJson(res, 200, { listing })
+        const report = await reconcileHostWorkspaces({
+          workspaces,
+          registerHostWorkspace: deps.registerHostWorkspace,
+        })
+        // The helper tolerates a failing record source for the startup path;
+        // an explicit HTTP request must still see the I/O failure.
+        if (report.listError !== undefined) {
+          writeJson(res, 502, { error: report.listError, code: 'io' })
+          return
+        }
+        writeJson(res, 200, { ok: true, registered: report.registered, failed: report.failures.length, failures: report.failures })
       } catch (error) {
         writeRouteError(res, error, 502)
       }
     },
   }
 
-  /** Read (GET) or write (PUT) a file below an exact SSH workspace anchor. */
-  const fileRoute: WebRoute = {
-    kind: 'exact',
-    path: WORKSPACE_API.file,
-    handler: async (req, res) => {
-      if (!isLoopbackRequest(req)) {
-        writeJson(res, 403, { error: 'forbidden: loopback-only', code: 'forbidden' })
-        return
-      }
-
-      if (req.method === 'GET') {
-        try {
-          const url = new URL(req.url ?? '/', 'http://localhost')
-          const root = requiredQuery(url, 'root')
-          const rel = requiredQuery(url, 'path')
-          await files.resolveContext(root)
-          const file = await files.read(root, normalizeRel(rel))
-          writeJson(res, 200, { file })
-        } catch (error) {
-          writeRouteError(res, error, 502)
-        }
-        return
-      }
-
-      if (req.method === 'PUT') {
-        try {
-          const body = await readJsonBody(req)
-          const root = typeof body.root === 'string' ? body.root : ''
-          const rel = typeof body.path === 'string' ? body.path : ''
-          const content = body.content
-          if (root === '' || rel === '') {
-            throw new BackendError('invalid', 'root and path are required')
-          }
-          if (typeof content !== 'string') {
-            throw new BackendError('invalid', 'content must be a string')
-          }
-          let expectedMtime: number | undefined
-          if (body.expectedMtime !== undefined) {
-            if (
-              typeof body.expectedMtime !== 'number'
-              || !Number.isFinite(body.expectedMtime)
-              || body.expectedMtime < 0
-            ) {
-              throw new BackendError('invalid', 'expectedMtime must be a finite non-negative number')
-            }
-            expectedMtime = body.expectedMtime
-          }
-          await files.resolveContext(root)
-          const result = await files.write(root, normalizeRel(rel), content, expectedMtime)
-          writeJson(res, 200, { result })
-        } catch (error) {
-          writeRouteError(res, error, 502)
-        }
-        return
-      }
-
-      writeJson(res, 405, { error: `method not allowed: ${req.method}`, code: 'invalid' })
-    },
-  }
-
-  /** Filename search below an exact SSH workspace anchor. */
-  const searchRoute: WebRoute = {
-    kind: 'exact',
-    path: WORKSPACE_API.search,
-    handler: async (req, res) => {
-      if (!guard(req, res, 'GET')) return
-      try {
-        const url = new URL(req.url ?? '/', 'http://localhost')
-        const root = requiredQuery(url, 'root')
-        const query = queryParam(url, 'query') ?? ''
-        await files.resolveContext(root)
-        const search = await files.search(root, query)
-        writeJson(res, 200, { search })
-      } catch (error) {
-        writeRouteError(res, error, 502)
-      }
-    },
-  }
-
-  return [hostsRoute, wsRoute, itemRoute, dirRoute, treeRoute, fileRoute, searchRoute]
+  return [hostsRoute, wsRoute, itemRoute, dirRoute, reconcileRoute]
 }

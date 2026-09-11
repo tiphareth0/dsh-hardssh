@@ -4,7 +4,7 @@
  * interfaces — the Phase 3 "generic base, not renamed SSH" verification.
  */
 
-import { mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
@@ -51,6 +51,23 @@ describe('LocalWorkspaceFileSystem', () => {
     await expect(fs.readFile('/../outside')).rejects.toThrow(/escapes/)
   })
 
+  it('rejects existing and nonexistent descendants through an escaping symlink or junction', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'local-wfs-root-'))
+    const outside = mkdtempSync(join(tmpdir(), 'local-wfs-outside-'))
+    writeFileSync(join(outside, 'secret.txt'), 'secret')
+    symlinkSync(outside, join(dir, 'escape'), process.platform === 'win32' ? 'junction' : 'dir')
+    const fs = new LocalWorkspaceFileSystem(dir)
+
+    await expect(fs.readFile('/escape/secret.txt')).rejects.toThrow(/escapes/)
+    await expect(fs.writeFile('/escape/new.txt', new TextEncoder().encode('no'))).rejects.toThrow(/escapes/)
+    await expect(fs.mkdir('/escape/new-dir')).rejects.toThrow(/escapes/)
+    await fs.writeFile('/inside.txt', new Uint8Array([1]))
+    await expect(fs.rename('/inside.txt', '/escape/moved.txt')).rejects.toThrow(/escapes/)
+    expect(existsSync(join(outside, 'new.txt'))).toBe(false)
+    expect(existsSync(join(outside, 'new-dir'))).toBe(false)
+    expect(existsSync(join(outside, 'moved.txt'))).toBe(false)
+  })
+
   it('renames and removes', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'local-wfs-'))
     const fs = new LocalWorkspaceFileSystem(dir)
@@ -66,7 +83,8 @@ describe('createLocalWorkspaceProvider', () => {
   it('registers with the local manifest', () => {
     const provider = createLocalWorkspaceProvider()
     expect(provider.manifest.id).toBe('local')
-    expect(provider.manifest.capabilities).toContain('workspace.fs')
+    expect(provider.manifest.apiVersion).toBe(2)
+    expect(provider.manifest.capabilities).toEqual(['workspace.fs', 'workspace.process'])
   })
 
   it('opens a connection and serves the fs capability', async () => {
@@ -80,8 +98,30 @@ describe('createLocalWorkspaceProvider', () => {
     expect(fs).toBeDefined()
     const data = await fs!.readFile('/seed.txt')
     expect(new TextDecoder().decode(data)).toBe('seed')
-    // Capabilities the local provider does not offer degrade gracefully.
-    expect(connection.get('workspace.process')).toBeUndefined()
+    // v2 advertises process as well; standalone consumers receive the rooted
+    // fallback while production Cordis receives LocalSubprocessRuntime.
+    expect(connection.get('workspace.process')).toBeDefined()
     await connection.close()
+  })
+
+  it('caches capabilities per connection and closes idempotently', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'local-conn-cache-'))
+    const provider = createLocalWorkspaceProvider()
+    const first = await provider.open(recordIn(dir))
+    const second = await provider.open(recordIn(dir))
+
+    expect(first.get('workspace.fs')).toBe(first.get('workspace.fs'))
+    expect(first.get('workspace.process')).toBe(first.get('workspace.process'))
+    // Per-connection instances: one workspace's capability is never shared.
+    expect(first.get('workspace.fs')).not.toBe(second.get('workspace.fs'))
+
+    await first.close()
+    await first.close()
+    expect(first.status()).toBe('closed')
+    expect(first.get('workspace.fs')).toBeUndefined()
+    expect(first.get('workspace.process')).toBeUndefined()
+    expect(second.status()).toBe('ready')
+    expect(second.get('workspace.fs')).toBeDefined()
+    await second.close()
   })
 })

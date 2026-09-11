@@ -5,11 +5,11 @@
  * SFTP upload/download/ls, and the connection probe.
  */
 
-import { mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { connect, createServer, type AddressInfo } from 'node:net'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { SshEngine, buildConnectConfig, sshAgentConfig, NeedsPasswordError } from '../../src/ssh/engine.ts'
 import { HostStore } from '../../src/ssh/store.ts'
 import type { HostPayload } from '../../src/ssh/protocol.ts'
@@ -22,6 +22,18 @@ let server: TestSshServer
 let store: HostStore
 let engine: SshEngine
 const dir = mkdtempSync(join(tmpdir(), 'dsh-ssh-engine-'))
+
+/** Server-side live connections once the count stops changing (prior tests
+ *  close sockets asynchronously; a raw snapshot makes leak assertions flaky). */
+async function stableLiveClientCount(): Promise<number> {
+  let last = server.liveClientCount
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    await new Promise(resolve => setTimeout(resolve, 100))
+    if (server.liveClientCount === last) return last
+    last = server.liveClientCount
+  }
+  return last
+}
 
 function addHost(alias: string, overrides: Partial<HostPayload> = {}): void {
   store.create({
@@ -56,6 +68,31 @@ describe('exec', () => {
     expect(result.durationMs).toBeGreaterThan(0)
   })
 
+  it('redacts session credentials from stdout and stderr (leak guard)', async () => {
+    addHost('exec-redact')
+    // Registered under another alias: the leak guard is engine-wide, exactly
+    // like a vault secret revealed for a different host.
+    engine.setSessionPassword('other-host', { password: 'S3cret-Pa55word' })
+    try {
+      const result = await engine.exec('exec-redact', 'echo-secret')
+      expect(result.stdout).not.toContain('S3cret-Pa55word')
+      expect(result.stderr).not.toContain('S3cret-Pa55word')
+      expect(result.stdout).toContain('[REDACTED]')
+      expect(result.stderr).toContain('[REDACTED]')
+    } finally {
+      engine.clearSessionSecrets()
+    }
+    expect(engine.redact('S3cret-Pa55word')).toBe('S3cret-Pa55word')
+  })
+
+  it('chains an injected vault redactor into engine.redact (no connection needed)', () => {
+    const bare = new SshEngine(store, undefined, {
+      redactOutput: text => text.split('vault-only-secret').join('[REDACTED]'),
+    })
+    expect(bare.redact('vault-only-secret leaked')).toBe('[REDACTED] leaked')
+    bare.dispose()
+  })
+
   it('reports remote exit codes as failures', async () => {
     addHost('exec-code')
     const result = await engine.exec('exec-code', 'exit 7')
@@ -87,6 +124,17 @@ describe('exec', () => {
     addHost('exec-badauth', { auth: { kind: 'password', password: 'wrong' } })
     await expect(engine.exec('exec-badauth', 'true')).rejects.toThrow(/authentication/i)
   })
+
+  it('closes earlier ProxyJump clients when a later hop fails authentication', async () => {
+    addHost('jump-owned-1')
+    addHost('jump-owned-2', { auth: { kind: 'password', password: 'wrong' } })
+    addHost('jump-owned-target', { proxyJump: ['jump-owned-1', 'jump-owned-2'] })
+    // Earlier tests' sockets close asynchronously (e.g. the failed-auth probe),
+    // so measure a QUIESCENT baseline before asserting the chain leaves nothing.
+    const baseline = await stableLiveClientCount()
+    await expect(engine.exec('jump-owned-target', 'true', { retry: 'never' })).rejects.toThrow(/authentication/i)
+    await vi.waitFor(() => expect(server.liveClientCount).toBe(baseline), { timeout: 5_000 })
+  })
 })
 
 describe('connection pool', () => {
@@ -104,6 +152,86 @@ describe('connection pool', () => {
     expect(engine.connectedAliases()).toContain('conn-state')
     engine.connections.invalidate('conn-state', { mode: 'force' })
     expect(engine.connectedAliases()).not.toContain('conn-state')
+  })
+
+  it('drops the session password when its pooled connection is retired (P1-4)', async () => {
+    addHost('secret-retire')
+    // Establish the connection first: the session table takes precedence over
+    // stored auth, so a placeholder secret must not be installed before it.
+    await engine.exec('secret-retire', 'echo hello')
+    engine.setSessionPassword('secret-retire', { password: 'S3cret-Pa55word' })
+    engine.setSessionPassword('unrelated-host', { password: 'Other-Pa55word' })
+    expect(engine.getSessionPassword('secret-retire')).toBeDefined()
+    expect(engine.redact('S3cret-Pa55word')).toBe('[REDACTED]')
+
+    // Retiring the transport ends the credential's documented lifetime: an idle
+    // sweep must not leave it usable for the rest of the process. Redaction
+    // follows, while unrelated aliases keep theirs.
+    engine.connections.invalidate('secret-retire', { mode: 'force' })
+    expect(engine.getSessionPassword('secret-retire')).toBeUndefined()
+    expect(engine.redact('S3cret-Pa55word')).toBe('S3cret-Pa55word')
+    expect(engine.getSessionPassword('unrelated-host')).toBeDefined()
+    expect(engine.redact('Other-Pa55word')).toBe('[REDACTED]')
+    engine.clearSessionSecrets()
+  })
+
+  it('keeps concurrent operations alive when one caller aborts (P1-1)', async () => {
+    addHost('abort-scope')
+    await engine.exec('abort-scope', 'true')
+    const controller = new AbortController()
+    const hung = engine.exec('abort-scope', 'hang', { timeoutMs: 30_000, retry: 'never', signal: controller.signal })
+    const slow = engine.exec('abort-scope', 'slow echo')
+    // Both channels are open on the SAME pooled transport before the abort.
+    await new Promise(resolve => setTimeout(resolve, 50))
+    controller.abort()
+
+    await expect(hung).rejects.toMatchObject({ name: 'AbortError' })
+    const survived = await slow
+    expect(survived.success).toBe(true)
+    expect(survived.stdout).toContain('slow done')
+    // The shared transport must NOT have been retired by an unrelated abort.
+    expect(engine.connectedAliases()).toContain('abort-scope')
+  })
+
+  it('retires a pooled transport once too many channels stay half-open (P1-1)', async () => {
+    addHost('leak-retire')
+    await engine.exec('leak-retire', 'true')
+    expect(engine.connectedAliases()).toContain('leak-retire')
+
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      // Below the threshold the transport is kept: one slow peer must not cost
+      // every other holder its connection.
+      expect(engine.noteLeakedChannel('leak-retire')).toBe(false)
+      expect(engine.connectedAliases()).toContain('leak-retire')
+
+      let retired = false
+      for (let i = 0; i < 8 && !retired; i += 1) retired = engine.noteLeakedChannel('leak-retire')
+      expect(retired).toBe(true)
+      expect(engine.connectedAliases()).not.toContain('leak-retire')
+      expect(warn).toHaveBeenCalled()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('keeps a REPLACED password redacted while its connection may still be live (P1-2)', async () => {
+    addHost('secret-rotate')
+    await engine.exec('secret-rotate', 'echo hello')
+    engine.setSessionPassword('secret-rotate', { password: 'First-Pa55word' })
+    expect(engine.redact('First-Pa55word')).toBe('[REDACTED]')
+
+    // Rotating the credential must not un-redact the value the connection that
+    // was opened with it can still echo.
+    engine.setSessionPassword('secret-rotate', { password: 'Second-Pa55word' })
+    expect(engine.redact('Second-Pa55word')).toBe('[REDACTED]')
+    expect(engine.redact('First-Pa55word')).toBe('[REDACTED]')
+
+    // Retiring the connection releases both.
+    engine.connections.invalidate('secret-rotate', { mode: 'force' })
+    expect(engine.redact('First-Pa55word')).toBe('First-Pa55word')
+    expect(engine.redact('Second-Pa55word')).toBe('Second-Pa55word')
+    engine.clearSessionSecrets()
   })
 
   it('reconnects after the server drops the connection', async () => {
@@ -270,6 +398,98 @@ describe('cluster', () => {
     const results = await engine.cluster({ command: 'echo hello', aliases: reversed })
     expect(results.map(result => result.alias)).toEqual(reversed)
   })
+
+  it('rejects an explicit alias batch before executing when one alias is unknown', async () => {
+    addHost('cluster-preflight-known')
+    const exec = vi.spyOn(engine, 'exec')
+    try {
+      await expect(engine.cluster({
+        command: 'echo must-not-run',
+        aliases: ['cluster-preflight-known', 'cluster-preflight-typo'],
+      })).rejects.toThrow(/cluster-preflight-typo.*not found/)
+      expect(exec).not.toHaveBeenCalled()
+    } finally {
+      exec.mockRestore()
+    }
+  })
+})
+
+describe('cluster typed failures (B-14)', () => {
+  /** One-host engine over a stub store: per-host failures need no network. */
+  function clusterEngine(): SshEngine {
+    const entry = {
+      alias: 'cluster-host',
+      host: '127.0.0.1',
+      port: 22,
+      user: 'u',
+      auth: { kind: 'password' as const, password: 'pw' },
+      proxyJump: [],
+      tags: [],
+      createdAt: 0,
+      updatedAt: 0,
+    }
+    return new SshEngine({ find: () => entry, list: () => [entry] } as never)
+  }
+
+  it('keeps the legacy error string and adds the typed interactive failure fields', async () => {
+    const failing = clusterEngine()
+    const exec = vi.spyOn(failing, 'exec')
+    try {
+      exec.mockRejectedValueOnce(new NeedsPasswordError('cluster-host', 'passphrase'))
+      const [needsSecret] = await failing.cluster({ command: 'echo hello' })
+      expect(needsSecret).toMatchObject({ alias: 'cluster-host', ok: false, code: 'NEEDS_PASSWORD', secret: 'passphrase' })
+      expect(needsSecret!.error).toContain('cluster-host')
+
+      exec.mockRejectedValueOnce(new HostKeyUnknownError('cluster-host', 'SHA256:abc'))
+      const [unknown] = await failing.cluster({ command: 'echo hello' })
+      expect(unknown).toMatchObject({ code: 'HOST_KEY_UNKNOWN', hostKeyFingerprint: 'SHA256:abc' })
+
+      exec.mockRejectedValueOnce(new HostKeyMismatchError('cluster-host', 'SHA256:old', 'SHA256:new'))
+      const [mismatch] = await failing.cluster({ command: 'echo hello' })
+      expect(mismatch).toMatchObject({ code: 'HOST_KEY_MISMATCH', expected: 'SHA256:old', actual: 'SHA256:new' })
+
+      exec.mockRejectedValueOnce(Object.assign(new Error('aborted'), { name: 'AbortError' }))
+      const [aborted] = await failing.cluster({ command: 'echo hello' })
+      expect(aborted!.code).toBe('ABORTED')
+    } finally {
+      failing.dispose()
+    }
+  })
+
+  it('marks a timed-out command with the TIMEOUT code', async () => {
+    const timingOut = clusterEngine()
+    const exec = vi.spyOn(timingOut, 'exec')
+    try {
+      exec.mockResolvedValueOnce({
+        success: false,
+        exitCode: null,
+        timedOut: true,
+        stdout: '',
+        stderr: '',
+        durationMs: 5,
+        error: 'command timed out after 1 ms',
+      })
+      const [entry] = await timingOut.cluster({ command: 'echo hello' })
+      expect(entry).toMatchObject({ ok: false, timedOut: true, code: 'TIMEOUT' })
+    } finally {
+      timingOut.dispose()
+    }
+  })
+
+  it('redacts session credentials from cluster failure output', async () => {
+    const leaking = clusterEngine()
+    leaking.setSessionPassword('cluster-host', { password: 'S3cret-Pa55word' })
+    const exec = vi.spyOn(leaking, 'exec')
+    try {
+      exec.mockRejectedValueOnce(new Error('auth failed for S3cret-Pa55word'))
+      const [entry] = await leaking.cluster({ command: 'echo hello' })
+      expect(entry!.code).toBe('ERROR')
+      expect(entry!.error).toContain('[REDACTED]')
+      expect(JSON.stringify(entry)).not.toContain('S3cret-Pa55word')
+    } finally {
+      leaking.dispose()
+    }
+  })
 })
 
 describe('shell', () => {
@@ -311,6 +531,10 @@ describe('tunnel', () => {
       socket.on('error', (error) => { clearTimeout(timer); reject(error) })
     })
     expect(reply).toBe('ping-through-tunnel')
+    const record = (engine as unknown as {
+      tunnelService: { tunnels: Map<string, { sockets: Set<unknown> }> }
+    }).tunnelService.tunnels.get(tunnel.id)
+    await vi.waitFor(() => expect(record?.sockets.size).toBe(0))
     expect(engine.stopTunnel(tunnel.id)).toBe(true)
     expect(engine.listTunnels()).toHaveLength(0)
   })
@@ -323,13 +547,17 @@ describe('tunnel', () => {
     // Let the client 'close' propagate to the failure handler.
     await new Promise(resolve => setTimeout(resolve, 200))
     expect(engine.listTunnels().find(tunnel => tunnel.id === info.id)?.state).toBe('failed')
+    const failedRecord = (engine as unknown as {
+      tunnelService: { tunnels: Map<string, { lease: { released: boolean } }> }
+    }).tunnelService.tunnels.get(info.id)
+    expect(failedRecord?.lease.released).toBe(true)
     expect(engine.stopTunnel(info.id)).toBe(true)
     expect(engine.stopTunnel(info.id)).toBe(false)
     expect(engine.listTunnels()).toHaveLength(0)
   })
 })
 
-describe('sftp (real sshd)', () => {
+describe.skipIf(process.platform === 'win32' || !existsSync('/usr/sbin/sshd'))('sftp (real sshd)', () => {
   it('uploads, lists, and downloads files', async () => {
     const sshd = await TestSshd.start()
     try {
@@ -700,5 +928,38 @@ describe('key/agent auth config (buildConnectConfig)', () => {
   it('key host without a path and without an agent throws a precise error', () => {
     delete process.env.SSH_AUTH_SOCK
     expect(() => buildConnectConfig(entryWith({ kind: 'key' }), opts)).toThrow(/private key not found/)
+  })
+})
+
+describe('host-key algorithm whitelist (EngineOptions is the single source)', () => {
+  it('applies EngineOptions.hostKeyAlgorithms to the real handshake', async () => {
+    addHost('algo-allowed')
+    const allowed = new SshEngine(store, {
+      connectTimeoutMs: 5_000,
+      defaultExecTimeoutMs: 5_000,
+      hostKeyAlgorithms: ['ssh-ed25519'],
+    })
+    try {
+      const result = await allowed.exec('algo-allowed', 'echo hello')
+      expect(result.success).toBe(true)
+      expect(result.stdout).toContain('hello')
+    } finally {
+      allowed.dispose()
+    }
+
+    addHost('algo-refused')
+    const refused = new SshEngine(store, {
+      connectTimeoutMs: 5_000,
+      defaultExecTimeoutMs: 5_000,
+      // The embedded test server offers only an ed25519 host key, so a
+      // whitelist without it must fail during the handshake. That proves the
+      // option — not a deleted EngineDeps duplicate — reaches ssh2.
+      hostKeyAlgorithms: ['ssh-dss'],
+    })
+    try {
+      await expect(refused.exec('algo-refused', 'echo hello')).rejects.toThrow(/algorithm|handshake|matching/i)
+    } finally {
+      refused.dispose()
+    }
   })
 })

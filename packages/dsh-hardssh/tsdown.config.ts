@@ -13,7 +13,13 @@
  */
 import { clientBundle } from './tsdown.client.ts'
 
-export default clientBundle('@tiphareth/dsh-hardssh', ['src/index.ts', 'src/fs.ts', 'src/subprocess.ts'], {
+// Phase 6: the stable ./workspace public entry is a separate lib chunk (only
+// types re-exported from internal modules), so third-party plugins can import
+// it without pulling in the host-half index.js runtime.
+// C-02: ./base is a REAL built entry (src/base/index.ts → lib/base/index.js)
+// so the advertised reusable base is consumable through the package exports
+// map instead of reaching into src/.
+export default clientBundle('@tiphareth/dsh-hardssh', ['src/index.ts', 'src/fs.ts', 'src/subprocess.ts', 'src/workspace.ts', 'src/base/index.ts'], {
   libExternal: [
     '@deepseek-ai/dsh-host-webserver',
     '@deepseek-ai/dsh-settings',

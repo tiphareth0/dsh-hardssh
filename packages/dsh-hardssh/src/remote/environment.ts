@@ -105,7 +105,27 @@ export function scrubRemoteEnvironment(environment: ReadonlyMap<string, string>)
 }
 
 /**
+ * Login-critical variables emitted FIRST, before the (potentially multi-KB)
+ * rest of a cluster environment. Both launchers hand the whole environment to
+ * `env -i` as one command line typed into a remote shell; if that line is ever
+ * truncated or mangled on the way (PTY input limits, flow control, shell
+ * line-buffer quirks), a shell with no HOME resolves every `$HOME/...` path to
+ * `/`, which makes site startup scripts run `ssh-keygen` into `/.ssh` and
+ * otherwise misbehave. Ordering these first makes the session survive it.
+ */
+const CRITICAL_ENV_ORDER = ['HOME', 'USER', 'LOGNAME', 'SHELL', 'PATH', 'PWD', 'TERM', 'LANG', 'TZ'] as const
+
+function priorityOf(name: string): number {
+  const index = CRITICAL_ENV_ORDER.indexOf(name as typeof CRITICAL_ENV_ORDER[number])
+  if (index >= 0) return index
+  // Locale/terminal hints stay near the front too, but after the hard basics.
+  return /^(LC_|LANGUAGE$)/.test(name) ? CRITICAL_ENV_ORDER.length : CRITICAL_ENV_ORDER.length + 1
+}
+
+/**
  * Overlay explicit entries and serialize one validated environment for `env -i`.
+ * Login-critical names are emitted first (see CRITICAL_ENV_ORDER); everything
+ * else keeps the remote's own order.
  */
 export function serializeEnvironment(
   scrubbed: ReadonlyMap<string, string>,
@@ -119,5 +139,6 @@ export function serializeEnvironment(
     if (value === undefined) environment.delete(name)
     else environment.set(name, value)
   }
-  return [...environment].map(([name, value]) => quoteShellArg(`${name}=${value}`)).join(' ')
+  const ordered = [...environment].sort(([a], [b]) => priorityOf(a) - priorityOf(b))
+  return ordered.map(([name, value]) => quoteShellArg(`${name}=${value}`)).join(' ')
 }

@@ -3,6 +3,7 @@
  * access path the panel components use — plain fetch/WebSocket, same origin.
  */
 
+import { HttpApiError, buildQuery, readJson, throwHttpError, type HttpErrorBody } from '../../client-http.ts'
 import {
   SSH_API,
   type ClusterResult,
@@ -14,7 +15,6 @@ import {
   type RemoteDirEntry,
   type SshHostSummary,
   type TerminalClientFrame,
-  type TerminalServerFrame,
   type TestResult,
   type TransferProgress,
   type TransferStreamLine,
@@ -24,49 +24,44 @@ import {
 /** Minimal File System Access API surface (not in all lib.dom versions). */
 interface WindowWithFileSystemAccess {
   showSaveFilePicker?: (options: { suggestedName?: string }) => Promise<{
-    createWritable: () => Promise<{ write: (data: Uint8Array) => Promise<void>; close: () => Promise<void> }>
+    createWritable: () => Promise<{
+      write: (data: Uint8Array) => Promise<void>
+      close: () => Promise<void>
+      /** Discard the browser-managed temporary file instead of publishing it. */
+      abort?: (reason?: unknown) => Promise<void>
+    }>
   }>
 }
 
-/** Error carrying the route's JSON error message. */
-export class SshApiError extends Error {
-  /** Stable machine code from the route error body (HOST_KEY_*, HOST_IN_USE, …). */
-  readonly code: string | undefined
-  readonly hostKeyFingerprint: string | undefined
-  constructor(message: string, code?: string, hostKeyFingerprint?: string) {
-    super(message)
-    this.name = 'SshApiError'
-    this.code = code
-    this.hostKeyFingerprint = hostKeyFingerprint
-  }
-}
+/**
+ * This family's error name for the ONE shared transport error
+ * (`HttpApiError`): same class at runtime, so it carries the HTTP status and
+ * the parsed body (code / secret / hostKeyFingerprint / hostKeyMismatch /
+ * remaining / retryAfterMs) and existing `instanceof SshApiError` checks keep
+ * working. Parsing lives in ./client-http.ts — never re-implemented here.
+ */
+export { HttpApiError as SshApiError }
 
-/** Parse a JSON response or throw an SshApiError. */
-async function readJson<T>(response: Response): Promise<T> {
-  let body: unknown
-  try {
-    body = await response.json()
-  } catch {
-    throw new SshApiError(`HTTP ${response.status}: invalid JSON response`)
-  }
-  if (!response.ok) {
-    const record = typeof body === 'object' && body !== null ? body as Record<string, unknown> : {}
-    const message = typeof record.error === 'string' ? record.error : `HTTP ${response.status}`
-    const code = typeof record.code === 'string' ? record.code : undefined
-    const hostKeyFingerprint = typeof record.hostKeyFingerprint === 'string' ? record.hostKeyFingerprint : undefined
-    throw new SshApiError(message, code, hostKeyFingerprint)
-  }
-  return body as T
-}
+/** Query-string helper (shared transport helper, no local copy). */
+const query = buildQuery
 
-/** Query-string helper. */
-function query(params: Record<string, string | number | undefined>): string {
-  const search = new URLSearchParams()
-  for (const [key, value] of Object.entries(params)) {
-    if (value !== undefined && value !== '') search.set(key, String(value))
+/**
+ * Structured fields of one streamed (`application/x-ndjson`) failure frame.
+ * The upload route currently sends only `error`, so the interactive-gate
+ * fields are picked up when present and simply absent otherwise — the same
+ * shape the JSON routes produce, so callers handle one error type.
+ */
+function frameFailure(frame: TransferStreamLine): HttpErrorBody {
+  const record = frame as TransferStreamLine & Partial<HttpErrorBody>
+  const secret = record.secret
+  return {
+    ...(typeof record.error === 'string' ? { error: record.error } : {}),
+    ...(typeof record.code === 'string' ? { code: record.code } : {}),
+    ...(secret === 'password' || secret === 'passphrase' ? { secret } : {}),
+    ...(typeof record.hostKeyFingerprint === 'string' ? { hostKeyFingerprint: record.hostKeyFingerprint } : {}),
+    ...(typeof record.remaining === 'number' ? { remaining: record.remaining } : {}),
+    ...(typeof record.retryAfterMs === 'number' ? { retryAfterMs: record.retryAfterMs } : {}),
   }
-  const text = search.toString()
-  return text === '' ? '' : '?' + text
 }
 
 /** One open terminal connection (WebSocket JSON frames). */
@@ -221,45 +216,80 @@ export class SshApi {
     alias: string,
     remotePath: string,
     onProgress?: (progress: TransferProgress) => void,
+    signal?: AbortSignal,
   ): Promise<{ transferredBytes: number }> {
     const response = await fetch(SSH_API.upload + query({ alias, remotePath }), {
       method: 'POST',
       body: file,
+      signal,
     })
-    if (!response.ok || response.body === null) {
-      throw new SshApiError(`upload failed: HTTP ${response.status}`)
-    }
+    // Errors here are JSON too (the route maps them through errorBody), so the
+    // shared transport parses them instead of flattening the body to a string.
+    if (!response.ok) await throwHttpError(response, 'upload failed')
+    if (response.body === null) throw new HttpApiError('upload failed: the response carried no body stream', response.status)
     const reader = response.body.getReader()
     const decoder = new TextDecoder()
     let buffer = ''
-    let finalError: string | undefined
+    let failure: HttpErrorBody | undefined
     let sawResult = false
+    let commitStarted = false
+    let readerDone = false
     let transferredBytes = 0
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''
-      for (const line of lines) {
-        if (line.trim() === '') continue
-        let parsed: TransferStreamLine
-        try {
-          parsed = JSON.parse(line) as TransferStreamLine
-        } catch {
-          continue
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) {
+          readerDone = true
+          break
         }
-        if (parsed.type === 'progress') {
-          onProgress?.(parsed.progress)
-        } else if (parsed.type === 'result') {
-          sawResult = true
-          if (parsed.ok) transferredBytes = parsed.transferredBytes ?? 0
-          finalError = parsed.ok ? undefined : parsed.error ?? 'upload failed'
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+        for (const line of lines) {
+          if (line.trim() === '') continue
+          let parsed: TransferStreamLine
+          try {
+            parsed = JSON.parse(line) as TransferStreamLine
+          } catch {
+            continue
+          }
+          if (parsed.type === 'progress') {
+            onProgress?.(parsed.progress)
+          } else if (parsed.type === 'commit') {
+            commitStarted = true
+          } else if (parsed.type === 'result') {
+            sawResult = true
+            if (parsed.ok) transferredBytes = parsed.transferredBytes ?? 0
+            else failure = frameFailure(parsed)
+          }
         }
       }
+    } catch (error) {
+      if (commitStarted) {
+        throw new HttpApiError(
+          'upload connection closed after commit began; the remote result is unknown',
+          response.status,
+          { code: 'RESULT_UNKNOWN' },
+        )
+      }
+      throw error
+    } finally {
+      if (!readerDone) await reader.cancel().catch(() => undefined)
     }
-    if (finalError !== undefined) throw new SshApiError(finalError)
-    if (!sawResult) throw new SshApiError('upload ended without a result frame — the transfer did not complete')
+    // A failed transfer is a typed transport error too: the interactive gates
+    // (NEEDS_PASSWORD / HOST_KEY_*) must be able to prompt from this path.
+    if (failure !== undefined) {
+      throw new HttpApiError(typeof failure.error === 'string' ? failure.error : 'upload failed', response.status, failure)
+    }
+    if (!sawResult) {
+      throw new HttpApiError(
+        commitStarted
+          ? 'upload connection closed after commit began; the remote result is unknown'
+          : 'upload ended without a result frame — the remote destination was not published',
+        response.status,
+        commitStarted ? { code: 'RESULT_UNKNOWN' } : { code: 'ABORTED' },
+      )
+    }
     return { transferredBytes }
   }
 
@@ -272,12 +302,14 @@ export class SshApi {
     alias: string,
     remotePath: string,
     onProgress?: (progress: TransferProgress) => void,
+    signal?: AbortSignal,
   ): Promise<{ blob?: Blob; filename: string; streamed: boolean; bytes: number }> {
-    const response = await fetch(SSH_API.download + query({ alias, remotePath }))
-    if (!response.ok || response.body === null) {
-      const text = await response.text().catch(() => '')
-      throw new SshApiError(text !== '' && text.startsWith('{') ? text : `download failed: HTTP ${response.status}`)
-    }
+    const response = await fetch(SSH_API.download + query({ alias, remotePath }), { signal })
+    // The success path is a raw byte stream, but the error path is the same
+    // JSON body as every other route — the shared transport parses it, so the
+    // caller keeps code/status instead of a flattened JSON string.
+    if (!response.ok) await throwHttpError(response, 'download failed')
+    if (response.body === null) throw new HttpApiError('download failed: the response carried no body stream', response.status)
     const total = Number(response.headers.get('content-length') ?? '0')
     const disposition = response.headers.get('content-disposition') ?? ''
     const match = /filename="([^"]+)"/.exec(disposition)
@@ -287,9 +319,15 @@ export class SshApi {
       ? (window as WindowWithFileSystemAccess).showSaveFilePicker
       : undefined
     let streamed = false
-    let writable: { write: (data: Uint8Array) => Promise<void>; close: () => Promise<void> } | undefined
+    let writable: {
+      write: (data: Uint8Array) => Promise<void>
+      close: () => Promise<void>
+      abort?: (reason?: unknown) => Promise<void>
+    } | undefined
     const chunks: Uint8Array<ArrayBuffer>[] = []
     let received = 0
+    let readerDone = false
+    let writableClosed = false
     const progress = (): void => {
       onProgress?.({
         phase: 'transferring',
@@ -300,32 +338,52 @@ export class SshApi {
       })
     }
     try {
-      if (picker !== undefined) {
-        const handle = await picker.call(window, { suggestedName: filename })
-        writable = await handle.createWritable()
-        streamed = true
+      try {
+        if (picker !== undefined) {
+          const handle = await picker.call(window, { suggestedName: filename })
+          signal?.throwIfAborted()
+          writable = await handle.createWritable()
+          streamed = true
+        }
+      } catch (error) {
+        // A user-cancelled picker falls back to Blob. An operation abort must
+        // not continue into memory or later trigger a browser save.
+        if (signal?.aborted === true) throw error
       }
-    } catch {
-      // User cancelled the save dialog or the API is unavailable: fall back.
-    }
-    for (;;) {
-      const { done, value } = await reader.read()
-      if (done) break
+      for (;;) {
+        signal?.throwIfAborted()
+        const { done, value } = await reader.read()
+        if (done) {
+          readerDone = true
+          break
+        }
+        if (writable !== undefined) {
+          await writable.write(value as Uint8Array)
+        } else {
+          chunks.push(value as Uint8Array<ArrayBuffer>)
+        }
+        received += value.length
+        progress()
+      }
+      signal?.throwIfAborted()
       if (writable !== undefined) {
-        await writable.write(value as Uint8Array)
-      } else {
-        chunks.push(value as Uint8Array<ArrayBuffer>)
+        await writable.close()
+        writableClosed = true
       }
-      received += value.length
-      progress()
-    }
-    if (writable !== undefined) await writable.close()
-    onProgress?.({ phase: 'done', file: remotePath, transferred: received, total: received > 0 ? received : total, percent: 100 })
-    return {
-      blob: streamed ? undefined : new Blob(chunks),
-      filename,
-      streamed,
-      bytes: received,
+      onProgress?.({ phase: 'done', file: remotePath, transferred: received, total: received > 0 ? received : total, percent: 100 })
+      return {
+        blob: streamed ? undefined : new Blob(chunks),
+        filename,
+        streamed,
+        bytes: received,
+      }
+    } catch (error) {
+      chunks.length = 0
+      if (!readerDone) await reader.cancel(error).catch(() => undefined)
+      if (writable !== undefined && !writableClosed) {
+        await writable.abort?.(error).catch(() => undefined)
+      }
+      throw error
     }
   }
 
@@ -335,37 +393,116 @@ export class SshApi {
     const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
     const url = scheme + '://' + window.location.host + SSH_API.terminal + query({ alias, cols, rows })
     const socket = new WebSocket(url)
+    const MAX_PENDING_INPUT = 64 * 1024
+    let ready = false
+    let finalized = false
+    let queuedInput = ''
+    let queuedResize: { cols: number; rows: number } | undefined
+    let readyListener: (() => void) | undefined
+    let readyDelivered = false
+    let outputListener: ((data: string) => void) | undefined
+    let exitListener: ((code: number | null, error?: string) => void) | undefined
+    let exitRecord: { code: number | null; error?: string } | undefined
+    let exitDelivered = false
+    const deliverReady = (): void => {
+      if (!ready || readyDelivered || readyListener === undefined) return
+      readyDelivered = true
+      readyListener()
+    }
+    const deliverExit = (): void => {
+      if (exitRecord === undefined || exitDelivered || exitListener === undefined) return
+      exitDelivered = true
+      exitListener(exitRecord.code, exitRecord.error)
+    }
+    const finalize = (code: number | null, error?: string): void => {
+      if (finalized) return
+      finalized = true
+      queuedInput = ''
+      queuedResize = undefined
+      exitRecord = error === undefined ? { code } : { code, error }
+      deliverExit()
+    }
+    const sendFrame = (frame: TerminalClientFrame): void => {
+      if (finalized || !ready || socket.readyState !== WebSocket.OPEN) return
+      socket.send(JSON.stringify(frame))
+    }
     const connection: TerminalConnection = {
-      onReady: undefined,
-      onOutput: undefined,
-      onExit: undefined,
-      send: (data) => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'input', data } satisfies TerminalClientFrame))
-        }
+      get onReady() { return readyListener },
+      set onReady(listener) {
+        readyListener = listener
+        deliverReady()
       },
-      resize: (cols, rows) => {
-        if (socket.readyState === WebSocket.OPEN) {
-          socket.send(JSON.stringify({ type: 'resize', cols, rows } satisfies TerminalClientFrame))
+      get onOutput() { return outputListener },
+      set onOutput(listener) { outputListener = listener },
+      get onExit() { return exitListener },
+      set onExit(listener) {
+        exitListener = listener
+        deliverExit()
+      },
+      send: (data) => {
+        if (finalized) return
+        if (!ready || socket.readyState !== WebSocket.OPEN) {
+          if (queuedInput.length + data.length > MAX_PENDING_INPUT) {
+            finalize(null, 'terminal input buffer exceeded before ready')
+            try { socket.close(1008, 'terminal input buffer exceeded') } catch { /* already closed */ }
+            return
+          }
+          queuedInput += data
+          return
         }
+        sendFrame({ type: 'input', data })
+      },
+      resize: (nextCols, nextRows) => {
+        if (finalized) return
+        const frame = { type: 'resize', cols: nextCols, rows: nextRows } satisfies TerminalClientFrame
+        if (!ready || socket.readyState !== WebSocket.OPEN) {
+          // Resize is state, not a sequence: one latest value is the complete
+          // bounded buffer needed before the server reports shell readiness.
+          queuedResize = { cols: nextCols, rows: nextRows }
+          return
+        }
+        sendFrame(frame)
       },
       close: () => {
         try { socket.close() } catch { /* already closed */ }
       },
     }
     socket.onmessage = (event: MessageEvent<string>) => {
-      let frame: TerminalServerFrame
       try {
-        frame = JSON.parse(event.data) as TerminalServerFrame
+        const value: unknown = JSON.parse(event.data)
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new Error('invalid terminal frame')
+        const frame = value as Record<string, unknown>
+        if (frame.type === 'ready' && typeof frame.alias === 'string') {
+          if (ready || finalized) return
+          ready = true
+          deliverReady()
+          if (queuedResize !== undefined) {
+            sendFrame({ type: 'resize', ...queuedResize })
+            queuedResize = undefined
+          }
+          if (queuedInput !== '') {
+            sendFrame({ type: 'input', data: queuedInput })
+            queuedInput = ''
+          }
+          return
+        }
+        if (frame.type === 'output' && typeof frame.data === 'string') {
+          outputListener?.(frame.data)
+          return
+        }
+        if (frame.type === 'exit' && (typeof frame.code === 'number' || frame.code === null) && (frame.error === undefined || typeof frame.error === 'string')) {
+          finalize(frame.code as number | null, frame.error as string | undefined)
+          try { socket.close(1000) } catch { /* already closed */ }
+          return
+        }
+        throw new Error('invalid terminal frame')
       } catch {
-        return
+        finalize(null, 'invalid terminal server frame')
+        try { socket.close(1008, 'invalid terminal server frame') } catch { /* already closed */ }
       }
-      if (frame.type === 'ready') connection.onReady?.()
-      else if (frame.type === 'output') connection.onOutput?.(frame.data)
-      else if (frame.type === 'exit') connection.onExit?.(frame.code, frame.error)
     }
-    socket.onclose = () => { connection.onExit?.(null, 'connection closed') }
-    socket.onerror = () => { connection.onExit?.(null, 'connection error') }
+    socket.onclose = () => { finalize(null, 'connection closed') }
+    socket.onerror = () => { finalize(null, 'connection error') }
     return connection
   }
 

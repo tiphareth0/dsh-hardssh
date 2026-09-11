@@ -1,7 +1,8 @@
 /**
  * Terminal tab: an xterm.js PTY view over the host's WebSocket terminal route.
- * A host <select> plus connect/disconnect controls; the terminal container is
- * sized by FitAddon (default 80x24 before first fit). On remote exit the last
+ * The target alias is inherited from the selected Session; only connect /
+ * disconnect controls remain. The terminal container is sized by FitAddon
+ * (default 80x24 before first fit). On remote exit the last
  * output stays visible and input is disabled. xterm's stylesheet is injected
  * once per page load (module-level guard).
  */
@@ -9,18 +10,15 @@ import { useEffect, useRef, useState } from 'react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import type { SshApi, TerminalConnection } from '../api.ts'
-import type { SshHostSummary } from '../../../ssh/protocol.ts'
 import { XTERM_CSS } from './xterm.css.ts'
-import { errorMessage, tt } from './helpers.ts'
+import { tt } from './helpers.ts'
 import css from './panel.module.css'
 
 /** Terminal tab props. */
 export interface TerminalTabProps {
   api: SshApi
-  /** Alias preselected by a "connect" action from the hosts tab. */
-  presetAlias?: string
-  /** Monotonic id of the connect request (re-applies presetAlias). */
-  requestId?: number
+  /** Fixed alias inherited from the selected Session's SSH workspace. */
+  alias: string
 }
 
 /** The terminal session lifecycle state shown in the status banner. */
@@ -45,9 +43,7 @@ function ensureXtermCss(): void {
 }
 
 /** The xterm terminal view. */
-export function TerminalTab({ api, presetAlias, requestId }: TerminalTabProps) {
-  const [hosts, setHosts] = useState<SshHostSummary[]>([])
-  const [alias, setAlias] = useState(presetAlias ?? '')
+export function TerminalTab({ api, alias }: TerminalTabProps) {
   const [status, setStatus] = useState<TerminalStatus>({ kind: 'idle' })
   const containerRef = useRef<HTMLDivElement | null>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -55,25 +51,6 @@ export function TerminalTab({ api, presetAlias, requestId }: TerminalTabProps) {
   const connRef = useRef<TerminalConnection | null>(null)
 
   useEffect(() => { ensureXtermCss() }, [])
-
-  // Fetch the host list on tab activation.
-  useEffect(() => {
-    let disposed = false
-    void (async () => {
-      try {
-        const list = await api.listHosts()
-        if (!disposed) setHosts(list)
-      } catch (cause) {
-        if (!disposed) setStatus({ kind: 'error', detail: errorMessage(cause) })
-      }
-    })()
-    return () => { disposed = true }
-  }, [api])
-
-  // A hosts-tab connect action preselects its alias here.
-  useEffect(() => {
-    if (presetAlias !== undefined) setAlias(presetAlias)
-  }, [presetAlias, requestId])
 
   const teardown = (): void => {
     const connection = connRef.current
@@ -123,13 +100,20 @@ export function TerminalTab({ api, presetAlias, requestId }: TerminalTabProps) {
     term.loadAddon(fit)
     term.open(container)
     fit.fit()
+    // The WebSocket can be OPEN before the remote shell exists. Keep xterm
+    // input disabled until the protocol's ready frame; the API also keeps a
+    // bounded pre-ready queue as a defensive race buffer.
+    term.options.disableStdin = true
     const connection = api.openTerminal(target, term.cols, term.rows)
     termRef.current = term
     fitRef.current = fit
     connRef.current = connection
     let settled = false
     const dataSub = term.onData(data => { connection.send(data) })
-    connection.onReady = () => { setStatus({ kind: 'connected', alias: target }) }
+    connection.onReady = () => {
+      term.options.disableStdin = false
+      setStatus({ kind: 'connected', alias: target })
+    }
     connection.onOutput = data => { term.write(data) }
     connection.onExit = (code, error) => {
       if (settled) return
@@ -152,11 +136,8 @@ export function TerminalTab({ api, presetAlias, requestId }: TerminalTabProps) {
   return (
     <div className={css.termBody}>
       <div className={css.controls}>
-        <select className={css.input} value={alias} onChange={event => { setAlias(event.target.value) }}>
-          <option value="">{tt('terminal.selectHost')}</option>
-          {hosts.map(host => <option key={host.alias} value={host.alias}>{host.alias} ({host.host})</option>)}
-        </select>
-        <button type="button" className={css.primaryButton} disabled={alias === '' || active} onClick={connect}>{tt('terminal.connect')}</button>
+        <span className={css.targetBadge}>{alias}</span>
+        <button type="button" className={css.primaryButton} disabled={active} onClick={connect}>{tt('terminal.connect')}</button>
         <button type="button" className={css.ghostButton} disabled={!active} onClick={disconnect}>{tt('terminal.disconnect')}</button>
       </div>
       {status.kind === 'connecting' && <div className={css.banner} data-kind="info">{tt('terminal.connecting')}</div>}
@@ -168,7 +149,7 @@ export function TerminalTab({ api, presetAlias, requestId }: TerminalTabProps) {
       <div className={css.termWrap}>
         <div ref={containerRef} className={css.termContainer} />
         {status.kind === 'idle' && (
-          <div className={css.termPlaceholder}>{hosts.length === 0 ? tt('hosts.empty') : tt('terminal.placeholder')}</div>
+          <div className={css.termPlaceholder}>{tt('terminal.placeholder')}</div>
         )}
       </div>
     </div>

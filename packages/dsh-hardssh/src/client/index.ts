@@ -22,12 +22,14 @@ import { SshApi } from './ssh/api.ts'
 import { NS, dictionaries, type WorkspaceKey } from './locales.ts'
 import { WorkspaceManager } from './state.ts'
 import { setLanguage } from './text.ts'
-import { WorkspaceManagerButton } from './manager-button.tsx'
+import { registerWorkspacePanel } from './workspace-panel-entry.tsx'
 import { migrateLegacySessionMemory } from './migrate.ts'
 import { DirectoryFlow } from './directory-flow.tsx'
+import { connectHost } from './connect-host.ts'
 import { mountWorkspaceBadges } from './workspace-badges.ts'
-import { connectHost, mountWorkspaceGates } from './workspace-gate.ts'
+import { makeAnchorAliasResolver, mountSessionConnectGate, type SessionGateList } from './session-connect-gate.ts'
 import { mountSshOperations } from './ssh/apply.ts'
+import { createSessionSshTargetSource } from './ssh/session-target.ts'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -37,9 +39,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 // Type-only re-exports of the SSH operations surfaces (merge phase 2).
-export type { PanelControllerSnapshot } from './ssh/panel/controller.ts'
 export type { SshPanelProps } from './ssh/panel/SshPanel.tsx'
-export type { HostsTabProps } from './ssh/panel/HostsTab.tsx'
 export type { HostFormDialogProps } from './ssh/panel/HostFormDialog.tsx'
 export type { TerminalTabProps } from './ssh/panel/TerminalTab.tsx'
 export type { TransferTabProps } from './ssh/panel/TransferTab.tsx'
@@ -47,32 +47,47 @@ export type { TunnelsTabProps } from './ssh/panel/TunnelsTab.tsx'
 export type { ClusterTabProps } from './ssh/panel/ClusterTab.tsx'
 export type { SshKey } from './ssh/locales.ts'
 
-/** Required services: slots for the header buttons + directory-flow holes,
- *  locale for the copy, workspaces for the native local-directory chooser. */
-export const inject = ['slots', 'locale', 'workspaces']
+/** Required services: slots for the extension seats, locale for copy,
+ *  workspaces for the native local-directory chooser, sessions for the
+ *  open/new-session connection gate, and sidebarRightTabs for the SSH
+ *  operations console type. Keep the registry explicit: without it Cordis may
+ *  activate this client before ui-sidebar-right provides the service; the
+ *  guarded registration then degrades silently and no HardSSH tab exists. */
+export const inject = ['slots', 'locale', 'workspaces', 'sessions', 'sidebarRightTabs']
 
 /** Apply the browser half. */
 export function apply(ctx: ClientContext): void {
-  // SSH operations surfaces (sidebar entry + operations panel), merged from
-  // the legacy dsh-ssh client. Mounted first; its failures degrade the SSH
-  // panel only, never the GUI.
-  mountSshOperations(ctx)
-
-  ctx.effect(() => ctx.locale.register(NS, dictionaries), 'dsh-hardssh: dictionaries')
-
   const api = new WorkspaceApi()
   const hostsApi = new SshHostsApi()
   const sshApi = new SshApi()
   const manager = new WorkspaceManager(api)
+  const sessionList = ctx.sessions.list
+  const sessions: SessionGateList = {
+    subscribe: (listener) => sessionList.subscribe(listener),
+    phase: () => sessionList.getSnapshot().phase,
+    currentSessionId: () => sessionList.getSnapshot().current,
+    sessionIds: () => sessionList.getSnapshot().ids,
+    sessionCwd: (id) => {
+      const byId = sessionList.getSnapshot().byId as unknown as
+        Record<string, { cwd?: string } | undefined>
+      return byId[id]?.cwd
+    },
+  }
+
+  // The operations console inherits its ONLY target from the selected Session's
+  // workspace. A local Session resolves to null and the panel renders disabled;
+  // individual operation tabs never own a host picker.
+  mountSshOperations(ctx, sshApi, createSessionSshTargetSource(sessions, manager))
+
+  ctx.effect(() => ctx.locale.register(NS, dictionaries), 'dsh-hardssh: dictionaries')
 
   const disposers: Array<() => void> = []
   try {
-    ctx.slots.inject('conversation.session.header.utilities', () => {
-      return ctx.slots.register(
-        { name: 'conversation.session.header.utilities', id: 'ssh-workspace-manager', order: -10, inject: () => ({ manager, sshApi }) },
-        WorkspaceManagerButton,
-      )
-    })
+    // The SSH workspace manager is a GLOBAL surface: a left-sidebar entry row
+    // (sidebar.panellist) opening a center panel (main). The shell owns the
+    // row, its label and its active highlight; selecting it switches the
+    // center column, and selecting the Conversation row switches back.
+    registerWorkspacePanel(ctx, { manager, sshApi })
 
     // Replace the native-only directory-flow occupant (both holes) with the
     // SSH/local chooser. `pickDirectory` restores the original native local
@@ -119,14 +134,13 @@ export function apply(ctx: ClientContext): void {
 
     manager.start()
 
-    // Decorate the sidebar workspace rows: append a remote badge to every
-    // host workspace whose title belongs to an SSH-bound workspace. The
-    // badge set is driven by the manager (the single owner of the workspace
-    // list): every successful poll / mutation emits, and the snapshot is the
-    // only data source. Best-effort: a DOM miss only logs.
+    // Sidebar row decoration: label every host workspace whose title belongs to
+    // an SSH-bound workspace with a compact `alias` badge, tinted by whether the
+    // server currently holds a pooled connection. The shell still exposes no
+    // row-decoration slot, so this stays the documented DOM extension it always
+    // was (MutationObserver self-heal), unlike the session list below.
     let badgesDispose: (() => void) | undefined
-    // Live connection state (aliases with a pooled transport) → blue badge.
-    let connectedAliases = new Set<string>()
+    let connectedAliases: ReadonlySet<string> = new Set<string>()
     const refreshBadges = (): void => {
       try {
         const workspaces = manager.getSnapshot().workspaces
@@ -142,20 +156,18 @@ export function apply(ctx: ClientContext): void {
       }
     }
     disposers.push(() => { badgesDispose?.() })
-    // Same-source sync: no independent fetch or timer — the manager emits on
-    // its 3s poll and on create/remove/rename; the first pass lands when the
-    // manager's initial refresh resolves (start() runs before this subscribe
-    // is registered, and its first emit happens after the synchronous body).
+    // Same-source sync: no independent workspace fetch — the manager emits on
+    // its 3s poll and on create/remove/rename.
     disposers.push(manager.subscribe(() => { refreshBadges() }))
 
-    // Connection-state poll: keep badge colors current (same cadence as the
-    // manager's workspace poll). Failure keeps everything gray (safe).
+    // Connection-state poll: badge colors AND the gate's pass cache both key off
+    // "which servers have a live pooled transport right now".
     const refreshConnections = async (): Promise<void> => {
       try {
         connectedAliases = new Set(await sshApi.connectedAliases())
       } catch (error) {
         console.warn('[dsh-hardssh] connection-state poll failed:', error)
-        connectedAliases = new Set()
+        connectedAliases = new Set<string>()
       }
       refreshBadges()
     }
@@ -163,25 +175,16 @@ export function apply(ctx: ClientContext): void {
     disposers.push(() => { window.clearInterval(connTimer) })
     void refreshConnections()
 
-    // Click gate: probing a workspace row must first establish the SSH
-    // connection (host-key TOFU confirm + session password dialogs), so the
-    // shell never opens a workspace that silently fails underneath.
-    let gateDispose: (() => void) | undefined
-    const refreshGates = (): void => {
-      try {
-        const workspaces = manager.getSnapshot().workspaces
-        gateDispose?.()
-        gateDispose = mountWorkspaceGates(workspaces.map((workspace) => ({
-          id: workspace.id,
-          title: workspace.title,
-          alias: workspace.alias,
-        })), sshApi)
-      } catch (error) {
-        console.warn('[dsh-hardssh] gate refresh failed:', error)
-      }
-    }
-    disposers.push(() => { gateDispose?.() })
-    disposers.push(manager.subscribe(() => { refreshGates() }))
+    // Session-open connection gate: opening a session (or creating a New
+    // Session) inside an SSH workspace probes the owning server first, so the
+    // fingerprint / session-password dialogs appear before any remote operation
+    // fails. Driven by the public session list — not by DOM rows — so it
+    // survives any sidebar restyle.
+    disposers.push(mountSessionConnectGate({
+      sessions,
+      aliasForCwd: makeAnchorAliasResolver(() => manager.getSnapshot().workspaces),
+      ensureConnected: (alias) => connectHost(sshApi, alias),
+    }))
   } catch (error) {
     console.warn('[dsh-hardssh] mount failed:', error)
   }

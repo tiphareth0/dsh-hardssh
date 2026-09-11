@@ -3,7 +3,7 @@
  * atomic persistence, and subscription semantics — without any SSH types.
  */
 
-import { mkdtempSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it } from 'vitest'
@@ -92,6 +92,89 @@ describe('WorkspaceLedger', () => {
     const list = await second.list()
     expect(list).toHaveLength(1)
     expect(list[0]?.id).toBe('a')
+  })
+
+  it('fails closed on corrupt JSON and never overwrites it as an empty ledger', async () => {
+    const path = join(dir, 'ledger.json')
+    writeFileSync(path, '{broken', 'utf8')
+    const strict = new WorkspaceLedger(path, join(dir, 'anchors'))
+    await expect(strict.list()).rejects.toThrow()
+    await expect(strict.create(makeRecord('a', '/srv/a'))).rejects.toThrow()
+    expect(readFileSync(path, 'utf8')).toBe('{broken')
+  })
+
+  it('rejects malformed records, duplicate ids, and overlapping anchors on load', async () => {
+    const path = join(dir, 'ledger.json')
+    writeFileSync(path, JSON.stringify([{ id: 'bad' }]), 'utf8')
+    await expect(new WorkspaceLedger(path).list()).rejects.toThrow('invalid workspace record')
+
+    const first = makeRecord('same', '/srv/a')
+    const second = makeRecord('same', '/srv/b')
+    second.anchor = { path: join(dir, 'other'), mode: 'managed' }
+    writeFileSync(path, JSON.stringify([
+      { ...first, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() },
+      { ...second, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() },
+    ]), 'utf8')
+    await expect(new WorkspaceLedger(path).list()).rejects.toThrow("duplicate workspace id 'same'")
+
+    second.id = 'child'
+    second.anchor = { path: join(dir, 'same', 'child'), mode: 'managed' }
+    writeFileSync(path, JSON.stringify([
+      { ...first, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() },
+      { ...second, createdAt: new Date(0).toISOString(), updatedAt: new Date(0).toISOString() },
+    ]), 'utf8')
+    await expect(new WorkspaceLedger(path).list()).rejects.toThrow('duplicate or overlapping anchors')
+  })
+
+  it('deep-clones nested JSON across input, snapshots, and subscription changes', async () => {
+    const input = makeRecord('nested', '/srv/nested')
+    input.location.options = { auth: { retries: [1, 2] } }
+    input.extensions = { seed: { files: ['a'] } }
+    let eventRecord: WorkspaceRecord | undefined
+    ledger.subscribe(change => {
+      if (change.type !== 'replaced') eventRecord = change.record
+    })
+    await ledger.create(input)
+    ;((input.extensions.seed as { files: string[] }).files).push('mutated')
+    ;(((eventRecord!.extensions!.seed) as { files: string[] }).files).push('event mutation')
+    const snapshot = ledger.snapshotSync()
+    ;((((snapshot.records[0]!.location.options!.auth) as { retries: number[] }).retries)).push(3)
+    const fresh = await ledger.get('nested')
+    expect(((fresh!.extensions!.seed) as { files: string[] }).files).toEqual(['a'])
+    expect(((fresh!.location.options!.auth) as { retries: number[] }).retries).toEqual([1, 2])
+  })
+
+  it('updates generic fields and atomically replaces the complete snapshot with a backup', async () => {
+    await ledger.create(makeRecord('a', '/srv/a'))
+    const updated = await ledger.update('a', {
+      provider: { id: 'ssh', connectionRef: { id: 'prod', alias: 'prod' } },
+      location: { kind: 'posix', root: '/srv/remote', options: { nested: { value: true } } },
+    })
+    expect(updated?.provider.connectionRef?.alias).toBe('prod')
+    const before = readFileSync(join(dir, 'ledger.json'), 'utf8')
+    const replacement = [updated!]
+    replacement[0]!.title = 'imported'
+    const backup = join(dir, 'ledger.backup.json')
+    await ledger.replaceAll(replacement, { backupPath: backup })
+    expect(readFileSync(backup, 'utf8')).toBe(before)
+    expect((await ledger.list())[0]?.title).toBe('imported')
+  })
+
+  it('keeps a rolling .last-good recovery copy of the previous committed state (P0-2)', async () => {
+    const lastGood = join(dir, 'ledger.json.last-good')
+    // First commit: nothing to copy yet, so the new state is seeded.
+    await ledger.create(makeRecord('a', '/srv/a'))
+    expect(JSON.parse(readFileSync(lastGood, 'utf8'))).toHaveLength(1)
+
+    // Second commit: the copy holds the PREVIOUS committed state. This is the
+    // documented trade-off — recovering from `.last-good` loses the LAST
+    // mutation, which is what makes the copy still useful when the CURRENT file
+    // is the thing that got corrupted. (An earlier comment here claimed the
+    // opposite while the assertion below proved otherwise.)
+    await ledger.create(makeRecord('b', '/srv/b'))
+    const snapshot = JSON.parse(readFileSync(lastGood, 'utf8')) as Array<{ id: string }>
+    expect(snapshot.map(record => record.id)).toEqual(['a'])
+    expect(JSON.parse(readFileSync(join(dir, 'ledger.json'), 'utf8'))).toHaveLength(2)
   })
 })
 

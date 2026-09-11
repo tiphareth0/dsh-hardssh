@@ -5,40 +5,26 @@
  */
 import { useEffect, useRef, useState } from 'react'
 import type { SshApi } from '../api.ts'
-import type { SshHostSummary, TunnelInfo } from '../../../ssh/protocol.ts'
+import type { TunnelInfo } from '../../../ssh/protocol.ts'
 import { errorMessage, tt } from './helpers.ts'
 import css from './panel.module.css'
 
 /** Tunnels tab props. */
 export interface TunnelsTabProps {
   api: SshApi
+  /** Fixed alias inherited from the selected Session. */
+  alias: string
 }
 
 /** The tunnels tab. */
-export function TunnelsTab({ api }: TunnelsTabProps) {
-  const [hosts, setHosts] = useState<SshHostSummary[]>([])
+export function TunnelsTab({ api, alias }: TunnelsTabProps) {
   const [tunnels, setTunnels] = useState<TunnelInfo[] | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [alias, setAlias] = useState('')
   const [remotePort, setRemotePort] = useState('')
   const [remoteHost, setRemoteHost] = useState('')
   const [localPort, setLocalPort] = useState('')
   const [busy, setBusy] = useState(false)
-
-  // Hosts for the new-tunnel form (failure does not block tunnel listing).
-  useEffect(() => {
-    let disposed = false
-    void (async () => {
-      try {
-        const list = await api.listHosts()
-        if (!disposed) setHosts(list)
-      } catch {
-        // Tunnels may still exist; keep the list usable.
-      }
-    })()
-    return () => { disposed = true }
-  }, [api])
 
   // Live list with a 5s heartbeat while mounted. Every load carries a
   // sequence number so stale responses never overwrite newer state.
@@ -49,7 +35,7 @@ export function TunnelsTab({ api }: TunnelsTabProps) {
       try {
         const list = await api.listTunnels()
         if (seq !== seqRef.current) return
-        setTunnels(list)
+        setTunnels(list.filter(tunnel => tunnel.alias === alias))
         setError(null)
       } catch (cause) {
         if (seq !== seqRef.current) return
@@ -59,7 +45,7 @@ export function TunnelsTab({ api }: TunnelsTabProps) {
     void load()
     const timer = setInterval(() => { void load() }, 5000)
     return () => { clearInterval(timer) }
-  }, [api])
+  }, [api, alias])
 
   const refresh = async (): Promise<void> => {
     const seq = ++seqRef.current
@@ -87,7 +73,7 @@ export function TunnelsTab({ api }: TunnelsTabProps) {
     if (!window.confirm(tt('tunnel.stopAllConfirm'))) return
     setBusy(true)
     try {
-      await api.stopAllTunnels(alias === '' ? undefined : alias)
+      await api.stopAllTunnels(alias)
       await refresh()
     } catch (cause) {
       setError(errorMessage(cause))
@@ -150,10 +136,7 @@ export function TunnelsTab({ api }: TunnelsTabProps) {
         <div className={css.formRow}>
           <label className={css.field}>
             <span className={css.fieldLabel}>{tt('tunnel.alias')}</span>
-            <select className={css.input} value={alias} onChange={event => { setAlias(event.target.value) }}>
-              <option value="">{tt('terminal.selectHost')}</option>
-              {hosts.map(host => <option key={host.alias} value={host.alias}>{host.alias}</option>)}
-            </select>
+            <span className={css.targetBadge}>{alias}</span>
           </label>
           <label className={css.field}>
             <span className={css.fieldLabel}>{tt('tunnel.remotePort')}</span>
@@ -169,7 +152,7 @@ export function TunnelsTab({ api }: TunnelsTabProps) {
           </label>
         </div>
         <div>
-          <button type="button" className={css.primaryButton} disabled={busy || alias === '' || remotePort.trim() === ''} onClick={() => { void start() }}>{tt('tunnel.start')}</button>
+          <button type="button" className={css.primaryButton} disabled={busy || remotePort.trim() === ''} onClick={() => { void start() }}>{tt('tunnel.start')}</button>
         </div>
       </div>
     </div>

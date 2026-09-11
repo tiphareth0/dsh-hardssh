@@ -75,6 +75,10 @@ export interface WorkspaceSearchHit {
   /** Path relative to the search root. */
   rel: string
   isDir: boolean
+  /** Optional raw matched line (`path:line:content`, engine-style) for a
+   *  content grep when the backend can report snippets; absent when the
+   *  search only returns matching paths. */
+  match?: string
 }
 
 /** Filename / content search capability. */

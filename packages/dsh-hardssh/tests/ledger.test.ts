@@ -1,18 +1,12 @@
-import { describe, expect, it, beforeEach } from 'vitest'
-import { mkdirSync, mkdtempSync } from 'node:fs'
+import { describe, expect, it } from 'vitest'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { normalizeAnchorPath, isPathUnderAnchor, normalizeRemoteRoot, SshWorkspaceLedger } from '../src/ledger.ts'
-
-/** An isolated ledger per test (own file + anchor root under a temp dir). */
-function makeLedger(): SshWorkspaceLedger {
-  const dir = mkdtempSync(join(tmpdir(), 'dsh-hardssh-ledger-'))
-  return new SshWorkspaceLedger(join(dir, 'ledger.json'), dir)
-}
-
-beforeEach(() => {
-  // No cross-test state: each makeLedger() is fully isolated.
-})
+import { normalizeAnchorPath, isPathUnderAnchor, normalizeRemoteRoot } from '../src/ledger.ts'
+import { WorkspaceLedger } from '../src/base/ledger.ts'
+import { WorkspaceProviderRegistry } from '../src/base/registry.ts'
+import { DefaultWorkspaceCore } from '../src/runtime/workspace-core.ts'
+import { genericFsWorldFor } from '../src/fs.ts'
+import { genericSubprocessFor } from '../src/subprocess.ts'
 
 describe('normalizeRemoteRoot', () => {
   it('keeps / as /', () => {
@@ -32,106 +26,42 @@ describe('normalizeRemoteRoot', () => {
   })
 })
 
-describe('SshWorkspaceLedger', () => {
-  it('starts empty with a stable anchor root', async () => {
-    const ledger = makeLedger()
-    expect(await ledger.list()).toEqual([])
-    expect(ledger.anchorsRoot()).toMatch(/dsh-hardssh-ledger-/)
+/**
+ * B-01, asserted at the PRODUCTION seam instead of a standalone predicate: while
+ * the workspace core is not ready, a cwd inside the reserved anchor root must be
+ * refused (never degraded to the client machine), while ordinary local cwds stay
+ * routable.
+ */
+describe('unready routing fails closed on the reserved anchor root (B-01)', () => {
+  const anchorsRoot = '/home/u/.dsh/ssh-workspaces'
+  const anchor = `${anchorsRoot}/ws-1`
+  /** A core that was constructed but never initialized: isReady() === false. */
+  const unready = (): DefaultWorkspaceCore => new DefaultWorkspaceCore(
+    new WorkspaceLedger(join(tmpdir(), `b01-ledger-${Math.random().toString(36).slice(2)}.json`)),
+    new WorkspaceProviderRegistry(),
+  )
+
+  it('refuses an anchor-root cwd for both seams while routing is not ready', () => {
+    const core = unready()
+    expect(core.isReady()).toBe(false)
+    expect(() => genericFsWorldFor(core, anchor, [anchorsRoot])).toThrow(/not ready/)
+    expect(() => genericFsWorldFor(core, `${anchor}/src`, [anchorsRoot])).toThrow(/not ready/)
+    expect(() => genericSubprocessFor(core, anchor, [anchorsRoot])).toThrow(/not ready/)
   })
 
-  it('creates a record, materializes its anchor dir, and resolves it', async () => {
-    const ledger = makeLedger()
-    const record = await ledger.create({ title: 'proj', alias: 'prod', remoteRoot: '/home/u' })
-    expect(record.remoteRoot).toBe('/home/u')
-    expect(record.title).toBe('proj')
-    // The anchor is created on disk under the isolated root.
-    const anchor = record.anchorPath
-    expect(anchor).toMatch(/dsh-hardssh-ledger-/)
-    // Synchronous lookup by the anchor path resolves the record.
-    expect(ledger.findByAnchorSync(anchor)?.id).toBe(record.id)
-    // …and by a REAL child path under the anchor.
-    await mkdirSync(join(anchor, 'sub', 'dir'), { recursive: true })
-    expect(ledger.findByAnchorSync(join(anchor, 'sub', 'dir'))?.id).toBe(record.id)
-    // A non-existent descendant cannot be realpath'd: no hit.
-    expect(ledger.findByAnchorSync(join(anchor, 'nope'))).toBeUndefined()
-    // Async lookup agrees.
-    expect((await ledger.findByAnchor(anchor))?.id).toBe(record.id)
+  it('matches the Windows anchor shape with mixed separators', () => {
+    const core = unready()
+    const winRoot = 'C:\\Users\\me\\.dsh\\ssh-workspaces'
+    expect(() => genericFsWorldFor(core, `${winRoot}\\ws-1`, [winRoot])).toThrow(/not ready/)
+    expect(() => genericFsWorldFor(core, 'c:/users/me/.dsh/ssh-workspaces/ws-1/src', [winRoot])).toThrow(/not ready/)
   })
 
-  it('renames and removes records', async () => {
-    const ledger = makeLedger()
-    const record = await ledger.create({ title: 'a', alias: 'prod', remoteRoot: '/home/u' })
-    const renamed = await ledger.rename(record.id, 'b')
-    expect(renamed?.title).toBe('b')
-    expect((await ledger.get(record.id))?.title).toBe('b')
-    expect(await ledger.remove(record.id)).toBe(true)
-    expect(await ledger.get(record.id)).toBeUndefined()
-    // Removing an unknown id is a no-op.
-    expect(await ledger.remove(record.id)).toBe(false)
-  })
-
-  it('persists across instances', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'dsh-hardssh-ledger-'))
-    const path = join(dir, 'ledger.json')
-    const first = new SshWorkspaceLedger(path, dir)
-    const record = await first.create({ title: 'persist', alias: 'prod', remoteRoot: '/data/x' })
-    const second = new SshWorkspaceLedger(path, dir)
-    const loaded = await second.get(record.id)
-    expect(loaded?.title).toBe('persist')
-    expect(loaded?.remoteRoot).toBe('/data/x')
-  })
-
-  it('defaults a title from the remote root when none given', async () => {
-    const ledger = makeLedger()
-    const record = await ledger.create({ title: '  ', alias: 'prod', remoteRoot: '/data/home/user/my-project' })
-    expect(record.title).toContain('my-project')
-  })
-
-  it('serializes concurrent creates without losing records', async () => {
-    const ledger = makeLedger()
-    const created = await Promise.all([
-      ledger.create({ title: 'a', alias: 'prod', remoteRoot: '/a' }),
-      ledger.create({ title: 'b', alias: 'prod', remoteRoot: '/b' }),
-      ledger.create({ title: 'c', alias: 'prod', remoteRoot: '/c' }),
-    ])
-    expect(await ledger.list()).toHaveLength(3)
-    expect(new Set(created.map(record => record.id)).size).toBe(3)
-    expect(ledger.revision()).toBe(3)
-  })
-
-  it('emits ordered changes with monotonically increasing revisions', async () => {
-    const ledger = makeLedger()
-    const types: string[] = []
-    const revisions: number[] = []
-    const dispose = ledger.subscribe((change) => {
-      types.push(change.type)
-      revisions.push(change.revision)
-    })
-    const record = await ledger.create({ title: 'a', alias: 'prod', remoteRoot: '/a' })
-    await ledger.rename(record.id, 'b')
-    await ledger.remove(record.id)
-    dispose()
-    expect(types).toEqual(['created', 'renamed', 'removed'])
-    expect(revisions).toEqual([1, 2, 3])
-  })
-
-  it('isolates listener exceptions', async () => {
-    const ledger = makeLedger()
-    const seen: number[] = []
-    ledger.subscribe(() => { throw new Error('listener failed') })
-    ledger.subscribe((change) => seen.push(change.revision))
-    await ledger.create({ title: 'a', alias: 'prod', remoteRoot: '/a' })
-    expect(seen).toEqual([1])
-    expect(ledger.revision()).toBe(1)
-  })
-
-  it('does not expose mutable internal records', async () => {
-    const ledger = makeLedger()
-    const record = await ledger.create({ title: 'original', alias: 'prod', remoteRoot: '/a' })
-    const listed = await ledger.list()
-    listed.splice(0)
-    record.title = 'external mutation'
-    expect(await ledger.list()).toMatchObject([{ title: 'original' }])
+  it('leaves local cwds and a missing cwd routable', () => {
+    const core = unready()
+    expect(genericFsWorldFor(core, join(tmpdir(), 'other'), [anchorsRoot])).toBeUndefined()
+    expect(genericFsWorldFor(core, undefined, [anchorsRoot])).toBeUndefined()
+    expect(genericFsWorldFor(core, '', [anchorsRoot])).toBeUndefined()
+    expect(genericSubprocessFor(core, join(tmpdir(), 'other'), [anchorsRoot])).toBeUndefined()
   })
 })
 

@@ -5,13 +5,17 @@
  */
 import { useEffect, useRef, useState, type ChangeEvent } from 'react'
 import type { SshApi } from '../api.ts'
-import type { RemoteDirEntry, SshHostSummary, TransferProgress } from '../../../ssh/protocol.ts'
+import type { RemoteDirEntry, TransferProgress } from '../../../ssh/protocol.ts'
 import { errorMessage, tt } from './helpers.ts'
 import css from './panel.module.css'
 
 /** Transfer tab props. */
 export interface TransferTabProps {
   api: SshApi
+  /** Fixed alias inherited from the selected Session. */
+  alias: string
+  /** Initial browser/path root inherited from the Session's SSH workspace. */
+  remoteRoot: string
 }
 
 /** One in-flight transfer (drives the progress bar). */
@@ -49,32 +53,23 @@ function formatBytes(bytes: number): string {
 }
 
 /** The upload/download tab. */
-export function TransferTab({ api }: TransferTabProps) {
-  const [hosts, setHosts] = useState<SshHostSummary[]>([])
+export function TransferTab({ api, alias, remoteRoot }: TransferTabProps) {
   const [listError, setListError] = useState<string | null>(null)
-  const [alias, setAlias] = useState('')
-  const [remotePath, setRemotePath] = useState('')
+  const [remotePath, setRemotePath] = useState(remoteRoot)
   const [browseOpen, setBrowseOpen] = useState(false)
-  const [browseDir, setBrowseDir] = useState('/')
+  const [browseDir, setBrowseDir] = useState(remoteRoot)
   const [entries, setEntries] = useState<RemoteDirEntry[]>([])
   const [browsing, setBrowsing] = useState(false)
   const [transfer, setTransfer] = useState<TransferState | null>(null)
   const [status, setStatus] = useState<TransferStatus | null>(null)
   const fileRef = useRef<HTMLInputElement | null>(null)
   const seqRef = useRef(0)
+  const transferAbortRef = useRef<AbortController | null>(null)
 
-  useEffect(() => {
-    let disposed = false
-    void (async () => {
-      try {
-        const list = await api.listHosts()
-        if (!disposed) setHosts(list)
-      } catch (cause) {
-        if (!disposed) setListError(errorMessage(cause))
-      }
-    })()
-    return () => { disposed = true }
-  }, [api])
+  useEffect(() => () => {
+    transferAbortRef.current?.abort(Object.assign(new Error('transfer tab unmounted'), { name: 'AbortError' }))
+    transferAbortRef.current = null
+  }, [])
 
   const loadDir = async (path: string): Promise<void> => {
     if (alias === '') return
@@ -98,9 +93,8 @@ export function TransferTab({ api }: TransferTabProps) {
   }
 
   const openBrowse = (): void => {
-    if (alias === '') return
     setBrowseOpen(true)
-    const path = remotePath.trim() === '' ? '/' : remotePath.trim()
+    const path = remotePath.trim() === '' ? remoteRoot : remotePath.trim()
     void loadDir(path)
   }
 
@@ -108,10 +102,13 @@ export function TransferTab({ api }: TransferTabProps) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (file === undefined || alias === '' || remotePath.trim() === '' || transfer !== null) return
+    const controller = new AbortController()
+    transferAbortRef.current = controller
     setStatus(null)
     setTransfer({ kind: 'upload', phase: 'connecting', percent: 0, file: file.name })
     try {
       const outcome = await api.uploadFile(file, alias, remotePath.trim(), progress => {
+        if (transferAbortRef.current !== controller || controller.signal.aborted) return
         setTransfer(prev => prev === null ? prev : {
           kind: 'upload',
           phase: progress.phase,
@@ -119,21 +116,31 @@ export function TransferTab({ api }: TransferTabProps) {
           speedBps: progress.speedBps,
           file: progress.file,
         })
-      })
-      setStatus({ kind: 'ok', bytes: outcome.transferredBytes })
+      }, controller.signal)
+      if (transferAbortRef.current === controller && !controller.signal.aborted) {
+        setStatus({ kind: 'ok', bytes: outcome.transferredBytes })
+      }
     } catch (cause) {
-      setStatus({ kind: 'error', error: errorMessage(cause) })
+      if (transferAbortRef.current === controller && !controller.signal.aborted) {
+        setStatus({ kind: 'error', error: errorMessage(cause) })
+      }
     } finally {
-      setTransfer(null)
+      if (transferAbortRef.current === controller) {
+        transferAbortRef.current = null
+        if (!controller.signal.aborted) setTransfer(null)
+      }
     }
   }
 
   const handleDownload = async (): Promise<void> => {
     if (alias === '' || remotePath.trim() === '' || transfer !== null) return
+    const controller = new AbortController()
+    transferAbortRef.current = controller
     setStatus(null)
     setTransfer({ kind: 'download', phase: 'connecting', percent: 0, file: remotePath.trim() })
     try {
       const result = await api.downloadFile(alias, remotePath.trim(), progress => {
+        if (transferAbortRef.current !== controller || controller.signal.aborted) return
         setTransfer(prev => prev === null ? prev : {
           kind: 'download',
           phase: progress.phase,
@@ -141,7 +148,8 @@ export function TransferTab({ api }: TransferTabProps) {
           speedBps: progress.speedBps,
           file: progress.file,
         })
-      })
+      }, controller.signal)
+      if (transferAbortRef.current !== controller || controller.signal.aborted) return
       // Streamed downloads (File System Access API) were already saved; the
       // Blob fallback triggers a browser save here.
       if (!result.streamed && result.blob !== undefined) {
@@ -157,23 +165,25 @@ export function TransferTab({ api }: TransferTabProps) {
       }
       setStatus({ kind: 'ok', bytes: result.bytes })
     } catch (cause) {
-      setStatus({ kind: 'error', error: errorMessage(cause) })
+      if (transferAbortRef.current === controller && !controller.signal.aborted) {
+        setStatus({ kind: 'error', error: errorMessage(cause) })
+      }
     } finally {
-      setTransfer(null)
+      if (transferAbortRef.current === controller) {
+        transferAbortRef.current = null
+        if (!controller.signal.aborted) setTransfer(null)
+      }
     }
   }
 
-  const ready = alias !== '' && remotePath.trim() !== '' && transfer === null
+  const ready = remotePath.trim() !== '' && transfer === null
 
   return (
     <div className={css.tabBody}>
       <div className={css.controls}>
-        <select className={css.input} value={alias} onChange={event => { setAlias(event.target.value) }}>
-          <option value="">{tt('transfer.selectHost')}</option>
-          {hosts.map(host => <option key={host.alias} value={host.alias}>{host.alias} ({host.host})</option>)}
-        </select>
+        <span className={css.targetBadge}>{alias}</span>
         <input className={css.input} placeholder={tt('transfer.remotePathHint')} value={remotePath} onChange={event => { setRemotePath(event.target.value) }} />
-        <button type="button" className={css.ghostButton} disabled={alias === ''} onClick={openBrowse}>{tt('transfer.browseRemote')}</button>
+        <button type="button" className={css.ghostButton} onClick={openBrowse}>{tt('transfer.browseRemote')}</button>
         <div className={css.toolbarSpacer} />
         <button type="button" className={css.primaryButton} disabled={!ready} onClick={() => { fileRef.current?.click() }}>{tt('transfer.upload')}</button>
         <button type="button" className={css.ghostButton} disabled={!ready} onClick={() => { void handleDownload() }}>{tt('transfer.download')}</button>

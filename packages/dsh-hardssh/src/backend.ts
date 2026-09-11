@@ -1,50 +1,24 @@
 /**
- * Gated filesystem backends and the production workspace file service.
+ * The generic record source the SSH workspace API projects.
  *
- * UI workspace routes resolve an exact ledger anchor and then create a
- * request-scoped RemoteBackend. There is no implicit local fallback and no
- * dependency on the legacy global SSH mode state.
+ * `GenericWorkspaceStore` is the single record source: it projects the generic
+ * `WorkspaceLedger` (via `WorkspaceCore`) into the client SSH DTO and performs
+ * workspace CRUD through the generic core. There is no implicit local fallback
+ * and no dependency on any retired global SSH mode state.
  */
 
-import type { Dirent, Stats } from 'node:fs'
-import {
-  mkdir,
-  readdir,
-  readFile,
-  realpath,
-  stat,
-  writeFile,
-} from 'node:fs/promises'
-import {
-  dirname,
-  isAbsolute,
-  join,
-  relative,
-  resolve,
-  sep,
-} from 'node:path'
+import { realpathSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { join } from 'node:path'
 import { posix } from 'node:path'
-import type { SshEngine } from './ssh/engine.ts'
-import { shellQuote } from './shell.ts'
-import { RemoteSearchService, type RemoteNameSearch } from './remote-search.ts'
-import type { SshWorkspaceLedger } from './ledger.ts'
+import { defaultTitle, normalizeRemoteRoot as normalizeSshRemoteRoot } from './ledger.ts'
+import { isPathUnderAnchor as baseIsPathUnderAnchor, normalizeAnchorPath as baseNormalizeAnchorPath, WORKSPACE_LEDGER_SCHEMA_VERSION } from './base/ledger.ts'
+import type { WorkspaceRecord } from './base/model.ts'
+import type { WorkspaceCore } from './runtime/workspace-core.ts'
 import type {
-  DirListing,
-  FileRead,
-  FileWriteResult,
-  SearchHit,
-  SearchView,
   SshWorkspaceRecord,
   WorkspaceEntry,
 } from './protocol.ts'
-
-export const SEARCH_HIT_CAP = 200
-export const SEARCH_SCAN_CAP = 20_000
-export const SEARCH_MAX_DEPTH = 4
-export const REMOTE_SEARCH_TIMEOUT_MS = 20_000
-
-const SEARCH_SKIP_DIRS = new Set(['.git', 'node_modules'])
-const TREE_SKIP_DIRS = new Set(['.git'])
 
 export type BackendErrorCode =
   | 'binary'
@@ -69,38 +43,51 @@ export class BackendError extends Error {
   }
 }
 
-export interface WorkspaceFileContext {
-  workspaceId: string
-  requestedRoot: string
-  anchorPath: string
-  alias: string
-  remoteRoot: string
+/**
+ * The SSH-workspace record source the workspace routes, agent tools, and the
+ * SSH host-delete reference guard satisfy. Every consumer depends on this
+ * narrow view, so none of them knows which ledger implementation is
+ * authoritative.
+ */
+export interface WorkspaceStoreView {
+  /** Every SSH-bound workspace as the client DTO. */
+  list(): Promise<SshWorkspaceRecord[]>
+  get(id: string): Promise<SshWorkspaceRecord | undefined>
+  findByAnchor(path: string): Promise<SshWorkspaceRecord | undefined>
+  /** Synchronous anchor lookup used by the session announcement. */
+  findByAnchorSync(path: string): SshWorkspaceRecord | undefined
+  /** Create an SSH workspace (title/alias/remoteRoot); the anchor is managed by the store. */
+  create(input: { title: string; alias: string; remoteRoot: string }): Promise<SshWorkspaceRecord>
+  rename(id: string, title: string): Promise<SshWorkspaceRecord | undefined>
+  remove(id: string): Promise<boolean>
+  /** The shared anchor root (fail-closed gating before the runtime is ready). */
+  anchorsRoot(): string
 }
 
-export interface WorkspaceFileService {
-  resolveContext(root: string): Promise<WorkspaceFileContext>
-  list(root: string, rel: string): Promise<DirListing>
-  read(root: string, rel: string): Promise<FileRead>
-  write(
-    root: string,
-    rel: string,
-    content: string,
-    expectedMtime?: number,
-  ): Promise<FileWriteResult>
-  search(root: string, query: string): Promise<SearchView>
-}
-
-export interface WorkspaceBackend {
-  assertRoot(root: string): void
-  list(root: string, rel: string): Promise<DirListing>
-  read(root: string, rel: string): Promise<FileRead>
-  write(
-    root: string,
-    rel: string,
-    content: string,
-    expectedMtime?: number,
-  ): Promise<FileWriteResult>
-  search(root: string, query: string): Promise<SearchView>
+/**
+ * Project one generic SSH `WorkspaceRecord` into the client `SshWorkspaceRecord`
+ * DTO (id/title/alias/remoteRoot/anchorPath/createdAt). The wire contract is
+ * preserved server-side; no client or protocol change accompanies the cutover.
+ * A generic ledger hands out provider-agnostic WorkspaceRecord values, so the
+ * projection cannot reuse any legacy accessor — it exists once for the generic
+ * record source.
+ */
+function toSshWorkspaceDto(record: WorkspaceRecord): SshWorkspaceRecord {
+  // A legacy alias maps 1:1 to provider.connectionRef.{id,alias} (migration
+  // keeps both equal); prefer the display alias, falling back to the ref id.
+  const alias = record.provider.connectionRef?.alias ?? record.provider.connectionRef?.id ?? ''
+  // Every SSH record created through this plugin carries a managed anchor; a
+  // hand-made record without one projects an empty anchor (never throws, so
+  // stale sidebar lists keep rendering) and simply never binds a session.
+  const anchorPath = record.anchor?.path ?? ''
+  return {
+    id: record.id,
+    title: record.title,
+    alias,
+    remoteRoot: record.location.root,
+    anchorPath,
+    createdAt: record.createdAt,
+  }
 }
 
 /**
@@ -151,9 +138,7 @@ export function relToAbs(root: string, rel: string): string {
   return abs
 }
 
-export { shellQuote }
-
-/** Stable dir-first, case-insensitive ordering shared by every backend. */
+/** Stable dir-first, case-insensitive ordering shared by every listing. */
 export function sortWorkspaceEntries(entries: WorkspaceEntry[]): WorkspaceEntry[] {
   return [...entries].sort((a, b) => {
     const aDir = a.type === 'dir'
@@ -164,60 +149,6 @@ export function sortWorkspaceEntries(entries: WorkspaceEntry[]): WorkspaceEntry[
   })
 }
 
-export type WorkspacePathFlavor = 'local' | 'remote'
-
-/** Return abs relative to root, rejecting prefix-collision/parent traversal. */
-export function relativeWorkspacePath(
-  root: string,
-  abs: string,
-  flavor: WorkspacePathFlavor,
-): string {
-  if (flavor === 'remote') {
-    const normalizedRoot = normalizeRemoteRoot(root)
-    const normalizedAbs = posix.normalize(abs)
-    if (!isInside(normalizedRoot, normalizedAbs)) {
-      throw new BackendError('outside-root', `path '${abs}' is outside root '${root}'`)
-    }
-    const rel = posix.relative(normalizedRoot, normalizedAbs)
-    return rel === '' ? '' : normalizeRel(rel)
-  }
-
-  const normalizedRoot = resolve(root)
-  const normalizedAbs = resolve(abs)
-  const rel = relative(normalizedRoot, normalizedAbs)
-  if (rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
-    throw new BackendError('outside-root', `path '${abs}' is outside root '${root}'`)
-  }
-  return rel === '' ? '' : rel.split(sep).join('/')
-}
-
-/** Normalize filesystem/SFTP errors to stable route-visible codes. */
-export function toBackendIoError(error: unknown, path: string): BackendError {
-  if (error instanceof BackendError) return error
-  const errno = error as NodeJS.ErrnoException
-  const message = error instanceof Error ? error.message : String(error)
-  const lower = message.toLowerCase()
-
-  if (
-    errno.code === 'ENOENT'
-    || errno.code === 'ENOTDIR'
-    || /\bno such file\b/.test(lower)
-    || /\bnot found\b/.test(lower)
-  ) {
-    return new BackendError('not-found', `'${path}' was not found`, { cause: error })
-  }
-  if (
-    errno.code === 'EACCES'
-    || errno.code === 'EPERM'
-    || /\bpermission denied\b/.test(lower)
-  ) {
-    return new BackendError('forbidden', `permission denied for '${path}'`, { cause: error })
-  }
-  if (/\bmtime conflict\b/.test(lower) || /\bconflict\b/.test(lower)) {
-    return new BackendError('conflict', message, { cause: error })
-  }
-  return new BackendError('io', `'${path}': ${message}`, { cause: error })
-}
 
 /** Map a BackendError to its stable HTTP status (routes use this). */
 export function backendErrorStatus(error: BackendError, ioStatus: 500 | 502): number {
@@ -253,372 +184,113 @@ function normalizeRemoteRoot(root: string): string {
   return normalized === '/' ? '/' : normalized.replace(/\/+$/, '')
 }
 
-function decodeText(buffer: Buffer, path: string): string {
-  const probe = buffer.subarray(0, Math.min(buffer.length, 8192))
-  if (probe.includes(0)) {
-    throw new BackendError('binary', `'${path}' is not a text file`)
-  }
-  return buffer.toString('utf8')
-}
-
-function canonicalLocalPath(path: string): string {
-  const result = resolve(path).replace(/[\\/]+$/, '')
-  return process.platform === 'win32' ? result.toLowerCase() : result
-}
-
-function sameLocalPath(a: string, b: string): boolean {
-  return canonicalLocalPath(a) === canonicalLocalPath(b)
-}
-
-function sanitizeSearchQuery(query: string): string {
-  return query.replace(/\0/g, '').replace(/[\r\n]/g, ' ').slice(0, 128)
-}
 
 /**
- * Local implementation retained for explicit local-only consumers. It is
- * deliberately NOT selected by LedgerWorkspaceFileService.
+ * The single record source: projects the generic `WorkspaceLedger` (via
+ * `WorkspaceCore`) into the client SSH DTO and performs workspace CRUD through
+ * the generic core. Routes, agent tools, and the SSH host-delete guard stay
+ * store-agnostic behind `WorkspaceStoreView`. New SSH workspaces keep the
+ * established anchor layout (~/.dsh/ssh-workspaces/<id>) so existing
+ * sidebar/session bindings and the host workspace registry stay unchanged.
  */
-export class LocalBackend implements WorkspaceBackend {
-  assertRoot(root: string): void {
-    if (!isAbsolute(root)) {
-      throw new BackendError('outside-root', `root must be an absolute local path (got '${root}')`)
-    }
-  }
-
-  async list(root: string, rel: string): Promise<DirListing> {
-    const abs = await this.resolvePath(root, rel)
-    let dirents: Dirent[]
-    try {
-      dirents = await readdir(abs, { withFileTypes: true })
-    } catch (error) {
-      throw toBackendIoError(error, abs)
-    }
-    const entries = dirents
-      .filter(entry => !TREE_SKIP_DIRS.has(entry.name))
-      .map((entry): WorkspaceEntry => ({
-        name: entry.name,
-        type: entry.isDirectory() ? 'dir' : entry.isFile() ? 'file' : 'other',
-        size: 0,
-        mtimeMs: 0,
-      }))
-    return { path: abs, entries: sortWorkspaceEntries(entries) }
-  }
-
-  async read(root: string, rel: string): Promise<FileRead> {
-    const abs = await this.resolvePath(root, rel)
-    let buffer: Buffer
-    let stats: Stats
-    try {
-      ;[buffer, stats] = await Promise.all([readFile(abs), stat(abs)])
-    } catch (error) {
-      throw toBackendIoError(error, abs)
-    }
-    if (!stats.isFile()) {
-      throw new BackendError('invalid', `'${abs}' is not a regular file`)
-    }
-    return { path: abs, content: decodeText(buffer, abs), size: stats.size, mtime: stats.mtimeMs }
-  }
-
-  async write(
-    root: string,
-    rel: string,
-    content: string,
-    expectedMtime?: number,
-  ): Promise<FileWriteResult> {
-    const abs = await this.resolvePath(root, rel)
-    if (expectedMtime !== undefined) {
-      let stats: Stats
-      try {
-        stats = await stat(abs)
-      } catch (error) {
-        throw toBackendIoError(error, abs)
-      }
-      if (Math.round(stats.mtimeMs) !== Math.round(expectedMtime)) {
-        throw new BackendError(
-          'conflict',
-          `mtime conflict: current ${Math.round(stats.mtimeMs)} != expected ${Math.round(expectedMtime)}`,
-        )
-      }
-    }
-    try {
-      await mkdir(dirname(abs), { recursive: true })
-      // Re-run the realpath-walk after mkdir: a concurrent actor may have
-      // introduced a symlink while the parent chain was being created.
-      await this.assertRealpathWalk(root, abs, rel)
-      await writeFile(abs, content, 'utf8')
-      const stats = await stat(abs)
-      return { mtime: stats.mtimeMs }
-    } catch (error) {
-      throw toBackendIoError(error, abs)
-    }
-  }
-
-  async search(root: string, query: string): Promise<SearchView> {
-    const rootAbs = await this.resolvePath(root, '')
-    const needle = query.toLocaleLowerCase()
-    const hits: SearchHit[] = []
-    let scanned = 0
-    let truncated = false
-
-    const walk = async (dir: string, depth: number): Promise<void> => {
-      if (depth > SEARCH_MAX_DEPTH) return
-      if (hits.length >= SEARCH_HIT_CAP || scanned >= SEARCH_SCAN_CAP) {
-        truncated = true
-        return
-      }
-      let dirents: Dirent[]
-      try {
-        dirents = await readdir(dir, { withFileTypes: true })
-      } catch {
-        return
-      }
-      for (const entry of dirents) {
-        scanned += 1
-        if (scanned > SEARCH_SCAN_CAP) {
-          truncated = true
-          return
-        }
-        if (entry.isDirectory() && SEARCH_SKIP_DIRS.has(entry.name)) continue
-        const abs = join(dir, entry.name)
-        // Directory symlinks are not followed (Dirent.isDirectory() is false
-        // for symlinks).
-        if (entry.isDirectory()) {
-          if (entry.name.toLocaleLowerCase().includes(needle)) {
-            hits.push({ path: abs, rel: relativeWorkspacePath(rootAbs, abs, 'local'), isDir: true })
-          }
-          await walk(abs, depth + 1)
-        } else if (entry.isFile() && entry.name.toLocaleLowerCase().includes(needle)) {
-          hits.push({ path: abs, rel: relativeWorkspacePath(rootAbs, abs, 'local'), isDir: false })
-        }
-        if (hits.length >= SEARCH_HIT_CAP) {
-          truncated = true
-          return
-        }
-      }
-    }
-
-    await walk(rootAbs, 0)
-    return { query, hits: hits.slice(0, SEARCH_HIT_CAP), truncated }
-  }
-
-  private async resolvePath(root: string, rel: string): Promise<string> {
-    this.assertRoot(root)
-    const normalized = normalizeRel(rel)
-    const normalizedRoot = resolve(root)
-    const abs = normalized === '' ? normalizedRoot : resolve(normalizedRoot, ...normalized.split('/'))
-    relativeWorkspacePath(normalizedRoot, abs, 'local')
-    await this.assertRealpathWalk(normalizedRoot, abs, rel)
-    return abs
-  }
-
-  /** Resolve the nearest existing ancestor; root and every existing target
-   *  ancestor must resolve below the real workspace root. */
-  private async assertRealpathWalk(root: string, abs: string, rel: string): Promise<void> {
-    let realRoot: string
-    try {
-      realRoot = await realpath(root)
-    } catch (error) {
-      throw toBackendIoError(error, root)
-    }
-    let probe = abs
-    for (;;) {
-      try {
-        const realProbe = await realpath(probe)
-        relativeWorkspacePath(realRoot, realProbe, 'local')
-        return
-      } catch (error) {
-        if (error instanceof BackendError) throw error
-        const code = (error as NodeJS.ErrnoException).code
-        if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-          throw toBackendIoError(error, probe)
-        }
-        const parent = dirname(probe)
-        if (parent === probe) {
-          throw new BackendError('outside-root', `path cannot be resolved below workspace root: '${rel}'`)
-        }
-        probe = parent
-      }
-    }
-  }
-}
-
-/** A request-scoped remote backend bound to one immutable ledger record. */
-export class RemoteBackend implements WorkspaceBackend {
-  private readonly remoteRoot: string
-
+export class GenericWorkspaceStore implements WorkspaceStoreView {
   constructor(
-    private readonly engine: SshEngine,
-    private readonly record: SshWorkspaceRecord,
-    private readonly searchService: RemoteSearchService,
-  ) {
-    this.remoteRoot = normalizeRemoteRoot(record.remoteRoot)
-  }
-
-  assertRoot(root: string): void {
-    if (normalizeRemoteRoot(root) !== this.remoteRoot) {
-      throw new BackendError('root-mismatch', `root '${root}' does not match remote workspace root '${this.remoteRoot}'`)
-    }
-  }
-
-  async list(root: string, rel: string): Promise<DirListing> {
-    this.assertRoot(root)
-    const abs = relToAbs(this.remoteRoot, rel)
-    try {
-      const entries = await this.engine.ls(this.record.alias, abs)
-      return {
-        path: abs,
-        entries: sortWorkspaceEntries(
-          entries
-            .filter(entry => !TREE_SKIP_DIRS.has(entry.name))
-            .map((entry): WorkspaceEntry => ({
-              name: entry.name,
-              type: entry.type,
-              size: entry.size,
-              mtimeMs: entry.mtimeMs,
-            })),
-        ),
-      }
-    } catch (error) {
-      throw toBackendIoError(error, abs)
-    }
-  }
-
-  async read(root: string, rel: string): Promise<FileRead> {
-    this.assertRoot(root)
-    const abs = relToAbs(this.remoteRoot, rel)
-    try {
-      const result = await this.engine.readFile(this.record.alias, abs)
-      return {
-        path: abs,
-        content: decodeText(result.content, abs),
-        size: result.size,
-        mtime: result.mtime,
-      }
-    } catch (error) {
-      throw toBackendIoError(error, abs)
-    }
-  }
-
-  async write(
-    root: string,
-    rel: string,
-    content: string,
-    expectedMtime?: number,
-  ): Promise<FileWriteResult> {
-    this.assertRoot(root)
-    const abs = relToAbs(this.remoteRoot, rel)
-    try {
-      const result = await this.engine.writeFile(
-        this.record.alias,
-        abs,
-        Buffer.from(content, 'utf8'),
-        expectedMtime,
-      )
-      return { mtime: result.mtime }
-    } catch (error) {
-      throw toBackendIoError(error, abs)
-    }
-  }
-
-  async search(root: string, query: string): Promise<SearchView> {
-    this.assertRoot(root)
-    let found: RemoteNameSearch
-    try {
-      found = await this.searchService.searchNames({ alias: this.record.alias, root: this.remoteRoot }, query)
-    } catch (error) {
-      throw toBackendIoError(error, this.remoteRoot)
-    }
-    const hits: SearchHit[] = []
-    for (const hit of found.hits) {
-      // Never trust command output as authorization evidence.
-      const rel = relativeWorkspacePath(this.remoteRoot, hit.path, 'remote')
-      hits.push({ path: posix.normalize(hit.path), rel, isDir: hit.isDir })
-    }
-    return { query: found.query, hits, truncated: found.truncated }
-  }
-}
-
-/** Production UI service: exact ledger anchor -> request-scoped backend. */
-export class LedgerWorkspaceFileService implements WorkspaceFileService {
-  constructor(
-    private readonly ledger: SshWorkspaceLedger,
-    private readonly engine: SshEngine,
-    private readonly searchService: RemoteSearchService,
+    private readonly core: WorkspaceCore,
+    /** Resolves when the generic runtime (migration + initialize) finished;
+     *  rejects on any startup failure so every consumer fails closed instead
+     *  of silently reading an un-migrated or corrupt ledger. */
+    private readonly ready: Promise<void>,
+    /** Anchor root for newly created SSH workspaces (~/.dsh/ssh-workspaces). */
+    private readonly anchorBase: string,
   ) {}
 
-  async resolveContext(root: string): Promise<WorkspaceFileContext> {
-    if (
-      typeof root !== 'string'
-      || root === ''
-      || root.includes('\0')
-      || !isAbsolute(root)
-    ) {
-      throw new BackendError('outside-root', 'root must be an absolute workspace anchor path')
-    }
-
-    const record = await this.ledger.findByAnchor(root)
-    if (record === undefined) {
-      throw new BackendError('not-remote', `root '${root}' is not bound to an SSH workspace`)
-    }
-
-    // findByAnchor intentionally accepts descendants for seam routing. The
-    // HTTP workspace API is narrower and requires the exact anchor.
-    if (!sameLocalPath(root, record.anchorPath)) {
-      throw new BackendError('outside-root', `root '${root}' must exactly match workspace anchor '${record.anchorPath}'`)
-    }
-
-    return {
-      workspaceId: record.id,
-      requestedRoot: root,
-      anchorPath: record.anchorPath,
-      alias: record.alias,
-      remoteRoot: normalizeRemoteRoot(record.remoteRoot),
-    }
+  /** WorkspaceCore.list() exposes every provider, but the SSH DTO surface is SSH-only, so this filters before projecting. */
+  async list(): Promise<SshWorkspaceRecord[]> {
+    await this.ready
+    const records = await this.core.list()
+    return records.filter(record => record.provider.id === 'ssh').map(toSshWorkspaceDto)
   }
 
-  async list(root: string, rel: string): Promise<DirListing> {
-    const { record, backend } = await this.resolveBackend(root)
-    return backend.list(record.remoteRoot, rel)
+  /** WorkspaceCore.get() returns generic records, so this narrows to SSH and projects the DTO. */
+  async get(id: string): Promise<SshWorkspaceRecord | undefined> {
+    await this.ready
+    const record = await this.core.get(id)
+    return record === undefined || record.provider.id !== 'ssh' ? undefined : toSshWorkspaceDto(record)
   }
 
-  async read(root: string, rel: string): Promise<FileRead> {
-    const { record, backend } = await this.resolveBackend(root)
-    return backend.read(record.remoteRoot, rel)
+  /** WorkspaceCore.findByAnchor() also resolves non-SSH workspaces, so this projects only SSH owners. */
+  async findByAnchor(path: string): Promise<SshWorkspaceRecord | undefined> {
+    await this.ready
+    const record = await this.core.findByAnchor(path)
+    return record === undefined || record.provider.id !== 'ssh' ? undefined : toSshWorkspaceDto(record)
   }
 
-  async write(
-    root: string,
-    rel: string,
-    content: string,
-    expectedMtime?: number,
-  ): Promise<FileWriteResult> {
-    const { record, backend } = await this.resolveBackend(root)
-    return backend.write(record.remoteRoot, rel, content, expectedMtime)
-  }
-
-  async search(root: string, query: string): Promise<SearchView> {
-    const { record, backend } = await this.resolveBackend(root)
-    return backend.search(record.remoteRoot, query)
-  }
-
-  private async resolveBackend(root: string): Promise<{
-    record: SshWorkspaceRecord
-    backend: RemoteBackend
-  }> {
-    const context = await this.resolveContext(root)
-    const record = await this.ledger.get(context.workspaceId)
-
-    // A concurrent deletion between resolveContext and dispatch must fail
-    // closed rather than silently selecting another backend.
-    if (
-      record === undefined
-      || !sameLocalPath(record.anchorPath, context.anchorPath)
-      || record.alias !== context.alias
-      || normalizeRemoteRoot(record.remoteRoot) !== context.remoteRoot
-    ) {
-      throw new BackendError('not-remote', `workspace '${context.workspaceId}' is no longer available`)
+  /** WorkspaceCore has no synchronous anchor lookup on the public surface, so this resolves the detached ledger snapshot lexically. */
+  findByAnchorSync(path: string): SshWorkspaceRecord | undefined {
+    const canonical = safeRealpathSync(path)
+    if (canonical === undefined) return undefined
+    const anchors = this.core.ledger.snapshotSync().records
+      .filter(record => record.provider.id === 'ssh' && record.anchor !== undefined)
+      .map(record => ({ normalized: baseNormalizeAnchorPath(record.anchor!.path), record }))
+      .sort((a, b) => b.normalized.length - a.normalized.length) // longest prefix first
+    for (const { normalized, record } of anchors) {
+      if (baseIsPathUnderAnchor(normalized, canonical)) return toSshWorkspaceDto(record)
     }
+    return undefined
+  }
 
-    return { record, backend: new RemoteBackend(this.engine, record, this.searchService) }
+  /** WorkspaceLedger.create() cannot generate SSH defaults or the SSH anchor layout, so this maps the SSH create input into a generic record first. */
+  async create(input: { title: string; alias: string; remoteRoot: string }): Promise<SshWorkspaceRecord> {
+    await this.ready
+    const root = normalizeSshRemoteRoot(input.remoteRoot)
+    // Anchor under the SSH anchor base (not the generic anchor root): ids and
+    // anchors must stay stable for sidebar/session binding.
+    const id = randomUUID()
+    const record = await this.core.create({
+      schemaVersion: WORKSPACE_LEDGER_SCHEMA_VERSION,
+      id,
+      title: input.title.trim() === '' ? defaultTitle(root, input.alias) : input.title.trim(),
+      provider: { id: 'ssh', connectionRef: { id: input.alias, alias: input.alias } },
+      location: { kind: 'posix', root },
+      anchor: { path: join(this.anchorBase, id), mode: 'managed' },
+    })
+    return toSshWorkspaceDto(record)
+  }
+
+  /** Title edits route through the generic update (the generic ledger has no SSH-specific rename). */
+  async rename(id: string, title: string): Promise<SshWorkspaceRecord | undefined> {
+    await this.ready
+    // This is an SSH-only projection over a provider-neutral core. Guard the
+    // provider before mutating so an arbitrary generic id cannot rename a local
+    // or third-party workspace through the SSH API.
+    const existing = await this.core.get(id)
+    if (existing === undefined || existing.provider.id !== 'ssh') return undefined
+    const record = await this.core.update(id, { title: title.trim() })
+    return record === undefined || record.provider.id !== 'ssh' ? undefined : toSshWorkspaceDto(record)
+  }
+
+  /** WorkspaceCore.remove() is the generic delete; the anchor directory stays in place (the host workspace may still reference it). */
+  async remove(id: string): Promise<boolean> {
+    await this.ready
+    // Match every other projection method: only SSH-owned records may cross
+    // this mutation boundary. No new Core CAS surface is introduced here.
+    const existing = await this.core.get(id)
+    if (existing === undefined || existing.provider.id !== 'ssh') return false
+    return this.core.remove(id)
+  }
+
+  /** The SSH anchor base this store creates its managed anchors under
+   *  (~/.dsh/ssh-workspaces). */
+  anchorsRoot(): string {
+    return this.anchorBase
+  }
+}
+
+/** resolve() can throw for a vanished cwd; the sync lookup must stay total. */
+function safeRealpathSync(path: string): string | undefined {
+  try {
+    return realpathSync(path)
+  } catch {
+    return undefined
   }
 }

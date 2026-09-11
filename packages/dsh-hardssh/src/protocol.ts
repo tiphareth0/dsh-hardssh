@@ -73,9 +73,6 @@ export const WORKSPACE_API_BASE = '/api/dsh-hardssh' as const
 
 export const WORKSPACE_API = {
   state: WORKSPACE_API_BASE + '/state',
-  tree: WORKSPACE_API_BASE + '/tree',
-  file: WORKSPACE_API_BASE + '/file',
-  search: WORKSPACE_API_BASE + '/search',
   sshWorkspaces: WORKSPACE_API_BASE + '/ws',
   sshWorkspaceDir: WORKSPACE_API_BASE + '/ws/dir',
 } as const
@@ -101,9 +98,6 @@ export interface SshWorkspaceRecord {
   /** When the record was created. */
   createdAt: string
 }
-
-/** The ledger of SSH-bound workspaces (persisted by the host). */
-export type SshWorkspaceLedger = SshWorkspaceRecord[]
 
 /** One remote directory entry for the picker tree. */
 export interface RemoteDirEntry {

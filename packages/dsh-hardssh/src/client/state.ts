@@ -5,7 +5,8 @@
  * between polls. There is NO global local/remote mode anymore — a session's
  * execution world is decided host-side by its cwd (an anchor path of an SSH
  * workspace routes remote); this client state only drives the management UI
- * (list / create / delete) and the sidebar title annotations.
+ * (list / create / delete) and the sidebar row decoration (remote badge + the
+ * shell's hover card path rewrite).
  */
 import type { SshWorkspaceRecord } from '../protocol.ts'
 import type { WorkspaceApi } from './api.ts'
@@ -42,6 +43,8 @@ export class WorkspaceManager {
   private state: WorkspaceManagerState = { workspaces: [], error: null }
   private readonly listeners = new Set<() => void>()
   private timer: number | undefined
+  /** Monotonic list-workspaces request id; only the newest request may commit. */
+  private refreshSequence = 0
 
   constructor(private readonly api: WorkspaceApi) {}
 
@@ -61,8 +64,10 @@ export class WorkspaceManager {
   }
 
   async refresh(): Promise<void> {
+    const request = ++this.refreshSequence
     try {
       const workspaces = await this.api.listWorkspaces()
+      if (request !== this.refreshSequence) return
       const next: WorkspaceManagerState = { workspaces, error: null }
       // Emit only on real change: identical polls keep the same snapshot
       // reference, so subscribers (badges, the manager menu) don't re-run
@@ -72,6 +77,7 @@ export class WorkspaceManager {
         this.emit()
       }
     } catch (error) {
+      if (request !== this.refreshSequence) return
       const message = error instanceof Error ? error.message : String(error)
       if (this.state.error !== message) {
         this.state = { ...this.state, error: message }
@@ -86,6 +92,8 @@ export class WorkspaceManager {
   }
 
   stop(): void {
+    // Invalidate an in-flight poll so a stopped manager cannot publish later.
+    this.refreshSequence += 1
     if (this.timer !== undefined) {
       window.clearInterval(this.timer)
       this.timer = undefined

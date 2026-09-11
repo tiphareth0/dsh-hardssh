@@ -137,8 +137,16 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
   const [addingHost, setAddingHost] = useState(false)
   const [newHost, setNewHost] = useState({ alias: '', host: '', port: '22', user: '', password: '' })
   const [savingHost, setSavingHost] = useState(false)
+  const openRef = useRef(open)
+  openRef.current = open
+  const localPickRequestSequence = useRef(0)
+  const hostsRequestSequence = useRef(0)
+  const directoryRequestSequence = useRef(0)
+  const createWorkspaceRequestSequence = useRef(0)
+  const createHostRequestSequence = useRef(0)
 
-  // Reset and re-locate on each open edge.
+  // Reset and re-locate on each open edge. Every async data source owns a
+  // request sequence; cleanup invalidates outstanding work from this opening.
   useEffect(() => {
     if (!open) return
     setChoice('menu')
@@ -146,12 +154,31 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
     setDirPath('')
     setTitle('')
     setDirEntries([])
+    setLoading(false)
+    setCreating(false)
+    setSavingHost(false)
     setError(null)
     setAddingHost(false)
     setNewHost({ alias: '', host: '', port: '22', user: '', password: '' })
     setAnchorRect()
-    // Lazy-load the host list for the SSH branch.
-    props.listHosts().then((list) => setHosts(list)).catch(() => setHosts([]))
+    // Lazy-load the host list for the SSH branch. A later refresh (for
+    // example after adding a host) supersedes this request.
+    const request = ++hostsRequestSequence.current
+    void props.listHosts().then(
+      (list) => {
+        if (request === hostsRequestSequence.current && openRef.current) setHosts(list)
+      },
+      () => {
+        if (request === hostsRequestSequence.current && openRef.current) setHosts([])
+      },
+    )
+    return () => {
+      localPickRequestSequence.current += 1
+      hostsRequestSequence.current += 1
+      directoryRequestSequence.current += 1
+      createWorkspaceRequestSequence.current += 1
+      createHostRequestSequence.current += 1
+    }
   }, [open])
 
   /** Locate the trigger element that just opened the flow and anchor the menu
@@ -196,16 +223,22 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
 
   /** Choose "Local workspace": drive the native chooser once. */
   const pickLocal = (): void => {
+    const request = ++localPickRequestSequence.current
     setChoice('picking-local')
     props.pickDirectory().then(
       (path) => {
+        if (request !== localPickRequestSequence.current || !openRef.current) return
         if (path === null) {
           outcome.current.onCancel()
         } else {
           outcome.current.onPicked(path)
         }
       },
-      (reason) => outcome.current.onError(reason instanceof Error ? reason.message : String(reason)),
+      (reason) => {
+        if (request === localPickRequestSequence.current && openRef.current) {
+          outcome.current.onError(reason instanceof Error ? reason.message : String(reason))
+        }
+      },
     )
   }
 
@@ -213,32 +246,39 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
    *  a credential (host key untrusted / session password), run the interactive
    *  gate first, then retry — the operator never sees a raw "connect" error. */
   const browse = async (alias: string, path?: string): Promise<void> => {
+    const request = ++directoryRequestSequence.current
     if (alias === '') {
       setError(tt('create.needHost'))
       return
     }
-    for (let attempt = 0; attempt < 3; attempt++) {
-      setLoading(true)
-      setError(null)
-      try {
-        const result = await props.listRemoteDir(alias, path)
-        setDirPath(result.path)
-        setDirEntries(result.entries)
-        setChoice('browsing')
-        setLoading(false)
-        return
-      } catch (e: unknown) {
-        const code = (e as { code?: string })?.code
-        const interactive = code === 'NEEDS_PASSWORD' || code === 'HOST_KEY_UNKNOWN' || code === 'HOST_KEY_MISMATCH'
-        setLoading(false)
-        if (!interactive) {
-          setError(e instanceof Error ? e.message : String(e))
+    setLoading(true)
+    setError(null)
+    try {
+      for (let attempt = 0; attempt < 3; attempt++) {
+        try {
+          const result = await props.listRemoteDir(alias, path)
+          if (request !== directoryRequestSequence.current || !openRef.current) return
+          setDirPath(result.path)
+          setDirEntries(result.entries)
+          setChoice('browsing')
           return
+        } catch (e: unknown) {
+          if (request !== directoryRequestSequence.current || !openRef.current) return
+          const code = (e as { code?: string })?.code
+          const interactive = code === 'NEEDS_PASSWORD' || code === 'HOST_KEY_UNKNOWN' || code === 'HOST_KEY_MISMATCH'
+          if (!interactive) {
+            setError(e instanceof Error ? e.message : String(e))
+            return
+          }
+          const connected = await props.ensureConnected(alias)
+          if (request !== directoryRequestSequence.current || !openRef.current) return
+          if (!connected) return // user cancelled
         }
-        if (!await props.ensureConnected(alias)) return // user cancelled
       }
+      if (request === directoryRequestSequence.current && openRef.current) setError(tt('create.needConnect'))
+    } finally {
+      if (request === directoryRequestSequence.current && openRef.current) setLoading(false)
     }
-    setError(tt('create.needConnect'))
   }
 
   /** Create the SSH workspace; on success hand the anchor to the owner. */
@@ -247,20 +287,23 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
       setError(host === '' ? tt('create.needHost') : dirPath === '' ? tt('create.needDir') : tt('create.needTitle'))
       return
     }
+    const request = ++createWorkspaceRequestSequence.current
     setCreating(true)
     setError(null)
     try {
       const record = await props.createSshWorkspace({ title: title.trim(), alias: host, remoteRoot: dirPath })
+      if (request !== createWorkspaceRequestSequence.current || !openRef.current) return
       // The anchor is a REAL local dir (host workspace registration happens on
       // the server); adopt it so the host workspace list refreshes.
       outcome.current.onPicked(record.anchorPath)
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
+      if (request === createWorkspaceRequestSequence.current && openRef.current) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
-      // Always reset: the owner may keep the flow open after onPicked (e.g.
-      // a host-side adoption error), and a stuck `creating=true` would lock
-      // the button forever.
-      setCreating(false)
+      // Always reset for the active opening: the owner may keep the flow open
+      // after onPicked (e.g. a host-side adoption error).
+      if (request === createWorkspaceRequestSequence.current && openRef.current) setCreating(false)
     }
   }
 
@@ -272,6 +315,7 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
       setError(tt('host.needFields'))
       return
     }
+    const request = ++createHostRequestSequence.current
     setSavingHost(true)
     setError(null)
     try {
@@ -282,15 +326,24 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
         user: newHost.user.trim(),
         auth: { kind: 'password', password: newHost.password },
       })
+      if (request !== createHostRequestSequence.current || !openRef.current) return
+      const hostsRequest = ++hostsRequestSequence.current
       const list = await props.listHosts()
+      if (
+        request !== createHostRequestSequence.current
+        || hostsRequest !== hostsRequestSequence.current
+        || !openRef.current
+      ) return
       setHosts(list)
       setHost(created.alias)
       setAddingHost(false)
       setNewHost({ alias: '', host: '', port: '22', user: '', password: '' })
     } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e))
+      if (request === createHostRequestSequence.current && openRef.current) {
+        setError(e instanceof Error ? e.message : String(e))
+      }
     } finally {
-      setSavingHost(false)
+      if (request === createHostRequestSequence.current && openRef.current) setSavingHost(false)
     }
   }
 
@@ -392,7 +445,7 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
               <>
                 <label className={css.field} style={{ gridColumn: '1 / -1' }}>
                   <span>{tt('create.host')}</span>
-                  <select value={host} onChange={(event) => setHost(event.target.value)}>
+                  <select value={host} disabled={loading} onChange={(event) => setHost(event.target.value)}>
                     <option value="">{hosts.length === 0 ? tt('create.hostEmpty') : '—'}</option>
                     {hosts.map((item) => (
                       <option key={item.alias} value={item.alias}>{item.alias} ({item.user}@{item.host}:{item.port})</option>
@@ -403,6 +456,7 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
                   type="button"
                   className={css.menuItem}
                   style={{ gridColumn: '1 / -1', padding: '5px 8px' }}
+                  disabled={loading}
                   onClick={() => setAddingHost(true)}
                 >
                   <span className={css.menuItemIcon}>＋</span>
@@ -410,7 +464,7 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
                 </button>
                 <label className={css.field} style={{ gridColumn: '1 / -1' }}>
                   <span>{tt('create.dir')}</span>
-                  <input value={dirPath} onChange={(event) => setDirPath(event.target.value)} placeholder={tt('create.dirPlaceholder')} spellCheck={false} />
+                  <input value={dirPath} disabled={loading} onChange={(event) => setDirPath(event.target.value)} placeholder={tt('create.dirPlaceholder')} spellCheck={false} />
                 </label>
                 <div className={css.dialogActions} style={{ gridColumn: '1 / -1' }}>
                   <button type="button" className={css.button} disabled={busy || loading} onClick={() => void browse(host)}>
@@ -425,8 +479,8 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
             )}
             {!addingHost && (
               <div className={css.dialogActions} style={{ gridColumn: '1 / -1' }}>
-                <button type="button" className={css.button} onClick={() => setChoice('menu')} disabled={busy || creating}>{tt('create.cancel')}</button>
-                <button type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={busy || creating} onClick={() => void createSsh()}>
+                <button type="button" className={css.button} onClick={() => setChoice('menu')} disabled={busy || creating || loading}>{tt('create.cancel')}</button>
+                <button type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={busy || creating || loading} onClick={() => void createSsh()}>
                   {creating ? tt('create.connecting') : tt('create.submit')}
                 </button>
               </div>
@@ -460,7 +514,8 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
                   key={entry.name}
                   type="button"
                   className={css.hostRow}
-                  style={{ width: '100%', textAlign: 'left', display: 'flex', gap: 6, alignItems: 'center', border: 'none', background: 'transparent', cursor: 'pointer', padding: '4px 6px' }}
+                  disabled={loading}
+                  style={{ width: '100%', textAlign: 'left', display: 'flex', gap: 6, alignItems: 'center', border: 'none', background: 'transparent', cursor: loading ? 'default' : 'pointer', padding: '4px 6px' }}
                   onClick={() => { void browse(host, `${dirPath.replace(/\/+$/, '')}/${entry.name}`) }}
                 >
                   <span>📁</span>
@@ -469,8 +524,8 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
               ))}
             </div>
             <div className={css.dialogActions} style={{ gridColumn: '1' }}>
-              <button type="button" className={css.button} onClick={() => setChoice('ssh')}>{tt('create.cancel')}</button>
-              <button type="button" className={`${css.button} ${css.buttonPrimary}`} onClick={() => setChoice('ssh')}>
+              <button type="button" className={css.button} disabled={loading} onClick={() => setChoice('ssh')}>{tt('create.cancel')}</button>
+              <button type="button" className={`${css.button} ${css.buttonPrimary}`} disabled={loading} onClick={() => setChoice('ssh')}>
                 {tt('flow.useThisDir')}
               </button>
             </div>

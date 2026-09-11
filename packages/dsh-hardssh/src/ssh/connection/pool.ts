@@ -24,12 +24,27 @@ export interface SshConnectionService {
 export interface ConnectionPoolOptions {
   idleTimeoutMs: number
   /** Open a fresh SSH connection (with jump chain) for one alias. */
-  connect(alias: string): Promise<{ client: Client; hops: Client[] }>
+  connect(alias: string, signal?: AbortSignal): Promise<{ client: Client; hops: Client[] }>
   /** Called when a pooled connection is torn down (e.g. drop SFTP cache). */
   onDispose?(client: Client): void
+  /**
+   * Called once when an alias's pooled transport is retired (idle sweep,
+   * invalidation, shutdown). Session-scoped credentials are tied to the pooled
+   * connection's lifetime, so this is where they are dropped — otherwise a
+   * secret entered for one connection would outlive it for the whole process.
+   */
+  onRetire?(alias: string): void
+}
+
+interface PendingConnect {
+  promise: Promise<PoolRecord>
+  controller: AbortController
+  waiters: number
+  settled: boolean
 }
 
 interface PoolRecord {
+  alias: string
   client: Client
   hops: Client[]
   idleAt: number
@@ -55,7 +70,7 @@ function createAbortError(): Error {
  */
 export class ConnectionPool implements SshConnectionService {
   private readonly records = new Map<string, PoolRecord>()
-  private readonly acquireQueue = new Map<string, Promise<PoolRecord>>()
+  private readonly acquireQueue = new Map<string, PendingConnect>()
   private readonly generations = new Map<string, number>()
   private readonly options: ConnectionPoolOptions
   private readonly sweepTimer: NodeJS.Timeout
@@ -77,9 +92,7 @@ export class ConnectionPool implements SshConnectionService {
       throw new Error(`SSH connection '${alias}' is draining`)
     }
 
-    if (record === undefined) {
-      record = await this.acquireRecord(alias)
-    }
+    if (record === undefined) record = await this.acquireRecord(alias, options.signal)
 
     if (options.signal !== undefined && options.signal.aborted) throw createAbortError()
 
@@ -104,10 +117,25 @@ export class ConnectionPool implements SshConnectionService {
     void options?.includeDependents
 
     this.generations.set(alias, (this.generations.get(alias) ?? 0) + 1)
+    this.acquireQueue.get(alias)?.controller.abort()
 
     const record = this.records.get(alias)
-    if (record === undefined) return
+    if (record === undefined) {
+      // No pooled transport to tear down — but the alias's session credential
+      // is still dead (a config change may have replaced the host, or the
+      // connection was already reaped). Notifying here is what keeps the
+      // "secret lives for the connection's lifetime" promise true for an alias
+      // that is currently disconnected; returning early left it process-lifetime.
+      this.options.onRetire?.(alias)
+      return
+    }
 
+    // Remove the retired generation from the active slot immediately. Its
+    // existing leases still own the record object and drain normally, while a
+    // subsequent acquire can install the new generation under this alias.
+    // disposeRecord's identity guard prevents the old record from deleting the
+    // replacement when its final lease eventually releases.
+    this.records.delete(alias)
     record.draining = true
 
     if (options?.mode === 'force') {
@@ -138,27 +166,54 @@ export class ConnectionPool implements SshConnectionService {
     return aliases
   }
 
-  private async acquireRecord(alias: string): Promise<PoolRecord> {
-    const pending = this.acquireQueue.get(alias)
-    if (pending !== undefined) return pending
+  private async acquireRecord(alias: string, signal?: AbortSignal): Promise<PoolRecord> {
+    let pending = this.acquireQueue.get(alias)
+    if (pending === undefined) {
+      const controller = new AbortController()
+      pending = { promise: Promise.resolve(undefined as never), controller, waiters: 0, settled: false }
+      pending.promise = this.connectRecord(alias, controller.signal)
+      this.acquireQueue.set(alias, pending)
+      const owned = pending
+      void owned.promise.then(
+        () => { owned.settled = true; if (this.acquireQueue.get(alias) === owned) this.acquireQueue.delete(alias) },
+        () => { owned.settled = true; if (this.acquireQueue.get(alias) === owned) this.acquireQueue.delete(alias) },
+      )
+    }
 
-    const task = this.connectRecord(alias)
-    this.acquireQueue.set(alias, task)
-
+    pending.waiters += 1
     try {
-      return await task
+      if (signal === undefined) return await pending.promise
+      return await new Promise<PoolRecord>((resolve, reject) => {
+        let settled = false
+        const cleanup = (): void => { signal.removeEventListener('abort', onAbort) }
+        const onAbort = (): void => {
+          if (settled) return
+          settled = true
+          cleanup()
+          reject(createAbortError())
+        }
+        signal.addEventListener('abort', onAbort, { once: true })
+        if (signal.aborted) {
+          onAbort()
+          return
+        }
+        pending!.promise.then(
+          value => { if (!settled) { settled = true; cleanup(); resolve(value) } },
+          error => { if (!settled) { settled = true; cleanup(); reject(error) } },
+        )
+      })
     } finally {
-      if (this.acquireQueue.get(alias) === task) {
-        this.acquireQueue.delete(alias)
-      }
+      pending.waiters -= 1
+      if (pending.waiters === 0 && !pending.settled) pending.controller.abort()
     }
   }
 
-  private async connectRecord(alias: string): Promise<PoolRecord> {
+  private async connectRecord(alias: string, signal?: AbortSignal): Promise<PoolRecord> {
     const generation = this.generations.get(alias) ?? 0
-    const { client, hops } = await this.options.connect(alias)
+    const { client, hops } = await this.options.connect(alias, signal)
 
     const record: PoolRecord = {
+      alias,
       client,
       hops,
       idleAt: Date.now(),
@@ -218,6 +273,8 @@ export class ConnectionPool implements SshConnectionService {
         return released
       },
 
+      holdsOnlyLease: (): boolean => record.leases.size <= 1,
+
       markBroken: (_error?: unknown): void => {
         if (released || broken) return
 
@@ -264,6 +321,7 @@ export class ConnectionPool implements SshConnectionService {
     if (record.closed) return
     record.closed = true
 
+    this.options.onRetire?.(record.alias)
     this.options.onDispose?.(record.client)
 
     try {

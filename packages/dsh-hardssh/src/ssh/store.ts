@@ -29,6 +29,75 @@ interface StoreFile {
   hosts: SshHostEntry[]
 }
 
+/** One parsed Host block from `~/.ssh/config`. */
+interface SshConfigBlock {
+  pattern: string
+  props: Record<string, string>
+}
+
+/** Parse `~/.ssh/config` into importable candidate payloads. Pure (no store
+ *  writes): the caller applies each candidate through ITS OWN create, so the
+ *  plaintext `HostStore` and the secret-aware `SecureHostStore` share one
+ *  parser while differing only in how an entry's secrets are stored. */
+function parseSshConfigToImport(configPath: string): {
+  candidates: HostPayload[]
+  /** Wildcard / no-HostName patterns (reported as skipped, not importable). */
+  invalidNames: string[]
+  /** Total Host blocks parsed (including non-importable ones). */
+  totalBlocks: number
+} {
+  const lines = readFileSync(configPath, 'utf8').split(/\r?\n/)
+  const blocks: SshConfigBlock[] = []
+  let current: SshConfigBlock | undefined
+  for (const raw of lines) {
+    const line = raw.trim()
+    if (line === '' || line.startsWith('#')) continue
+    const match = /^([A-Za-z0-9_\-]+)\s+(.+)$/.exec(line)
+    if (match === null) continue
+    const key = match[1].toLowerCase()
+    const value = match[2].trim()
+    if (key === 'host') {
+      current = { pattern: value, props: {} }
+      blocks.push(current)
+    } else if (current !== undefined) {
+      current.props[key] = value
+    }
+  }
+  const candidates: HostPayload[] = []
+  const invalidNames: string[] = []
+  for (const block of blocks) {
+    const pattern = block.pattern.split(/\s+/)[0]
+    if (pattern.includes('*') || pattern.includes('?')) {
+      if (pattern !== '') invalidNames.push(pattern)
+      continue
+    }
+    const hostName = block.props.hostname
+    if (hostName === undefined || hostName === '') {
+      if (pattern !== '') invalidNames.push(pattern)
+      continue
+    }
+    candidates.push({
+      alias: pattern,
+      host: hostName,
+      port: block.props.port !== undefined ? Number.parseInt(block.props.port, 10) : 22,
+      user: block.props.user ?? process.env.USER ?? 'root',
+      auth: {
+        kind: block.props.identityfile !== undefined ? 'key' : 'password',
+        keyPath: block.props.identityfile,
+        password: block.props.password,
+      },
+      proxyJump: block.props.proxyjump !== undefined
+        ? block.props.proxyjump.split(',').map(hop => hop.trim()).filter(hop => hop !== '')
+        : [],
+      description: block.props.description,
+      environment: block.props.environment,
+      tags: (block.props.tags ?? '').split(',').map(tag => tag.trim()).filter(tag => tag !== ''),
+      location: block.props.location,
+    })
+  }
+  return { candidates, invalidNames, totalBlocks: blocks.length }
+}
+
 /** Payload shape the validator enforces: full create vs partial patch. */
 export type HostPayloadValidationMode = 'create' | 'patch'
 
@@ -149,6 +218,11 @@ export class HostStore {
   list(): SshHostEntry[] {
     const file = this.load()
     return file.hosts
+  }
+
+  /** The ssh-config path this store reads (override or the default). */
+  get sshConfigOverridePath(): string | undefined {
+    return this.sshConfigOverride
   }
 
   /** Find one entry by alias. */
@@ -290,7 +364,8 @@ export class HostStore {
   /**
    * Import hosts from `~/.ssh/config`: Host blocks with a single non-wildcard
    * pattern and a HostName become entries (key auth via IdentityFile, jump
-   * hosts via ProxyJump). Existing aliases are skipped.
+   * hosts via ProxyJump). Existing aliases are skipped. Each entry is created
+   * through this store's own `create`, which keeps plaintext secrets inline.
    * @returns import statistics.
    */
   importFromSshConfig(): ImportResult {
@@ -298,73 +373,24 @@ export class HostStore {
     this.skippedNames = new Set<string>()
     const configPath = this.sshConfigOverride ?? sshConfigPath()
     if (!existsSync(configPath)) return { parsed: 0, added: 0, skipped: 0, skippedNames: [] }
-    const lines = readFileSync(configPath, 'utf8').split(/\r?\n/)
-    const blocks: { pattern: string; props: Record<string, string> }[] = []
-    let current: { pattern: string; props: Record<string, string> } | undefined
-    const skip = (name: string, seen: Set<string>): void => {
-      if (name !== '' && !seen.has(name)) {
-        seen.add(name)
-        this.skippedNames.add(name)
-      }
-    }
-    for (const raw of lines) {
-      const line = raw.trim()
-      if (line === '' || line.startsWith('#')) continue
-      const match = /^([A-Za-z0-9_\-]+)\s+(.+)$/.exec(line)
-      if (match === null) continue
-      const key = match[1].toLowerCase()
-      const value = match[2].trim()
-      if (key === 'host') {
-        current = { pattern: value, props: {} }
-        blocks.push(current)
-      } else if (current !== undefined) {
-        current.props[key] = value
-      }
-    }
+    const { candidates, invalidNames, totalBlocks } = parseSshConfigToImport(configPath)
+    for (const name of invalidNames) this.skippedNames.add(name)
     let added = 0
-    for (const block of blocks) {
-      const pattern = block.pattern.split(/\s+/)[0]
-      if (pattern.includes('*') || pattern.includes('?')) {
-        skip(pattern, this.skippedNames)
+    for (const payload of candidates) {
+      const alias = payload.alias ?? ''
+      if (alias !== '' && this.list().some(entry => entry.alias === alias)) {
+        this.skippedNames.add(alias)
         continue
-      }
-      const hostName = block.props.hostname
-      if (hostName === undefined || hostName === '') {
-        skip(pattern, this.skippedNames)
-        continue
-      }
-      const existing = this.list().some(entry => entry.alias === pattern)
-      if (existing) {
-        skip(pattern, this.skippedNames)
-        continue
-      }
-      const payload: HostPayload = {
-        alias: pattern,
-        host: hostName,
-        port: block.props.port !== undefined ? Number.parseInt(block.props.port, 10) : 22,
-        user: block.props.user ?? process.env.USER ?? 'root',
-        auth: {
-          kind: block.props.identityfile !== undefined ? 'key' : 'password',
-          keyPath: block.props.identityfile,
-          password: block.props.password,
-        },
-        proxyJump: block.props.proxyjump !== undefined
-          ? block.props.proxyjump.split(',').map(hop => hop.trim()).filter(hop => hop !== '')
-          : [],
-        description: block.props.description,
-        environment: block.props.environment,
-        tags: (block.props.tags ?? '').split(',').map(tag => tag.trim()).filter(tag => tag !== ''),
-        location: block.props.location,
       }
       try {
         this.create(payload)
         added += 1
       } catch {
         // Unusable entry (bad alias grammar etc.) — count as skipped.
-        skip(pattern, this.skippedNames)
+        if (alias !== '') this.skippedNames.add(alias)
       }
     }
-    return { parsed: blocks.length, added, skipped: this.skippedNames.size, skippedNames: [...this.skippedNames] }
+    return { parsed: totalBlocks, added, skipped: this.skippedNames.size, skippedNames: [...this.skippedNames] }
   }
 
   private skippedNames = new Set<string>()
@@ -426,13 +452,15 @@ export interface ResolvedAuth {
  *
  * - **'none' (default, VSCode Remote-SSH style)**: secrets are NEVER
  *   persisted. create/update strip the password/passphrase from the entry
- *   (kind + keyPath stay); the engine prompts once per session and holds the
- *   credential in-memory (session password table). The plaintext HostStore
+ *   (kind + keyPath stay); the engine prompts once and holds the credential
+ *   in-memory for that CONNECTION's lifetime (the pool's retirement drops it).
+ *   The plaintext HostStore
  *   remains untouched, so existing v1 tests and dual-format reads keep
  *   working.
  */
 export class SecureHostStore {
   private readonly inner: HostStore
+  private readonly pendingSecretCleanup = new Set<string>()
 
   constructor(
     private readonly vault: import('./vault.ts').Vault | undefined,
@@ -447,20 +475,71 @@ export class SecureHostStore {
   find(alias: string): SshHostEntry | undefined { return this.inner.find(alias) }
   summarize(entry: SshHostEntry): SshHostSummary { return this.inner.summarize(entry) }
   get path(): string { return this.inner.path }
-  /** Legacy ssh-config import (delegates; passwords imported stay inline —
-   *  a follow-up may route them through the vault). */
-  importFromSshConfig(): ImportResult { return this.inner.importFromSshConfig() }
+  /** The ssh-config path the underlying store reads (override or default). */
+  get sshConfigOverridePath(): string | undefined { return this.inner.sshConfigOverridePath }
 
-  /** Create: secrets are stashed per mode; entry only keeps kind (+ keyPath). */
+  /** ssh-config import routed through THIS store's `create`, so every imported
+   *  credential is handled per `secretStorage` (never persisted in 'none' mode,
+   *  vault-encrypted in 'vault' mode) instead of being stored inline. */
+  async importFromSshConfig(): Promise<ImportResult> {
+    const configPath = this.inner.sshConfigOverridePath ?? sshConfigPath()
+    if (!existsSync(configPath)) return { parsed: 0, added: 0, skipped: 0, skippedNames: [] }
+    const { candidates, invalidNames, totalBlocks } = parseSshConfigToImport(configPath)
+    const skipped = new Set<string>(invalidNames.filter(name => name !== ''))
+    let added = 0
+    for (const payload of candidates) {
+      const alias = payload.alias ?? ''
+      if (alias !== '' && this.inner.list().some(entry => entry.alias === alias)) {
+        skipped.add(alias)
+        continue
+      }
+      try {
+        await this.create(payload)
+        added += 1
+      } catch {
+        if (alias !== '') skipped.add(alias)
+      }
+    }
+    return { parsed: totalBlocks, added, skipped: skipped.size, skippedNames: [...skipped] }
+  }
+
+  /** Deferred best-effort cleanup queue (diagnostics/tests; contains no plaintext). */
+  pendingSecretCleanupRefs(): string[] { return [...this.pendingSecretCleanup] }
+
+  private async removeSecret(ref: string): Promise<unknown | undefined> {
+    if (this.vault === undefined) return undefined
+    try {
+      await this.vault.remove(ref)
+      this.pendingSecretCleanup.delete(ref)
+      return undefined
+    } catch (error) {
+      this.pendingSecretCleanup.add(ref)
+      return error
+    }
+  }
+
+  private async retryPendingCleanup(): Promise<void> {
+    for (const ref of [...this.pendingSecretCleanup]) await this.removeSecret(ref)
+  }
+
+  /** Create: secrets are staged, then rolled back if host persistence fails. */
   async create(payload: HostPayload): Promise<SshHostEntry> {
     // Validate the raw wire input first. In 'none' mode a password-kind host
     // may omit the password (typed at connect time, VSCode-style); 'vault'
     // mode keeps the strict rule so every credential gets stashed.
     const rawError = validateHostPayload(payload, 'create', this.mode === 'none')
     if (rawError !== undefined) throw new Error(rawError)
+    await this.retryPendingCleanup()
     const ref = await this.stashSecrets(payload.alias ?? '', payload.auth)
-    const entry = this.inner.create(stripSecrets(payload, ref, this.mode), true)
-    return entry
+    try {
+      return this.inner.create(stripSecrets(payload, ref, this.mode), true)
+    } catch (error) {
+      if (ref !== undefined) {
+        const cleanupError = await this.removeSecret(ref)
+        if (cleanupError !== undefined) throw new AggregateError([error, cleanupError], 'host create failed and staged vault secret rollback failed')
+      }
+      throw error
+    }
   }
 
   /** Update: auth present -> re-stash (or strip in none mode); absent → keep. */
@@ -480,18 +559,36 @@ export class SecureHostStore {
         && existing.auth.secretRef !== undefined
       if (!keepOldRef) throw new Error(rawError)
     }
+    await this.retryPendingCleanup()
     const ref = await this.stashSecrets(alias, patch.auth)
-    const effectiveRef = ref ?? (this.mode === 'vault' ? existing.auth.secretRef : undefined)
-    return this.inner.update(alias, stripSecrets(patch, effectiveRef, this.mode), true)
+    const sameCredential = patch.auth.kind === existing.auth.kind
+      && (patch.auth.kind === 'password'
+        || (patch.auth.keyPath === undefined || expandHome(patch.auth.keyPath.trim()) === existing.auth.keyPath))
+    const effectiveRef = ref ?? (this.mode === 'vault' && sameCredential ? existing.auth.secretRef : undefined)
+    let updated: SshHostEntry
+    try {
+      updated = this.inner.update(alias, stripSecrets(patch, effectiveRef, this.mode), true)
+    } catch (error) {
+      if (ref !== undefined) {
+        const cleanupError = await this.removeSecret(ref)
+        if (cleanupError !== undefined) throw new AggregateError([error, cleanupError], 'host update failed and staged vault secret rollback failed')
+      }
+      throw error
+    }
+    if (existing.auth.secretRef !== undefined && existing.auth.secretRef !== effectiveRef) {
+      // Host persistence is committed. Cleanup failure is deferred and must not
+      // make callers retry an already-applied host update.
+      await this.removeSecret(existing.auth.secretRef)
+    }
+    return updated
   }
 
-  /** Delete: drop the host (and its vault secrets in vault mode, best-effort). */
+  /** Delete the host first; vault cleanup can then only leave an orphan. */
   async delete(alias: string): Promise<void> {
+    await this.retryPendingCleanup()
     const entry = this.inner.find(alias)
-    if (entry !== undefined && entry.auth.secretRef !== undefined && this.vault !== undefined) {
-      await this.vault.remove(entry.auth.secretRef).catch(() => undefined)
-    }
     this.inner.delete(alias)
+    if (entry?.auth.secretRef !== undefined) await this.removeSecret(entry.auth.secretRef)
   }
 
   /** Resolve the authentication for one entry (vault reveal when needed). */

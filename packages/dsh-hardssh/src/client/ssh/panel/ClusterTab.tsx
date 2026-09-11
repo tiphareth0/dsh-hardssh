@@ -1,6 +1,6 @@
 /**
- * Cluster tab: run one command across many hosts (aliases / environment /
- * tags filters) and inspect per-host results. Stdout/stderr render in
+ * Cluster tab: run one command against the selected Session's fixed server and
+ * inspect its result. Stdout/stderr render in
  * collapsed <details> blocks; status renders as a colored badge.
  */
 import { useState } from 'react'
@@ -12,19 +12,13 @@ import css from './panel.module.css'
 /** Cluster tab props. */
 export interface ClusterTabProps {
   api: SshApi
-}
-
-/** Split a comma-separated input into a trimmed, non-empty string list. */
-function splitList(text: string): string[] {
-  return text.split(',').map(part => part.trim()).filter(part => part !== '')
+  /** Fixed alias inherited from the selected Session. */
+  alias: string
 }
 
 /** The cluster execution tab. */
-export function ClusterTab({ api }: ClusterTabProps) {
+export function ClusterTab({ api, alias }: ClusterTabProps) {
   const [command, setCommand] = useState('')
-  const [aliases, setAliases] = useState('')
-  const [environment, setEnvironment] = useState('')
-  const [tags, setTags] = useState('')
   const [running, setRunning] = useState(false)
   const [results, setResults] = useState<ClusterResult[] | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -35,13 +29,9 @@ export function ClusterTab({ api }: ClusterTabProps) {
     setRunning(true)
     setError(null)
     try {
-      const aliasList = splitList(aliases)
-      const tagList = splitList(tags)
       const outcome = await api.cluster({
         command: command.trim(),
-        aliases: aliasList.length > 0 ? aliasList : undefined,
-        environment: environment.trim() === '' ? undefined : environment.trim(),
-        tags: tagList.length > 0 ? tagList : undefined,
+        aliases: [alias],
       })
       setResults(outcome)
     } catch (cause) {
@@ -58,10 +48,9 @@ export function ClusterTab({ api }: ClusterTabProps) {
           <span className={css.fieldLabel}>{tt('cluster.command')}</span>
           <textarea className={css.input + ' ' + css.commandInput} value={command} onChange={event => { setCommand(event.target.value) }} />
         </label>
-        <div className={css.clusterFilters}>
-          <input className={css.input} placeholder={tt('cluster.aliases')} value={aliases} onChange={event => { setAliases(event.target.value) }} />
-          <input className={css.input} placeholder={tt('cluster.environment')} value={environment} onChange={event => { setEnvironment(event.target.value) }} />
-          <input className={css.input} placeholder={tt('cluster.tags')} value={tags} onChange={event => { setTags(event.target.value) }} />
+        <div className={css.controls}>
+          <span className={css.fieldLabel}>{tt('session.server')}</span>
+          <span className={css.targetBadge}>{alias}</span>
         </div>
         <div>
           <button type="button" className={css.primaryButton} disabled={running || command.trim() === ''} onClick={() => { void run() }}>{tt('cluster.run')}</button>

@@ -63,6 +63,28 @@ export interface SwitchFsDeps {
    *  own `~/.dsh` with skills & harness state, plugin configs, …). Default
    *  routing in a remote world is REMOTE for everything else. */
   localRoots?: ReadonlyArray<string>
+  /** Windows inside `localRoots` that must NEVER be treated as local
+   *  infrastructure — the managed workspace ANCHOR ROOT. Anchors physically
+   *  live under `~/.dsh`, so without this carve-out a path inside the anchors
+   *  window (including a stale anchor dir with no ledger record) would fall
+   *  into the local exception and a remote session would silently write to
+   *  the client machine. Semantics: local exception = localRoots MINUS
+   *  exclusions. */
+  localRootExclusions?: ReadonlyArray<string>
+  /** Roots whose contents are NEVER accessible through this seam — the
+   *  encrypted credential store. Enforced on every dispatch path (see
+   *  `assertNotDenied`), so a bound session's agent cannot read the vault
+   *  ciphertext through the routed filesystem and attack it offline. It does
+   *  NOT constrain a command that runs natively on this machine as the same
+   *  user (e.g. the client-side `pwsh` tool). */
+  deniedRoots?: ReadonlyArray<string>
+  /** The world owning an ABSOLUTE workspace anchor path (the caller's own
+   *  workspace or a SIBLING workspace's anchor), or undefined when no
+   *  workspace claims that path. Consulted BEFORE the `localRoots`
+   *  carve-out: managed SSH workspace anchors live under `~/.dsh` (a
+   *  declared local root), so routing a sibling anchor to local would
+   *  silently run a remote-workspace file operation on this machine. */
+  worldForAnchorPath?(path: string): WorkspaceWorld | undefined
 }
 
 function normalizeForEquality(path: string): string {
@@ -86,8 +108,12 @@ function isUnder(root: string | undefined, path: string): boolean {
  *   outside the workspace tree, e.g. another project dir on that host).
  *   The ONLY exclusion is the DECLARED client infrastructure (`localRoots`:
  *   dsh's own `~/.dsh` with skills + harness state, plugin configs, …),
- *   which stays local on any client OS. No host-OS syntax guessing. */
-function belongsToRemoteWorld(path: string, deps: Pick<SwitchFsDeps, 'localRoots'>): boolean {
+ *   which stays local on any client OS. `localRootExclusions` subtract the
+ *   workspace-anchor window from that exception, because anchors physically
+ *   live under `~/.dsh` and must never be treated as local. No host-OS
+ *   syntax guessing. */
+function belongsToRemoteWorld(path: string, deps: Pick<SwitchFsDeps, 'localRoots' | 'localRootExclusions'>): boolean {
+  if (deps.localRootExclusions?.some((root) => isUnder(root, path)) === true) return true
   if (deps.localRoots !== undefined && deps.localRoots.some((root) => isUnder(root, path))) return false
   return true
 }
@@ -101,8 +127,14 @@ export class SwitchFileSystem extends FileSystem {
     this.local = deps.local
   }
 
-  /** Sandbox default from the local backend (remote worlds are unconfined —
-   *  the docs/doc of the tool layer reads this once at mount). */
+  /** The deployment's local backend is still a sandboxed filesystem, and
+   *  `dsh-tool-fs` reads this capability fact ONCE at apply() to decide whether
+   *  to advertise `sandbox_permissions` / `justification` at all. Returning
+   *  undefined here disabled that escalation entry for EVERY session,
+   *  including purely local ones, so the local backend's mode is the honest
+   *  answer. Remote worlds are not confined by the local sandbox, so a wider
+   *  per-call policy is meaningless for them and is dropped at the call site
+   *  instead of being silently swallowed by a 4-parameter remote backend. */
   override get sandboxMode(): SandboxMode | undefined {
     return this.local.sandboxMode
   }
@@ -141,19 +173,58 @@ export class SwitchFileSystem extends FileSystem {
       // undefined decode as "cannot route this target".
       return undefined
     }
+    // A plain key addresses the LOCAL world, and this is the funnel every
+    // target-based operation decodes through (stat/readText/streamText/
+    // readBytes/listDir/writeText/editText) — not just resolve/lstat. The deny
+    // check therefore lives here as well, so a protected client directory stays
+    // unreachable no matter how the target was obtained. The local backend keys
+    // targets by CANONICAL path, so a symlink into the protected directory is
+    // refused too.
+    this.assertNotDenied(key, '')
     return { rawKey: key, world: { backend: this.local, namespace: '' } }
   }
 
-  override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
-    const world = this.deps.worldFor(opts?.cwd)
-    // Paths that do NOT belong to the (remote) world stay on the LOCAL
-    // backend — client files like ~/.dsh/skills keep working in a bound
-    // workspace (see belongsToRemoteWorld; localRoots/extraRemoteRoots
-    // configure the boundaries declaratively, no OS heuristics).
-    if (world.namespace !== '' && !belongsToRemoteWorld(path, this.deps)) {
-      const raw = await this.local.resolve(path, opts)
-      return { targetKey: String(raw.targetKey) as FsTarget['targetKey'], displayPath: raw.displayPath }
+  /**
+   * Refuse a protected client directory before any backend sees it.
+   *
+   * Only a LOCAL world is checked: for a remote world the path is a path on the
+   * SERVER, which may legitimately look like a client path (both can be
+   * `/home/me/.dsh/…`).
+   *
+   * @param path - the path (or canonical target key) about to be dispatched.
+   * @param namespace - the resolved world's namespace ('' = local).
+   */
+  private assertNotDenied(path: string, namespace: string): void {
+    if (namespace !== '') return
+    const denied = this.deps.deniedRoots?.find(root => isUnder(root, path))
+    if (denied !== undefined) {
+      throw new Error(`fs-hardssh: '${path}' is not accessible through the workspace filesystem (protected client directory)`)
     }
+  }
+
+  /**
+   * The world owning one call: an explicit anchor path (this workspace's or a
+   * SIBLING's) wins over the session cwd, because anchors are physically under
+   * the local-infrastructure root and would otherwise be carved out as local.
+   * Falls back to the session cwd's world, then to the caller's default.
+   */
+  private worldForPath(path: string, cwd: string | undefined): WorkspaceWorld {
+    const anchorWorld = this.deps.worldForAnchorPath?.(path)
+    if (anchorWorld !== undefined) {
+      this.assertNotDenied(path, anchorWorld.namespace)
+      return anchorWorld
+    }
+    const pathWorld = this.deps.worldFor(path)
+    if (pathWorld.namespace !== '' && pathWorld.anchorPath !== undefined && pathWorld.remoteRoot !== undefined) {
+      return pathWorld
+    }
+    const chosen = this.deps.worldFor(cwd)
+    this.assertNotDenied(path, chosen.namespace)
+    return chosen
+  }
+
+  override async resolve(path: string, opts?: { cwd?: string; signal?: AbortSignal }): Promise<FsTarget> {
+    const world = this.worldForPath(path, opts?.cwd)
     // Translate a model-supplied LOCAL ANCHOR path into the remote root when
     // the call routes to an SSH workspace: the model sees the anchor as "the
     // current directory" (the session cwd) and may pass it verbatim. Rewrite
@@ -163,6 +234,16 @@ export class SwitchFileSystem extends FileSystem {
     const effectivePath = world.anchorPath !== undefined && world.remoteRoot !== undefined
       ? this.translateAnchorPath(world.anchorPath, world.remoteRoot, path)
       : path
+    // Host-infrastructure roots are considered only after anchor translation;
+    // otherwise a valid remote anchor nested under ~/.dsh routes locally.
+    if (world.namespace !== '' && !belongsToRemoteWorld(effectivePath, this.deps)) {
+      // This is the point where the routing decision is finally LOCAL, so a
+      // protected client directory is refused here rather than handed to the
+      // local backend.
+      this.assertNotDenied(path, '')
+      const raw = await this.local.resolve(path, opts)
+      return { targetKey: String(raw.targetKey) as FsTarget['targetKey'], displayPath: raw.displayPath }
+    }
     const raw = await world.backend.resolve(effectivePath, opts)
     return {
       targetKey: this.encode(String(raw.targetKey), world.namespace) as FsTarget['targetKey'],
@@ -196,14 +277,14 @@ export class SwitchFileSystem extends FileSystem {
   }
 
   override processPath(target: FsTarget): string {
-    const key = String(target.targetKey)
-    const decoded = this.decode(key)
-    return decoded?.world.backend.processPath({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath }) ?? key
+    const decoded = this.decode(String(target.targetKey))
+    if (decoded === undefined) throw new Error('fs-ssh: cannot route stale workspace target')
+    return decoded.world.backend.processPath({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath })
   }
 
   override fileUrl(target: FsTarget): string {
     const decoded = this.decode(String(target.targetKey))
-    if (decoded === undefined) return this.local.fileUrl(target)
+    if (decoded === undefined) throw new Error('fs-ssh: cannot route stale workspace target')
     return decoded.world.backend.fileUrl({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath })
   }
 
@@ -224,13 +305,14 @@ export class SwitchFileSystem extends FileSystem {
   }
 
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
-    const world = this.deps.worldFor(opts?.cwd)
-    if (world.namespace !== '' && !belongsToRemoteWorld(path, this.deps)) {
-      return this.local.lstat(path, opts, signal)
-    }
+    const world = this.worldForPath(path, opts?.cwd)
     const effectivePath = world.anchorPath !== undefined && world.remoteRoot !== undefined
       ? this.translateAnchorPath(world.anchorPath, world.remoteRoot, path)
       : path
+    if (world.namespace !== '' && !belongsToRemoteWorld(effectivePath, this.deps)) {
+      this.assertNotDenied(path, '')
+      return this.local.lstat(path, opts, signal)
+    }
     return world.backend.lstat(effectivePath, opts, signal)
   }
 
@@ -276,7 +358,12 @@ export class SwitchFileSystem extends FileSystem {
   ): Promise<FsWriteOutcome> {
     const decoded = this.decode(String(target.targetKey))
     if (decoded === undefined) throw new Error('fs-ssh: cannot route target')
-    return decoded.world.backend.writeText({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath }, content, expected, signal, sandboxPolicy)
+    // A per-call escalation policy is a LOCAL sandbox concept: the remote
+    // backend takes no policy parameter (its writes are bounded by the
+    // workspace root, not by the client sandbox). Drop it explicitly for
+    // remote worlds so the intent is documented rather than silently ignored.
+    const policy = decoded.world.namespace === '' ? sandboxPolicy : undefined
+    return decoded.world.backend.writeText({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath }, content, expected, signal, policy)
   }
 
   override async editText(
@@ -288,7 +375,9 @@ export class SwitchFileSystem extends FileSystem {
   ): Promise<FsEditOutcome> {
     const decoded = this.decode(String(target.targetKey))
     if (decoded === undefined) throw new Error('fs-ssh: cannot route target')
-    return decoded.world.backend.editText({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath }, edit, expected, signal, sandboxPolicy)
+    // Same local-only semantics as writeText above.
+    const policy = decoded.world.namespace === '' ? sandboxPolicy : undefined
+    return decoded.world.backend.editText({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath }, edit, expected, signal, policy)
   }
 }
 

@@ -84,6 +84,17 @@ export interface WorkspacePlugin {
 /**
  * Registry of loaded plugins (provider + feature plugins together). Keeps
  * the workspace registry and plugin lifecycle in one place.
+ *
+ * NOT WIRED INTO PRODUCTION YET: the DSH runtime registers the builtin
+ * providers directly (`runtime/workspace-core.ts`) and no third-party plugin
+ * loads through this host — only tests do. It is kept because it is the
+ * documented distribution contract for out-of-tree providers (see SKILLS.md);
+ * provider teardown stays ownership-correct for when it is wired up: each
+ * registration releases the disposer that `register()` returned for THAT call,
+ * so a duplicate (same id+version) registration never unregisters a provider it
+ * does not own.
+ *
+ * @internal Not reachable from any production assembly today.
  */
 export class WorkspacePluginHost {
   private readonly plugins = new Map<string, WorkspacePlugin>()
@@ -144,14 +155,14 @@ export class WorkspacePluginHost {
   }
 
   private registerProvider(provider: WorkspaceProvider): () => void {
-    // The registry returns a disposer on register; a same-version duplicate
-    // no-ops, so the disposer may be a no-op too — unload still runs it.
+    // Preserve registry ownership: a duplicate registration's no-op disposer
+    // must never unregister the provider owned by another plugin.
+    const disposeRegistration = this.registries.workspaces.register(provider)
     let disposed = false
-    this.registries.workspaces.register(provider)
     return () => {
       if (disposed) return
       disposed = true
-      this.registries.workspaces.unregister?.(provider.manifest.id)
+      disposeRegistration()
     }
   }
 

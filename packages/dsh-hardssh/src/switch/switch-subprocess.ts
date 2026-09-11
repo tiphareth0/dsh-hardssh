@@ -21,8 +21,17 @@ import type { Context } from '@deepseek-ai/cordis'
 /** Route one spawn cwd to a runtime. */
 export interface SwitchSubprocessDeps {
   local: SubprocessRuntime
-  /** The runtime for a spawn cwd (undefined = local). */
-  worldFor(cwd: string | undefined): SubprocessRuntime
+  /**
+   * The runtime for a spawn cwd, or `undefined` for a LOCAL cwd.
+   *
+   * Deliberately `undefined` rather than "return the local runtime": deciding
+   * "is this local?" by IDENTITY-comparing the returned service against
+   * `deps.local` is not reliable, and getting it wrong made the client-search
+   * refusal below fire for LOCAL sessions — which broke glob/grep everywhere
+   * (found by real-machine testing). The routing answer is data, so it travels
+   * as data.
+   */
+  worldFor(cwd: string | undefined): SubprocessRuntime | undefined
   /** Bare executable names that are CLIENT tools (run locally even in a
    *  bound workspace) — e.g. 'pwsh', 'powershell', 'cmd'. Windows-format
    *  executables (drive/backslash paths, `*.exe/*.cmd/*.bat/*.ps1`) are
@@ -33,6 +42,25 @@ export interface SwitchSubprocessDeps {
 const DEFAULT_CLIENT_TOOL_NAMES = ['pwsh', 'powershell', 'cmd'] as const
 
 const CLIENT_EXECUTABLE_RE = /\.(exe|cmd|bat|ps1|com)$/i
+
+/**
+ * Client-packaged helpers that search the WORKSPACE's files (the bundled
+ * ripgrep behind the glob/grep tools). They are client binaries, but they are
+ * not shells: running one locally while the session's world is remote searches
+ * the local anchor directory (an empty placeholder) and reports "no matches",
+ * and sending the client's absolute PATH to the server cannot work either.
+ * Either way the answer is wrong, so a path-shaped invocation is refused
+ * loudly. A BARE `rg` is left alone: that is an ordinary server command and
+ * belongs to the remote world like any other.
+ */
+const CLIENT_WORKSPACE_SEARCH_RE = /^(rg|ripgrep)(\.exe)?$/i
+
+/** True for a PATH-shaped (not bare-name) invocation of a search helper. */
+function isClientSearchHelperPath(exe: string): boolean {
+  if (!exe.includes('/') && !exe.includes('\\')) return false
+  const base = exe.split(/[\\/]/).pop() ?? exe
+  return CLIENT_WORKSPACE_SEARCH_RE.test(base)
+}
 
 /** A client-native executable: Windows-format path/extension, or a bare name
  *  on the declared client-tool list (remote POSIX hosts never carry these). */
@@ -48,20 +76,37 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
     super(ctx)
   }
 
-  /** The runtime for one spec (by its cwd). */
-  private runtimeFor(cwd: string | undefined): SubprocessRuntime {
+  /** The runtime for one spec (by its cwd); undefined means LOCAL. */
+  private runtimeFor(cwd: string | undefined): SubprocessRuntime | undefined {
     return this.deps.worldFor(cwd)
   }
 
   /** Client binaries run on THIS machine even from a bound workspace — their
    *  executables cannot exist on the remote POSIX host, and the spawn cwd is
    *  the local anchor (which exists locally), so local execution is sound.
-   *  Everything else runs in the session's world (remote on a bound host). */
+   *  Everything else runs in the session's world (remote on a bound host).
+   *
+   *  ONE exception is refused rather than routed: a client-side SEARCH helper
+   *  (rg) in a remote-bound session would search the empty local anchor and
+   *  report "no matches" — a confidently wrong answer about the server's
+   *  contents. There is no way to make a local index-of-files tool read the
+   *  remote workspace, so the caller is told to use the remote tools.
+   *
+   *  Locality comes from the routing answer (`undefined`), never from an
+   *  identity comparison against `deps.local`: that comparison silently failed
+   *  once and refused local ripgrep launches for every session. */
   private effectiveRuntime(spec: { cwd?: string; argv?: readonly string[] }): SubprocessRuntime {
     const runtime = this.runtimeFor(spec.cwd)
-    if (runtime === this.deps.local) return runtime
+    if (runtime === undefined) return this.deps.local
     const names = this.deps.clientToolNames ?? DEFAULT_CLIENT_TOOL_NAMES
     const exe = spec.argv !== undefined && spec.argv.length > 0 ? spec.argv[0] : ''
+    if (isClientSearchHelperPath(exe)) {
+      throw new Error(
+        `dsh-hardssh: '${exe.split(/[\\/]/).pop()}' is a client-side search tool and cannot read the remote workspace bound to this session `
+        + '(its working directory is the local anchor placeholder, not the server). '
+        + 'Search remote content with the remote_search tool (mode="glob" for file names, mode="grep" for content) or ssh_exec instead.',
+      )
+    }
     return isClientNativeExecutable(exe, names) ? this.deps.local : runtime
   }
 

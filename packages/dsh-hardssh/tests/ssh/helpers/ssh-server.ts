@@ -28,6 +28,25 @@ function generateKey(target: string): void {
   execFileSync('ssh-keygen', ['-t', 'ed25519', '-f', target, '-N', '', '-q'], { stdio: 'ignore' })
 }
 
+/**
+ * Undo the server-budget wrapper (`wrapCommandWithServerBudget`) so this shim
+ * dispatches on the caller's ORIGINAL command, exactly as a real shell hands it
+ * to `timeout`. The wrapper's POSIX single-quoting is inverted here.
+ */
+export function unwrapServerBudget(command: string): string {
+  const prefix = 'if command -v timeout >/dev/null 2>&1; then timeout -k '
+  if (!command.startsWith(prefix)) return command
+  const marker = ' -c '
+  const at = command.indexOf(marker, prefix.length)
+  if (at < 0) return command
+  const rest = command.slice(at + marker.length)
+  const end = rest.lastIndexOf('; else ')
+  if (end < 0) return command
+  const quoted = rest.slice(0, end)
+  if (!quoted.startsWith("'") || !quoted.endsWith("'")) return command
+  return quoted.slice(1, -1).replace(/'\\''/g, "'")
+}
+
 /** The exec shim: deterministic responses for known commands. */
 function handleCommand(command: string, stream: ClientChannel, server: TestSshServer): void {
   const respond = (out: string, code: number): void => {
@@ -36,6 +55,14 @@ function handleCommand(command: string, stream: ClientChannel, server: TestSshSe
     stream.close()
   }
   if (command === 'echo hello') respond('hello\n', 0)
+  else if (command === 'echo-secret') {
+    // Leak-guard fixture: a credential-looking value on BOTH streams.
+    stream.write('token=S3cret-Pa55word\n')
+    const stderrWriter = stream.stderr as unknown as { write(text: string): void }
+    stderrWriter.write('also S3cret-Pa55word here\n')
+    stream.exit(0)
+    stream.close()
+  }
   else if (command === 'printf once') respond('once\n', 0)
   else if (command === 'out-and-err') {
     stream.write('hello out\n')
@@ -50,6 +77,16 @@ function handleCommand(command: string, stream: ClientChannel, server: TestSshSe
   else if (command === 'hang') {
     // Never respond: the caller's timeout must kill the channel.
     stream.on('close', () => undefined)
+  } else if (command === 'slow echo') {
+    // Deferred but successful: proves a concurrent caller's abort does not
+    // evict other holders of the same pooled connection (P1-1).
+    setTimeout(() => {
+      try {
+        respond('slow done\n', 0)
+      } catch {
+        // The client closed the channel before the timer fired.
+      }
+    }, 150)
   } else if (command === 'replay-probe') {
     // Accept the channel and emit one line so the client is definitely in
     // the 'accepted' state (markCommitted has run), THEN tear the transport
@@ -67,6 +104,8 @@ export class TestSshServer {
   readonly port: number
   /** Successful connections seen. */
   connectCount = 0
+  /** Currently open SSH transport connections (leak assertion surface). */
+  liveClientCount = 0
   /** Every exec request the server received, in order (replay-detection). */
   execRequests: string[] = []
   /** Connections still to drop on accept (acquire-failure tests). */
@@ -134,6 +173,8 @@ export class TestSshServer {
     const clients: ServerConnection[] = []
     let connectCount = 0
     const server = new Server({ hostKeys: [readFileSync(hostKey)] }, (client) => {
+      harness.liveClientCount += 1
+      client.once('close', () => { harness.liveClientCount -= 1 })
       if (harness.pendingFailures > 0) {
         harness.pendingFailures -= 1
         client.end()
@@ -167,8 +208,11 @@ export class TestSshServer {
           const session = accept()
           session.on('exec', (acceptExec, _rejectExec, info) => {
             const stream = acceptExec() as unknown as ClientChannel
-            harness.execRequests.push(info.command)
-            handleCommand(info.command, stream, harness)
+            // Record and dispatch the CALLER's command: the server-budget
+            // wrapper is transport detail, not what the caller asked for.
+            const command = unwrapServerBudget(info.command)
+            harness.execRequests.push(command)
+            handleCommand(command, stream, harness)
           })
           session.on('pty', (acceptPty) => acceptPty())
           session.on('window-change', () => undefined)

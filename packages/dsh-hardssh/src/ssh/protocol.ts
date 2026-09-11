@@ -85,6 +85,16 @@ export interface ClusterResult {
   stderr?: string
   durationMs?: number
   error?: string
+  /** Stable machine code for a per-host failure (B-14) — lets callers retry
+   *  on an auth/TOFU gate instead of parsing the human message. */
+  code?: 'NEEDS_PASSWORD' | 'HOST_KEY_UNKNOWN' | 'HOST_KEY_MISMATCH' | 'ALIAS_NOT_FOUND' | 'ABORTED' | 'TIMEOUT' | 'ERROR'
+  /** Which secret the host needs when `code` is NEEDS_PASSWORD. */
+  secret?: 'password' | 'passphrase'
+  /** Server-key fingerprint for HOST_KEY_UNKNOWN / HOST_KEY_MISMATCH. */
+  hostKeyFingerprint?: string
+  /** Expected/actual fingerprints for HOST_KEY_MISMATCH. */
+  expected?: string
+  actual?: string
 }
 
 /** SFTP transfer progress frame (upload stream). */
@@ -224,4 +234,15 @@ export type KnownHostAction = 'trust' | 'forget'
 /** NDJSON transfer stream line shapes (upload). */
 export type TransferStreamLine =
   | { type: 'progress'; progress: TransferProgress }
-  | { type: 'result'; ok: boolean; transferredBytes?: number; error?: string }
+  /** The final remote rename is about to start; loss after this point means
+   *  the target's result is unknown until inspected. */
+  | { type: 'commit' }
+  | {
+    type: 'result'
+    ok: boolean
+    transferredBytes?: number
+    error?: string
+    code?: string
+    secret?: 'password' | 'passphrase'
+    hostKeyFingerprint?: string
+  }

@@ -13,6 +13,7 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { SshEngine } from './engine.ts'
+import { secureLocalTransferPath } from './local-transfer-policy.ts'
 import type { ClusterResult, ExecResult, SshHostSummary, TunnelInfo } from './protocol.ts'
 
 /**
@@ -23,15 +24,23 @@ export type ToolEnvelope<T extends object> =
   | ({ ok: true } & T)
   | { ok: false; error: string }
 
-/** Run one tool operation and fold every thrown error into a failure envelope. */
+/** Run one tool operation and fold every thrown error into a failure envelope.
+ *
+ *  The message passes the engine's leak guard before it reaches the model: a
+ *  rejected connect/resolve can embed a credential, and this envelope is the
+ *  one place every tool's failure text is produced. */
 async function captureToolResult<T extends object>(
+  engine: Pick<SshEngine, 'redact'>,
   operation: () => T | Promise<T>,
 ): Promise<ToolEnvelope<T>> {
   try {
     const value = await operation()
     return { ok: true, ...value }
   } catch (error) {
-    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+    const message = error instanceof Error ? error.message : String(error)
+    // Tolerate engine doubles that predate the redactor (tests inject minimal
+    // fakes); the production engine always provides it.
+    return { ok: false, error: typeof engine.redact === 'function' ? engine.redact(message) : message }
   }
 }
 
@@ -135,7 +144,7 @@ export function sshListTool(engine: SshEngine) {
       },
     },
     async execute(args) {
-      return captureToolResult(() => ({ hosts: engine.list(args.query) }))
+      return captureToolResult(engine, () => ({ hosts: engine.list(args.query) }))
     },
   })
 }
@@ -149,7 +158,7 @@ export function sshExecTool(engine: SshEngine) {
     parameters: {
       alias: { type: 'string', required: true, description: 'Host alias from ssh_list.' },
       command: { type: 'string', required: true, description: 'The shell command to run remotely.' },
-      timeoutMs: { type: 'integer', description: 'Timeout in milliseconds (default 60000).' },
+      timeoutMs: { type: 'integer', description: 'Timeout in milliseconds (default 60000). Enforced on the server as well (coreutils timeout), so a timed-out command is stopped instead of left running.' },
     },
     output: {
       schema: {
@@ -172,7 +181,7 @@ export function sshExecTool(engine: SshEngine) {
       },
     },
     async execute(args) {
-      return captureToolResult(() => engine.exec(args.alias, args.command, args.timeoutMs))
+      return captureToolResult(engine, () => engine.exec(args.alias, args.command, args.timeoutMs))
     },
   })
 }
@@ -181,11 +190,11 @@ export function sshExecTool(engine: SshEngine) {
 export function sshUploadTool(engine: SshEngine) {
   return defineTool({
     name: 'ssh_upload',
-    description: 'Upload a local file to a configured SSH host. The local path is on THIS machine (the dsh host). ' +
+    description: 'Upload a local file from the invoking session workspace to a configured SSH host. Local paths outside that workspace are rejected. ' +
       'Triggers: upload file to server, deploy artifact, copy config to server.',
     parameters: {
       alias: { type: 'string', required: true, description: 'Host alias from ssh_list.' },
-      localPath: { type: 'string', required: true, description: 'Absolute local file path on this machine.' },
+      localPath: { type: 'string', required: true, description: 'Absolute source path inside the invoking session workspace.' },
       remotePath: { type: 'string', required: true, description: 'Destination path on the remote host (parent dirs are created).' },
     },
     output: {
@@ -204,9 +213,10 @@ export function sshUploadTool(engine: SshEngine) {
         return text(`uploaded ${value.files ?? 1} file(s), ${value.transferredBytes ?? 0} bytes`)
       },
     },
-    async execute(args) {
-      return captureToolResult(async () => {
-        const outcome = await engine.upload(args.alias, args.localPath, args.remotePath, false)
+    async execute(args, exec) {
+      return captureToolResult(engine, async () => {
+        const source = secureLocalTransferPath(exec, args.localPath, 'upload-source')
+        const outcome = await engine.upload(args.alias, source, args.remotePath, false)
         return { transferredBytes: outcome.bytes, files: outcome.files }
       })
     },
@@ -217,12 +227,12 @@ export function sshUploadTool(engine: SshEngine) {
 export function sshDownloadTool(engine: SshEngine) {
   return defineTool({
     name: 'ssh_download',
-    description: 'Download a remote FILE from a configured SSH host to a local path on this machine. Directory download is not supported — download files individually. ' +
+    description: 'Download a remote FILE into the invoking session workspace. Local paths outside that workspace are rejected; directory download is unsupported. ' +
       'Triggers: download file from server, fetch remote log/artifact.',
     parameters: {
       alias: { type: 'string', required: true, description: 'Host alias from ssh_list.' },
       remotePath: { type: 'string', required: true, description: 'Remote file path.' },
-      localPath: { type: 'string', required: true, description: 'Absolute destination path on this machine.' },
+      localPath: { type: 'string', required: true, description: 'Absolute destination path inside the invoking session workspace.' },
     },
     output: {
       schema: {
@@ -239,9 +249,10 @@ export function sshDownloadTool(engine: SshEngine) {
         return text(`downloaded ${value.bytes ?? 0} bytes`)
       },
     },
-    async execute(args) {
-      return captureToolResult(async () => {
-        const outcome = await engine.download(args.alias, args.remotePath, args.localPath)
+    async execute(args, exec) {
+      return captureToolResult(engine, async () => {
+        const destination = secureLocalTransferPath(exec, args.localPath, 'download-destination')
+        const outcome = await engine.download(args.alias, args.remotePath, destination)
         return { bytes: outcome.bytes }
       })
     },
@@ -315,7 +326,7 @@ export function sshTunnelTool(engine: SshEngine) {
     },
     async execute(args) {
       if (args.action === 'list') {
-        return captureToolResult(() => ({ tunnels: engine.listTunnels() }))
+        return captureToolResult(engine, () => ({ tunnels: engine.listTunnels() }))
       }
       if (args.action === 'start') {
         const alias = args.alias
@@ -323,7 +334,7 @@ export function sshTunnelTool(engine: SshEngine) {
         if (alias === undefined || remotePort === undefined) {
           return { ok: false, error: 'alias and remotePort are required for start' }
         }
-        return captureToolResult(async () => ({
+        return captureToolResult(engine, async () => ({
           tunnel: await engine.startTunnel(alias, {
             remotePort,
             remoteHost: args.remoteHost,
@@ -336,14 +347,14 @@ export function sshTunnelTool(engine: SshEngine) {
         if (tunnelId === undefined) {
           return { ok: false, error: 'tunnelId is required for stop' }
         }
-        return captureToolResult(() => {
+        return captureToolResult(engine, () => {
           const stopped = engine.stopTunnel(tunnelId)
           if (!stopped) throw new Error(`tunnel '${tunnelId}' not found`)
           return { stopped: 1 }
         })
       }
       if (args.action === 'stop-all') {
-        return captureToolResult(() => ({ stopped: engine.stopAllTunnels(args.alias) }))
+        return captureToolResult(engine, () => ({ stopped: engine.stopAllTunnels(args.alias) }))
       }
       return { ok: false, error: `unknown action '${String(args.action)}'` }
     },
@@ -384,6 +395,14 @@ export function sshClusterTool(engine: SshEngine) {
                 stderr: { type: 'string' },
                 durationMs: { type: 'integer' },
                 error: { type: 'string' },
+                // Typed per-host failure detail (B-14): additive optional
+                // fields, so an agent can retry by machine code instead of
+                // parsing a message. Never carries a credential value.
+                code: { type: 'string', enum: ['NEEDS_PASSWORD', 'HOST_KEY_UNKNOWN', 'HOST_KEY_MISMATCH', 'ALIAS_NOT_FOUND', 'ABORTED', 'TIMEOUT', 'ERROR'] },
+                secret: { type: 'string', enum: ['password', 'passphrase'] },
+                hostKeyFingerprint: { type: 'string' },
+                expected: { type: 'string' },
+                actual: { type: 'string' },
               },
             },
           },
@@ -396,7 +415,10 @@ export function sshClusterTool(engine: SshEngine) {
       },
     },
     async execute(args) {
-      return captureToolResult(() => engine.cluster(args))
+      // The engine returns a bare array; the envelope (and this tool's own
+      // output schema) requires a `results` field. Spreading the array
+      // produced numeric keys instead, so the payload was unusable.
+      return captureToolResult(engine, async () => ({ results: await engine.cluster(args) }))
     },
   })
 }
