@@ -141,19 +141,26 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-This repository is at **`0.2.2`**. npm only carries `0.1.2` so far, so a one-line npm
-install would give you an outdated build; install from this repository instead:
+Published on npm (current version **`0.2.2`**, shipping the required `cordis.patch.yml`
+and built artifacts) — one command:
 
 ```sh
-# source link (recommended: rebuild lib/ after edits, restart dsh web)
+dsh plugin --profile web add @tiphareth/dsh-hardssh
+# or via npx when `dsh` is not on PATH
+npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
+```
+
+For development / local iteration, install from the source checkout or a local tarball:
+
+```sh
+# source link (rebuild lib/ after edits and restart dsh web; no re-packing)
 dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
-# or pack a tarball first (ships built artifacts and cordis.patch.yml)
+# or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
 dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.2.tgz
 ```
 
-Prefix the command with `npx --yes @deepseek-ai/dsh` when `dsh` is not on PATH.
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and
 to `dsh.profile.bundles`, then restart `dsh web`.
 

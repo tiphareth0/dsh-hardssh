@@ -46,7 +46,10 @@
 ## 安装
 
 ```sh
-# profile 机制，热插拔；需重启 dsh
+# 已发布 npm（当前 0.2.2）：profile 机制，热插拔，需重启 dsh
+dsh plugin --profile <name> add @tiphareth/dsh-hardssh
+
+# 开发/迭代：源码链接（改码重建 lib/ 后重启即生效）
 dsh plugin --profile <name> add link:<repo>/packages/dsh-hardssh
 ```
 

@@ -97,19 +97,27 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-本仓库当前版本 **`0.2.2`**。npm 上目前只发布到 `0.1.2`，因此**一行 npm 安装会装到旧版本**；请从本仓库安装：
+已发布到 npm（当前版本 **`0.2.2`**，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
 
 ```sh
-# 源码链接（推荐：改码后重建 lib/ 并重启 dsh web 即生效）
+dsh plugin --profile web add @tiphareth/dsh-hardssh
+# 或 npx 形式（dsh 不在 PATH 时）
+npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
+```
+
+开发/迭代用本机源码或本地 tarball：
+
+```sh
+# 源码链接（改码后重建 lib/ 并重启 dsh web 即生效，无需重新打包）
 dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
-# 或先打包，再安装 tarball（含构建产物与 cordis.patch.yml）
+# 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
 dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.2.tgz
 ```
 
-`dsh` 不在 PATH 时给命令加 `npx --yes @deepseek-ai/dsh` 前缀。手工方式：把包加入 profile 的
-`dependencies`（`file:...` 指向 tarball）与 `dsh.profile.bundles` 列表，重启 `dsh web` 生效。
+手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
+`dsh.profile.bundles` 列表，重启 `dsh web` 生效。
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
