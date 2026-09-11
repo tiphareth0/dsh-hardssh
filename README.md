@@ -7,7 +7,7 @@
 
 **中文** · [English](./README.en.md)
 
-**【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】** · 已适配最新版 DSH **0.1.5**
+**【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】** · 已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`）
 
 把服务器上的任意目录变成 **SSH 工作区**：绑定后，该会话里的文件读写与命令执行**透明地运行在远端主机**，
 你和 agent 都像在操作本机一样工作——同时提供完整的 SSH 运维面板（终端、传输、隧道、命令）。
@@ -91,34 +91,29 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 - **SSH 工作区**：任意 `user@host` 的目录即可成为工作区。绑定的会话透明远端路由；侧边栏工作区带服务器标识（已连接 / 未连接，悬停显示远端目录）。
 - **SSH 运维（跟随会话）**：Web 终端（xterm + WebSocket PTY）、SFTP 上传下载、本地端口转发（访问内网数据库/服务）、当前服务器的远端命令。
 - **主机管理**：左侧「SSH 工作区」面板按服务器分组列出全部主机与工作区，带已连接 / 未连接徽章，支持增删改查与 `~/.ssh/config` 导入。
-- **Agent 工具**：`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`，以及 `remote_*` 工作区工具。
+- **Agent 工具**：`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`，以及远端工作区工具 `remote_status` / `remote_ls` / `remote_search`（远端检索，替代在 SSH 会话里不可用的 `glob` / `grep`）。
 - **多主机**：任意数量主机（`host` / `port` / `user` + 私钥、密码或 `SSH_AUTH_SOCK` agent），密码免提交、连接时输入；跨主机并发命令用 `ssh_cluster`。
 - **不修改官方内核**：只作为普通插件挂载（目录流、左侧全局入口行、右侧栏 Tab），`dsh-workspace` 内核原样工作。
 
 ## 安装
 
-已发布到 npm（当前版本 `0.2.2`，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
+本仓库当前版本 **`0.2.2`**。npm 上目前只发布到 `0.1.2`，因此**一行 npm 安装会装到旧版本**；请从本仓库安装：
 
 ```sh
-dsh plugin --profile web add @tiphareth/dsh-hardssh
-# 或 npx 形式（dsh 不在 PATH 时）
-npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
+# 源码链接（推荐：改码后重建 lib/ 并重启 dsh web 即生效）
+dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
+
+# 或先打包，再安装 tarball（含构建产物与 cordis.patch.yml）
+pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.2.tgz
 ```
 
-开发/迭代用本机源码或本地 tarball：
-
-```sh
-dsh plugin --profile web add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.2.2.tgz
-# 或源码链接（改代码重建 lib/ 后重启即生效，无需重新打包）
-dsh plugin --profile web add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
-```
+`dsh` 不在 PATH 时给命令加 `npx --yes @deepseek-ai/dsh` 前缀。手工方式：把包加入 profile 的
+`dependencies`（`file:...` 指向 tarball）与 `dsh.profile.bundles` 列表，重启 `dsh web` 生效。
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
-或手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
-`dsh.profile.bundles` 列表，重启 `dsh web` 生效。
-
-> 已适配最新版 DSH **0.1.5**。seam 替换机制见上文「核心优势 1」，无需按内核版本做适配。
+> 已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`）。seam 替换机制见上文「核心优势 1」，无需按内核版本做适配。
 
 ## 快速开始
 
@@ -160,7 +155,8 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 ```sh
 pnpm install
 pnpm --filter @tiphareth/dsh-hardssh typecheck   # 类型检查
-pnpm --filter @tiphareth/dsh-hardssh exec vitest run   # 测试
+pnpm test                                        # 测试（默认套件 ~12s；vault 用例已移出）
+pnpm test:vault                                  # 只跑 vault 加密用例（~21s，scrypt 故意慢）
 pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 ```
 

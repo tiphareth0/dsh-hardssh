@@ -6,27 +6,21 @@
 
 > 0.2.1 从未发布：该批次的修复与本轮对抗式复核的修正合并为本版本。已在真实 Linux 服务器上做过端到端验证。
 
-与上游 DSH 内核对比复核后的缺陷修复批次。以下每条都先在源码中回读确认，再修复并补回归用例；**随后又经过一轮对抗式复核，7 条声明被证明不成立或只做了一半**，修正内容以 `> 修正（同批次复核）` 标注在原条目下。
+与上游 DSH 内核对比复核后的缺陷修复批次。以下每条都先在源码中回读确认，再修复并补回归用例；**随后又经过一轮对抗式复核，其中 5 条声明被证明不成立或只做了一半**，涉及条目已按复核结论重写（正文只描述最终实现）。
 
 ### 修复（高）
 
 - **`write` / `edit` 的沙箱升级入口被静默关闭（全量会话，含纯本地）**：`SwitchFileSystem.sandboxMode` 曾无条件返回 `undefined`（HSSH-19 的「保守」修复），而 `dsh-tool-fs` 在 `apply()` 时**只读一次**该能力事实，据此决定是否注册 `sandbox_permissions` / `justification` 两个参数（`lib/index.js:1151-1152`、`:610`/`:764`，并在 `:1192` 明确拒绝该参数）。结果是「被拒 → 一次性升级重试」这条唯一出路对所有会话消失。现改为**委托本地后端的真实模式**；远端世界没有本地沙箱语义，其升级策略在门面处**显式丢弃**（而不是被远端后端 4 参数签名静默吞掉）。
-- **cutover marker 与账本存在性脱钩 → 静默且永久的数据丢失窗口**：marker 只做形状校验、从不与账本比对，而 `WorkspaceLedger` 把 `ENOENT` 当空数组。删除 `~/.dsh/workspaces/index.v1.json`（或被任何清理脚本删除）后，启动既不会重导也不会报错，全部工作区**静默消失**。现在：`marker.recordCount > 0` + 账本**缺失或不可解析** = 数据丢失，按 `.last-good` → 最新 `.backup-*` → legacy 重导**依次恢复**；**每个候选都必须满足 marker 记录的 id 集合**，恢复不出全部工作区的来源一律拒绝，全部不可用时**拒绝启动**（core not ready，seam 对锚点路径 fail closed），并留下 `recovery-report.json` 作为可见凭据。每次保存都会滚动维护一份 `.last-good` 恢复副本（首次提交种子化，此后保存先前已提交内容）。
-  > **修正（同批次复核）**：本条的初版实现有两个缺陷，已被复现并修复：① legacy 层「文件存在即算恢复成功」，从不检查迁移结果——空 legacy 会让门禁放行并把 marker 重写成 `recordCount: 0`，**永久关闭**该门禁；② 恢复候选不与 marker 对账，可能静默恢复出更小的工作区集合。现在 legacy 层以**不带 reportPath** 的方式重导（绝不改写 marker）、必须读回并满足 marker 的 id 集合，否则返回失败。回归用例：空 legacy 必须拒绝启动且 marker 不变、`.last-good` 记录不全时拒绝、损坏账本可从 `.last-good` 恢复、显式空账本仍具权威。
-- **agent 提示词与实现矛盾**：远端会话提示词仍称「glob / grep / pwsh 在本工作区不可用（已被自动拦截）」，而该 guard 早已删除、路由改由 seam 承担。首次修正时按「glob/grep 走已路由的 fs」重写——**那句话是错的**（见下方同批次复核的 P0 级修正），现已改为按真实行为描述：glob/grep 用本机打包的 ripgrep，看不到服务器内容，在 SSH 会话里会被明确拒绝，改用 `remote_search`；`pwsh` 等为客户端原生二进制，本机执行。
-  > **修正（同批次复核）**：`dsh-tool-fs-search` 是用**已解析的本机 ripgrep 绝对路径** `ctx.subprocess.spawn`，并不经过 `ctx.fs`：Windows 上该路径被判为客户端原生 → 在本地空锚点目录里搜索（静默返回「无匹配」）；POSIX 上被判为远端 → 把本机路径发到服务器（必然 ENOENT）。两种都错。现在 `SwitchSubprocessRuntime` 对「路径形态的 rg/ripgrep」在远端会话中**显式拒绝并指向 `remote_search`**；裸 `rg` 仍作为普通服务器命令走远端。README 的「所有标准工具都自动远端执行」也已改正。
+- **cutover marker 与账本存在性脱钩 → 静默且永久的数据丢失窗口**：marker 原先只做形状校验、从不与账本比对，而 `WorkspaceLedger` 把 `ENOENT` 当空数组，于是删除 `~/.dsh/workspaces/index.v1.json`（或被任何清理脚本删除）后，启动既不会重导也不会报错，全部工作区**静默消失**。现在门禁是「marker 存在 + `marker.recordCount > 0` + 账本**缺失或不可解析**」即判定数据丢失，按 `.last-good` → 最新 `.backup-*` → legacy 重导**依次恢复**，并且**每个候选都必须读回后满足 marker 记录的 id 集合**——满足不了的来源一律拒绝，不会静默恢复出更小的工作区集合；legacy 层以**不带 reportPath** 的方式重导（绝不改写 marker，因此空 legacy 无法把 marker 降级成 `recordCount: 0` 而**永久关闭**门禁）；全部候选都不可用时**拒绝启动**（core not ready，seam 对锚点路径 fail closed），并留下 `recovery-report.json` 作为可见凭据。每次保存都会滚动维护一份 `.last-good` 恢复副本（首次提交种子化，此后保存先前已提交内容）。回归用例：空 legacy 必须拒绝启动且 marker 不变、`.last-good` 记录不全时拒绝、损坏账本可从 `.last-good` 恢复、显式空账本仍具权威。
+- **agent 提示词与实现矛盾**：远端会话提示词曾称「glob / grep / pwsh 在本工作区不可用（已被自动拦截）」（该 guard 早已删除、路由改由 seam 承担），README 又声称「所有标准工具都自动远端执行」——两句都不对。真实情况是：`dsh-tool-fs-search` 用**已解析的本机 ripgrep 绝对路径** `ctx.subprocess.spawn`，并不经过 `ctx.fs`，于是 Windows 上该路径被判为客户端原生、在本地空锚点目录里搜索（静默返回「无匹配」），POSIX 上被判为远端、把本机路径发到服务器（必然 ENOENT）。现在行为与文档一致：glob / grep 用本机打包的 ripgrep，看不到服务器内容，在 SSH 会话里被**显式拒绝并指向 `remote_search`**（裸 `rg` 仍作为普通服务器命令走远端）；`pwsh` 等客户端原生二进制本机执行；README 的「所有标准工具都自动远端执行」已改正。
 
 ### 修复（中）
 
-- **并发破坏面过大**：任一操作 abort 会 `markBroken` + `client.end()` 掐掉**整条共享连接**，同 alias 上并行的 exec / SFTP / tunnel 全部陪葬。现在 abort 只取消**该操作自己**的请求（`exec` 通过新增的 `OperationControl.signal` 关闭自己的 channel），且仅当该租约是**最后一个持有者**时才退休传输；abort 判定改用 `signal.aborted` 而不是 `error.name`（调用方会用 `abort(new Error('cancel'))` 这类 reason）。SFTP 超时不再无条件 `sftp.end()`：共享子系统在仍有在飞请求时只标记 suspect，待其**排空后**再轮换。exec 超时后增加宽限观察，未 ack 的通道计入半开计数，累计到阈值（4，低于 `MaxSessions` 10）即**drain**（不再 force）该传输；迟到的 ack 会**递减**计数，慢对端不会累积到退休。
-  > **修正（同批次复核）**：初版只覆盖了被点名的那一处，实测仍有四类问题，已全部修复并有回归用例：① 租约在 abort 时立即释放，导致 `holdsOnlyLease()` 在请求仍在飞时报告「没有其他使用者」，随后另一个会话的 abort 仍会掐断它——现由 `holdLeaseUntilSettled()` 把释放绑定到**操作**结束；② 另有 4 处 `sftp.end()`（writeFile 停滞、recursive rm 超时、fastPut/fastGet 停滞）未走共享通道保护——现统一走 `retireSharedSubsystem()`；③ `inFlight` 只统计 `withSftpTimeout` 调用者，裸 stat / 读写流 / 传输不计数，轮换仍可能掐掉并发传输——现由 `enter()`/`leave()` 覆盖传输与 rm/writeFile；④ 半开通道计数只增不减且跨代不清零，对端稍慢就会被累计到 force 退休——现改为迟到 ack 递减 + drain 退休；⑤ `invalidate` 在 alias 无活跃传输时提前返回，该类 alias 的会话密码**永不清理**——现在也会通知退休。
-- **脱敏缺口**：PTY 输出、终端 exit 错误、`test()` 失败消息此前不经过 leak guard。现在终端 WebSocket 路由是统一脱敏出口（已知密文精确替换，best-effort），`test()` 错误也走 `redact()`。
-  > **修正（同批次复核）**：还有三处出口未覆盖，已补：远程 `workspace.process` / `workspace.terminal` 的**流式** stdout/stderr（此前完全绕过 leak guard）、上传失败的 NDJSON 错误帧、以及 `ssh_*` 工具的失败信封（`captureToolResult` 现在经 `engine.redact`）。同样对缺少 redactor 的引擎替身保持容错。
-- **凭据面**：vault 曾位于 `~/.dsh/dsh-ssh-vault.json` —— **恰好是 fs seam 声明的本地根**，绑定远端会话的 agent 可读到密文；配合 `DSH_CREDENTIAL_PASSWORD` 自动解锁即可离线还原。现在：vault 迁至 `~/.dsh/ssh-secrets/`（启动时自动搬移旧文件），并在 `SwitchFileSystem.deniedRoots` 中**显式拒绝**访问；`DSH_CREDENTIAL_PASSWORD` 自动解锁改为**显式 opt-in**（新增配置 `vaultAutoUnlock: off|env`，默认 `off`）。
-  > **修正（同批次复核）**：初版把这条写成「移出 `~/.dsh` 之外」，**不成立**——新路径仍在 `~/.dsh` 内（代码注释与 README 当时自相矛盾），且 `deniedRoots` 只在 `resolve`/`lstat` 生效，`stat`/`readText`/`writeText` 等按 target 派发的路径不复查；旧路径 `~/.dsh/dsh-ssh-vault.json` 也未列入拒绝。现在：注释与文档如实说明「位置不是保护，显式拒绝才是」；`deniedRoots` 覆盖 `resolve`/`lstat` 的本地分支**以及** `decode()` 这一所有 target 派发的唯一入口（本地后端按 canonical 路径作 key，故指向 vault 的符号链接同样被拒）；旧路径一并拒绝。同时明确写下残余风险：以同一用户在本机运行的命令（如客户端 `pwsh`）仍能读到该文件，真正的保护是加密 + 默认关闭的环境变量自动解锁。
+- **并发破坏面过大**：原来任一操作 abort 会 `markBroken` + `client.end()` 掐掉**整条共享连接**，同 alias 上并行的 exec / SFTP / tunnel 全部陪葬。现在 abort 只取消**该操作自己**的请求（`exec` 通过新增的 `OperationControl.signal` 关闭自己的 channel），并判定 `signal.aborted` 而不是 `error.name`（调用方会用 `abort(new Error('cancel'))` 这类 reason）；租约的释放由 `holdLeaseUntilSettled()` 绑定到**操作结束**，否则 `holdsOnlyLease()` 会在请求仍在飞时报「没有其他使用者」，让另一个会话的 abort 仍能掐断它。SFTP 侧不再无条件 `sftp.end()`：共享子系统在仍有在飞请求时只标记 suspect，待其**排空后**统一经 `retireSharedSubsystem()` 轮换（writeFile 停滞、recursive rm 超时、fastPut/fastGet 停滞四处都走它）；`inFlight` 由 `enter()`/`leave()` 覆盖传输与 rm/writeFile（原先只统计 `withSftpTimeout` 调用者，轮换仍可能掐掉并发传输）；exec 超时后增加宽限观察，未 ack 的通道计入半开计数，累计到阈值（4，低于 `MaxSessions` 10）即 **drain**（不再 force），迟到的 ack 会**递减**计数，慢对端不会累积到退休；`invalidate` 即使 alias 无活跃传输也会通知退休，该类 alias 的会话密码不再**永不清理**。
+- **脱敏缺口**：PTY 输出、终端 exit 错误、`test()` 失败消息此前不经过 leak guard。现在终端 WebSocket 路由是统一脱敏出口（已知密文精确替换，best-effort），`test()` 错误也走 `redact()`；远程 `workspace.process` / `workspace.terminal` 的**流式** stdout/stderr（此前完全绕过）、上传失败的 NDJSON 错误帧、以及 `ssh_*` 工具的失败信封（`captureToolResult` 现在经 `engine.redact`）同样补齐，并对缺少 redactor 的引擎替身保持容错。
+- **凭据面**：vault 曾位于 `~/.dsh/dsh-ssh-vault.json` —— **恰好是 fs seam 声明的本地根**，绑定远端会话的 agent 可读到密文；配合 `DSH_CREDENTIAL_PASSWORD` 自动解锁即可离线还原。现在：vault 迁至 `~/.dsh/ssh-secrets/`（启动时自动搬移旧文件），注释与文档如实说明「**位置不是保护，显式拒绝才是**」（新路径同样在 `~/.dsh` 之内）；`SwitchFileSystem.deniedRoots` 拒绝 vault 目录与新旧单文件路径，覆盖 `resolve`/`lstat` 的本地分支**以及** `decode()` 这一所有 target 派发的唯一入口（本地后端按 canonical 路径作 key，故指向 vault 的符号链接同样被拒，`stat`/`readText`/`writeText` 不再有绕过路径）；`DSH_CREDENTIAL_PASSWORD` 自动解锁改为**显式 opt-in**（新增配置 `vaultAutoUnlock: off|env`，默认 `off`）。残余风险也写进文档：以同一用户在本机运行的命令（如客户端 `pwsh`）仍能读到该文件，真正的保护是加密 + 默认关闭的环境变量自动解锁。
 - **会话密码实为进程级**：`clearSessionSecrets` 只在进程退出时调用，连接池 30 分钟空闲回收并**不清理**。现在连接池退休传输时通过 `onRetire` 回调丢弃该 alias 的会话密码与对应脱敏材料（按剩余密钥重建，避免影响其他 alias），与文档一致。轮换密码时**保留**旧值的脱敏（用旧凭据建立的连接可能仍在回显它），直到该连接退休才释放。
-- **`remote_search` 假成功**：命令以 `find ... 2>/dev/null | head -c` 结尾，退出码取的是 `head`，根目录不存在/无权限时返回「成功、无匹配」。现在生产者写入临时目录、退出码与 stderr 经 NUL 分隔的 trailer 回传，**空结果 + 非零退出码 = 失败**（grep 的 exit 1 仍表示无匹配，exit 2 报错）。
-  > **修正（同批次复核）**：临时文件改为 `mktemp -d` + `trap` 清理（此前两个 `mktemp` 半失败会漏一个文件，且超时被 kill 时 `rm -f` 不会执行）；trailer 缺失时不再回退到「包装器自己的 0 退出码」——那会让**恰好超时**的场景复活假成功，现在空 body + 无 trailer = 失败。
+- **`remote_search` 假成功**：命令曾以 `find ... 2>/dev/null | head -c` 结尾，退出码取的是 `head`，根目录不存在/无权限时返回「成功、无匹配」，恰好超时也会复活同样的假成功。现在生产者写入 `mktemp -d` 出来的临时目录、退出码与 stderr 经 NUL 分隔的 trailer 回传：**空 body 且无 trailer 一律失败**，空结果 + 非零退出码 = 失败（grep 的 exit 1 仍表示无匹配，exit 2 报错）；临时目录用 `trap` 清理，并额外使用**每用户固定 scratch 根**、每次搜索修剪超过 10 分钟残留——因为 `trap` 覆盖不了 SIGKILL，而 exec 超时正是以 KILL 结束命令。
 - **深色主题对话框黑底黑字**：5 个对话框硬编码 `color: #000000` 配主题背景 token，改为 `var(--dsw-alias-label-primary, …)`（管理面板同样处理）。
 
 ### 修复（低）
@@ -36,16 +30,16 @@
 - `connect-host` 不再把 `listHosts()` 失败缓存成空 Map（此前一次失败即永久失去登录名提示）。
 - 工作区面板的连接状态读取失败不再静默降级为「状态未知」，改为显示可见错误横幅。
 - 删除死代码：`HostsTab.tsx`（236 行，仅类型 re-export）、`LocalBackend`（168 行，仅测试在用）及其用例、`BaseWorkspaceRouter`、`globalWorkspaceRegistry`、`mustRefuseUnreadyRouting`（其 B-01 语义改在**生产 seam** 上断言）、`WorkspaceRuntimeMode` 的 `'legacy'` 分支，以及 `backend.ts` 中随之失效的搜索常量与 helper。
-- **host 侧 anchor 比较合并为单一实现**：`src/ledger.ts` 与 `src/base/ledger.ts` 各有一份且 Windows/UNC 根处理已分歧，现 `src/ledger.ts` 改为 re-export `base/ledger.ts` 的实现，保留 Windows 混合分隔符行为用例。
-  > **修正（同批次复核）**：说「单一实现」是夸张的——`switch/subprocess` 的 `isUnder`（本地根/拒绝根成员判定）与客户端 `session-connect-gate.ts` 仍各有一份。客户端那份**不能**共享：`base/ledger.ts` 依赖 `node:fs`，无法进入浏览器产物。此处保留分歧并各自注明原因，不再声称全仓单一实现。
+- **host 侧 anchor 比较**：`src/ledger.ts` 与 `src/base/ledger.ts` 曾各有一份且 Windows/UNC 根处理已分歧，现 `src/ledger.ts` 改为 re-export `base/ledger.ts` 的实现，保留 Windows 混合分隔符行为用例。全仓仍有两处无法共享的成员判定：`switch/subprocess` 的 `isUnder` 与客户端 `session-connect-gate.ts` 各一份——客户端那份**不能**共享，因为 `base/ledger.ts` 依赖 `node:fs`，进不了浏览器产物；两处各自注明原因，不声称全仓「单一实现」。
 - 仓库卫生：内部审查报告、迁移计划、验证日志等加入 `.gitignore`（部分此前已被忽略），过期报告顶部加「已过期 + 已修项」标注。
 - **构建产物卫生**：`lib/` 此前会累积陈旧产物——hash 变化后不再被引用的旧 chunk，以及**已删除模块**的 `.d.ts`（`tsc -b` 从不删除它们）——而 `files` 白名单（`lib/*.js`、`lib/types/**/*.d.ts`）会把它们一起发布。新增 `scripts/clean-build.mjs` 并在 `build` 前执行：清空 `lib/`（含 tsc build info，避免增量构建跳过输出）。清理后 `lib/` 只剩被引用的 9 个 JS 文件与当前模块的声明。
 
 ### 内部
 
 - 新增 `SshEngine.noteLeakedChannel()` / `noteChannelClosed()`、`ClientLease.holdsOnlyLease()`、`holdLeaseUntilSettled()`、`ConnectionPoolOptions.onRetire`、`Vault` 的 `allowEnvUnlock`、`inspectGenericLedger()`、`recoverGenericLedger()`（含 marker 对账）、`migrateLegacyVault()`、`SwitchSubprocessRuntime` 的客户端搜索工具拒绝、`SwitchFileSystem.assertNotDenied()`。
-- 测试：新增/改写 60+ 条用例（沙箱模式委托与远端策略丢弃、账本缺失/损坏恢复与**空 legacy 必须拒绝**、marker 不被降级、候选须满足 marker id 集合、提示词与真实行为一致、search 真实退出码与 trailer 缺失、vault 迁移与自动解锁 opt-in、deniedRoots 全路径覆盖与远端同名路径不误伤、池退休通知（含无活跃传输的 alias）、租约随操作结束才释放、abort 隔离、共享 SFTP 通道在传输停滞/超时时不被掐断、终端与流式通道脱敏、密码轮换后旧值仍脱敏、`/ls` 校验与客户端断开中止、面板错误态）。全量 **49 个测试文件 / 466 通过 / 3 跳过**。
-- **复核机制**：本批次的所有「已修复」声明都在复核中被逐条回读，其中 5 条被证明**不成立或只做了一半**（账本门禁可被空 legacy 绕过、glob/grep 远端语义、vault 位置与拒绝覆盖面、并发整改只改了被点名的一处、`.last-good` 注释与断言自相矛盾）。修正内容以 `> 修正（同批次复核）` 标注在原条目下。
+- 测试：新增/改写 60+ 条用例（沙箱模式委托与远端策略丢弃、账本缺失/损坏恢复与**空 legacy 必须拒绝**、marker 不被降级、候选须满足 marker id 集合、提示词与真实行为一致、search 真实退出码与 trailer 缺失、vault 迁移与自动解锁 opt-in、deniedRoots 全路径覆盖与远端同名路径不误伤、池退休通知（含无活跃传输的 alias）、租约随操作结束才释放、abort 隔离、共享 SFTP 通道在传输停滞/超时时不被掐断、终端与流式通道脱敏、密码轮换后旧值仍脱敏、`/ls` 校验与客户端断开中止、面板错误态、host HTTP 助手的 loopback/体积上限拒绝组合、本地传输路径的越界拒绝与符号链接逃逸）。全量 **51 个测试文件 / 499 通过 / 3 跳过**。
+- **测试时间**：默认 `pnpm test` 排除 `tests/ssh/vault.test.ts`（15 例，scrypt 派生是故意慢的，单文件 ~21s，占全量 25s 的 84%）→ **50 文件 / 484 通过 / 3 跳过，约 12s**；需要全量或单独跑 vault 时用 `pnpm test:all` / `pnpm test:vault`。
+- **复核机制**：本批次的所有「已修复」声明都在复核中被逐条回读，其中 5 条被证明**不成立或只做了一半**（账本门禁可被空 legacy 绕过、glob/grep 远端语义、vault 位置与拒绝覆盖面、并发整改只改了被点名的一处、`.last-good` 注释与断言自相矛盾）。上述条目均已按复核结论重写：正文只描述最终实现，返工过程不再逐条标注。
 
 ### 真机验证（真实 Linux 服务器，2026-09-11）
 

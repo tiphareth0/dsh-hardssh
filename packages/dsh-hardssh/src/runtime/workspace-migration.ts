@@ -9,12 +9,12 @@ import type { WorkspaceRecord } from '../base/model.ts'
 import type { SshWorkspaceRecord } from '../protocol.ts'
 
 /**
- * Which runtime the migration is preparing. `'legacy'` is gone with the legacy
- * runtime itself: the generic core is the only production runtime, so the only
- * remaining choices are "compare without committing" (`shadow`) and "commit"
- * (`generic`).
+ * Which runtime the migration is preparing. The legacy runtime is gone — the
+ * generic core is the ONLY production runtime — so this has a single value; it
+ * stays a named field so the cutover marker and the migration report record
+ * which runtime wrote them.
  */
-export type WorkspaceRuntimeMode = 'shadow' | 'generic'
+export type WorkspaceRuntimeMode = 'generic'
 
 export interface WorkspaceMigrationOptions {
   mode: WorkspaceRuntimeMode
@@ -26,7 +26,7 @@ export interface WorkspaceMigrationOptions {
 
 export interface WorkspaceMigrationReport {
   schemaVersion: 1
-  mode: 'shadow' | 'generic'
+  mode: WorkspaceRuntimeMode
   createdAt: string
   status: 'migrated' | 'unchanged'
   sourceDigest: string

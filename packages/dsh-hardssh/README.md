@@ -1,9 +1,9 @@
 # dsh-hardssh — SSH 远程工作区 + SSH 运维插件
 
-已适配最新版 DSH **0.1.5**。在 DSH Web GUI 中提供两块能力（单包单引擎）：
+已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`；本包版本 `0.2.2`）。在 DSH Web GUI 中提供两块能力（单包单引擎）：
 
 1. **SSH 运维**：右侧栏「SSH」Tab（从右侧栏标签条的「+」或右侧栏引导页入口打开）→ Web 终端（xterm + WebSocket PTY）、文件上传下载、本地端口转发隧道、当前服务器的远端命令；`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster` 六个 Agent 工具；主机配置存 `~/.dsh/dsh-ssh.json`。
-2. **SSH 工作区**：左侧侧栏的全局入口行 → 中央面板管理服务器与工作区（增删改查 / `~/.ssh/config` 导入）；绑定后本地 harness 的 fs/subprocess 经接缝门面透明路由到远程主机执行（read/write/edit/bash 在绑定会话中即远程操作）；`remote_*` 九个 Agent 工具用于显式操作。
+2. **SSH 工作区**：左侧侧栏的全局入口行 → 中央面板管理服务器与工作区（增删改查 / `~/.ssh/config` 导入）；绑定后本地 harness 的 fs/subprocess 经接缝门面透明路由到远程主机执行（read/write/edit/bash 在绑定会话中即远程操作）；`remote_*` 三个 Agent 工具（`remote_ls` / `remote_search` / `remote_status`）用于显式操作远端工作区。
 
 ## 核心优势
 
@@ -52,25 +52,23 @@ dsh plugin --profile <name> add link:<repo>/packages/dsh-hardssh
 
 ## 开发
 
+在仓库根目录执行：
+
 ```sh
-# 改码后一键同步 + 验证（build → 同步 profile 插件快照 → 独立实例启动验证）
-pwsh scripts/sync-verify.ps1
-# 单测 / 类型 / 构建
-pnpm --filter dsh-hardssh typecheck
-pnpm --filter dsh-hardssh test
-pnpm --filter dsh-hardssh build
+pnpm --filter dsh-hardssh typecheck   # 类型检查
+pnpm test                             # 默认测试套件（vault 加密用例已移出，约 12s）
+pnpm test:vault                       # 只跑 vault 用例（约 21s，scrypt 派生故意慢）
+pnpm --filter dsh-hardssh build       # 产出 lib/（构建前先清空，避免陈旧产物）
 ```
 
-> 注意：profile 的插件依赖是 `file:` 安装副本，pnpm install 会把它重建为指向源码的
-> junction（会让 DSH 平台 peer 解析断链）。日常改码后**只跑 sync-verify.ps1**（复制快照 +
-> 验证），不要跑 pnpm install；仅当 profile package.json 依赖声明变化时才 install，
-> 之后必须重跑 sync-verify 恢复快照。
+> profile 通过 `link:` 指向本包源码目录，因此改码后只需重新 `build`（产出 `lib/`）并重启
+> `dsh web` 即生效；不要把依赖改成 `file:` 安装副本，那会让 profile 加载一份快照而不是源码。
 
 ## 安全模型
 
 - `/api/dsh-ssh/*` 与 `/api/dsh-hardssh/*` 仅限 loopback（含同源校验）。
 - 认证材料沿用 `~/.dsh/dsh-ssh.json`（0600 / 0700），不新增存储。
 - 路径 gate：远程操作 root 必须等于 resolved remoteRoot；相对路径禁止 `..`；`workspace.fs` / `workspace.process` capability 在解析后的 canonical 路径上再做一次 root 收敛（symlink 逃逸 fail closed）。
-- 远程操作消耗真实远程资源：工具描述与宣告段明确「先确认再执行」；grep/glob 限深限条数。
-- SSH 模式下本机沙箱不对远程执行生效（远程进程无法被本地内核沙箱约束）——门面的 `sandboxMode` 在远程模式报告 `undefined`。
+- 远程操作消耗真实远程资源：工具描述与宣告段明确「先确认再执行」；`remote_search` 有深度与条数上限；`glob` / `grep` 在 SSH 会话里会被**显式拒绝**（本机 ripgrep 读不到服务器内容）并指向 `remote_search`。
+- SSH 模式下本机沙箱不对远程执行生效（远程进程无法被本地内核沙箱约束）：门面的 `sandboxMode` 委托本地后端的真实模式（`write` / `edit` 的沙箱升级入口据此注册），而远端世界的升级策略在门面处**显式丢弃**。
 - 凭据默认不落盘；`secretStorage: vault` 时以 AES-256-GCM + scrypt 加密存储于 `~/.dsh/ssh-secrets/dsh-ssh-vault.json`（被 fs seam 拒绝访问），且 `DSH_CREDENTIAL_PASSWORD` 自动解锁默认关闭（需 `vaultAutoUnlock: env`）。会话密码按**连接存活期**复用，连接池回收即失效。

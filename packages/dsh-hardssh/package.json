@@ -77,7 +77,9 @@
     "bundle": "tsdown",
     "watch": "tsdown --watch",
     "typecheck": "tsc -b --pretty false",
-    "test": "vitest run",
+    "test": "vitest run --exclude tests/ssh/vault.test.ts",
+    "test:all": "vitest run",
+    "test:vault": "vitest run tests/ssh/vault.test.ts",
     "workspace:export-legacy": "node ./scripts/export-legacy-workspaces.mjs",
     "prepare": "tsdown"
   },

@@ -7,7 +7,7 @@
 
 **English** · [中文](./README.md)
 
-**SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).** Compatible with the latest DSH **0.1.5**.
+**SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).** Compatible with DSH **0.1.5** (tested against kernel `0.1.5-rc.1`).
 
 Turn any directory on a server into an **SSH workspace**: once bound, file I/O and
 command execution in that session run **transparently on the remote host** — you and
@@ -130,7 +130,9 @@ workspace**; there is no host dropdown:
   workspace grouped per server with connected / disconnected badges, plus CRUD and
   `~/.ssh/config` import.
 - **Agent tools** — `ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` /
-  `ssh_tunnel` / `ssh_cluster`, plus the `remote_*` workspace tools.
+  `ssh_tunnel` / `ssh_cluster`, plus the remote workspace tools `remote_status` /
+  `remote_ls` / `remote_search` (remote search, standing in for `glob` / `grep`,
+  which cannot work inside an SSH session).
 - **Multi-host** — any number of hosts (`host` / `port` / `user` + key, password, or
   `SSH_AUTH_SOCK` agent); passwords are optional at creation. Cross-host fan-out via
   `ssh_cluster`.
@@ -139,30 +141,26 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm (current version `0.2.2`, shipping the required `cordis.patch.yml` and
-built artifacts) — one command:
+This repository is at **`0.2.2`**. npm only carries `0.1.2` so far, so a one-line npm
+install would give you an outdated build; install from this repository instead:
 
 ```sh
-dsh plugin --profile web add @tiphareth/dsh-hardssh
-# or via npx when `dsh` is not on PATH
-npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
+# source link (recommended: rebuild lib/ after edits, restart dsh web)
+dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
+
+# or pack a tarball first (ships built artifacts and cordis.patch.yml)
+pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.2.tgz
 ```
 
-For development / local iteration, install from a local tarball or the source checkout:
-
-```sh
-dsh plugin --profile web add C:/Users/Kether/.dsh/dsh-hardssh/dist/tiphareth-dsh-hardssh-0.2.2.tgz
-# or link the source (rebuild lib/ after code changes and restart; no re-packing)
-dsh plugin --profile web add link:C:/Users/Kether/.dsh/dsh-hardssh/packages/dsh-hardssh
-```
+Prefix the command with `npx --yes @deepseek-ai/dsh` when `dsh` is not on PATH.
+Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and
+to `dsh.profile.bundles`, then restart `dsh web`.
 
 npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
-Alternatively add the package to the profile's `dependencies` (`file:...` → tarball)
-and to `dsh.profile.bundles`, then restart `dsh web`.
-
-> Compatible with the latest DSH **0.1.5** (see "Why this plugin 1" for the seam
-> mechanism — no per-core-version adaptation is needed).
+> Compatible with DSH **0.1.5** (tested against kernel `0.1.5-rc.1`; see "Why this plugin 1"
+> for the seam mechanism — no per-core-version adaptation is needed).
 
 ## Quick start
 
@@ -212,9 +210,10 @@ These files are written with owner-only permissions (0600 / 0700).
 
 ```sh
 pnpm install
-pnpm --filter @tiphareth/dsh-hardssh typecheck
-pnpm --filter @tiphareth/dsh-hardssh exec vitest run
-pnpm --filter @tiphareth/dsh-hardssh build
+pnpm --filter @tiphareth/dsh-hardssh typecheck   # type check
+pnpm test                                        # test suite (~12s; vault cases moved out)
+pnpm test:vault                                  # vault crypto cases only (~21s, scrypt is slow by design)
+pnpm --filter @tiphareth/dsh-hardssh build       # build (lib/ artifacts)
 ```
 
 Pack & deploy: `pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist`,

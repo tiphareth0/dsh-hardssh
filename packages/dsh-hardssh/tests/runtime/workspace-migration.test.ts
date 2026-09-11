@@ -46,7 +46,7 @@ describe('workspace migration foundations', () => {
     const before = readFileSync(genericPath, 'utf8')
 
     const first = await migrateLegacySshLedger({
-      mode: 'shadow',
+      mode: 'generic',
       legacyPath,
       genericPath,
       reportPath,
@@ -60,7 +60,7 @@ describe('workspace migration foundations', () => {
     expect(records.map(record => record.id).sort()).toEqual(['local-1', 'ssh-1'])
     expect(records.find(record => record.id === 'ssh-1')).toEqual(legacySshRecordToWorkspaceRecord(legacy[0]!))
 
-    const second = await migrateLegacySshLedger({ mode: 'shadow', legacyPath, genericPath })
+    const second = await migrateLegacySshLedger({ mode: 'generic', legacyPath, genericPath })
     expect(second.status).toBe('unchanged')
     expect(second.backupPath).toBeUndefined()
   })
@@ -74,7 +74,7 @@ describe('workspace migration foundations', () => {
     writeFileSync(legacyPath, JSON.stringify([source]), 'utf8')
     writeFileSync(genericPath, JSON.stringify([conflicting]), 'utf8')
     const before = readFileSync(genericPath, 'utf8')
-    await expect(migrateLegacySshLedger({ mode: 'shadow', legacyPath, genericPath })).rejects.toThrow("conflict for id 'same'")
+    await expect(migrateLegacySshLedger({ mode: 'generic', legacyPath, genericPath })).rejects.toThrow("conflict for id 'same'")
     expect(readFileSync(genericPath, 'utf8')).toBe(before)
   })
 
@@ -82,7 +82,7 @@ describe('workspace migration foundations', () => {
     const dir = mkdtempSync(join(tmpdir(), 'workspace-migration-malformed-'))
     const legacyPath = join(dir, 'legacy.json')
     writeFileSync(legacyPath, '{bad', 'utf8')
-    await expect(migrateLegacySshLedger({ mode: 'shadow', legacyPath, genericPath: join(dir, 'generic.json') })).rejects.toThrow()
+    await expect(migrateLegacySshLedger({ mode: 'generic', legacyPath, genericPath: join(dir, 'generic.json') })).rejects.toThrow()
   })
 
   it('compares records, routes, namespaces, and capability declarations without capability objects', () => {
