@@ -16,6 +16,7 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import { SandboxedFileSystem } from '@deepseek-ai/dsh-fs-sandbox'
+import { FsError } from '@deepseek-ai/dsh-fs'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -83,6 +84,42 @@ export function genericFsWorldForNamespace(core: WorkspaceCore, namespace: strin
   }
 }
 
+/**
+ * Refuse a path that sits inside the managed anchor root but is owned by no
+ * registered workspace — as a NOT-FOUND answer, not as a fatal error.
+ *
+ * The path stays unreachable either way (it is never handed to the local
+ * backend, so a bound session cannot read or write client files through the
+ * anchor window). What changes is how callers SEE the refusal: `FS_NOT_FOUND`
+ * is the DSH contract for "this path does not exist", and the harness relies on
+ * it when walking UP from the session cwd looking for a project root —
+ * `dsh-agent-instructions` probes `<dir>/.git` per ancestor and treats ONLY
+ * `FS_NOT_FOUND` as "keep walking" (any other error aborts the whole run),
+ * `dsh-skill-filesystem` does the same. With a bare Error the very first step
+ * above the anchor (`<anchorRoot>/.git`) killed the run with
+ * "fs-ssh: … is inside the workspace anchor root but no registered workspace
+ * owns it (fail closed)". The message is kept verbatim so the refusal is still
+ * self-explanatory in logs.
+ */
+export function refuseUnownedAnchorPath(path: string): never {
+  throw new FsError(
+    `fs-ssh: '${path}' is inside the workspace anchor root but no registered workspace owns it (fail closed)`,
+    'FS_NOT_FOUND',
+  )
+}
+
+/**
+ * The shipped `worldForAnchorPath` deps hook: the workspace owning an absolute
+ * anchor path (this session's or a SIBLING's), else the anchor-window refusal.
+ * Exported so the seam can be exercised without re-implementing the policy.
+ */
+export function anchorWorldFor(core: WorkspaceCore, anchorRootDir: string, path: string): WorkspaceWorld | undefined {
+  const world = genericFsWorldFor(core, path, [anchorRootDir])
+  if (world !== undefined) return world
+  if (isPathUnderAnchor(anchorRootDir, path)) refuseUnownedAnchorPath(path)
+  return undefined
+}
+
 /** Mount the generic switching filesystem facade. */
 export function apply(ctx: Context): void {
   const localCtx = ctx.isolate('fs')
@@ -106,14 +143,7 @@ export function apply(ctx: Context): void {
     // pre-relocation path is denied too, because a failed move deliberately
     // leaves the original file in place.
     deniedRoots: [vaultDirectory(), legacyVaultPath()],
-    worldForAnchorPath: (path) => {
-      const world = genericFsWorldFor(ws, path, [anchorRootDir])
-      if (world !== undefined) return world
-      if (isPathUnderAnchor(anchorRootDir, path)) {
-        throw new Error(`fs-ssh: '${path}' is inside the workspace anchor root but no registered workspace owns it (fail closed)`)
-      }
-      return undefined
-    },
+    worldForAnchorPath: (path) => anchorWorldFor(ws, anchorRootDir, path),
     worldFor: (cwd) => {
       if (!ws.isReady()) {
         if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
@@ -128,6 +158,10 @@ export function apply(ctx: Context): void {
       const world = genericFsWorldFor(ws, cwd, [anchorRootDir])
       if (world !== undefined) return world
       if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
+        // Deliberately NOT the FS_NOT_FOUND refusal above: `cwd` is the session's
+        // own identity, not a path being probed. An unowned cwd means the
+        // workspace was deleted out from under a live session, which must stay
+        // loud instead of degrading into "not found" on every relative path.
         throw new Error(`fs-ssh: '${cwd}' is inside the workspace anchor root but no registered workspace owns it (fail closed)`)
       }
       return { backend: localFs, namespace: '' }

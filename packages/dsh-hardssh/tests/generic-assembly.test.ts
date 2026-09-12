@@ -11,7 +11,7 @@
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join, sep } from 'node:path'
+import { join, dirname, sep } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { Context } from '@deepseek-ai/cordis'
 import type { FileSystem } from '@deepseek-ai/dsh-fs'
@@ -25,7 +25,7 @@ import { createSshWorkspaceProvider } from '../src/providers/ssh/provider.ts'
 import { createLocalWorkspaceProvider, RootedLocalFileSystem, RootedLocalSubprocessRuntime } from '../src/providers/local/provider.ts'
 import { WFS_NAMESPACE_MARKER, SwitchFileSystem } from '../src/switch/switch-fs.ts'
 import { SwitchSubprocessRuntime } from '../src/switch/switch-subprocess.ts'
-import { genericFsWorldFor, genericFsWorldForNamespace } from '../src/fs.ts'
+import { anchorWorldFor, genericFsWorldFor, genericFsWorldForNamespace } from '../src/fs.ts'
 import { genericSubprocessFor } from '../src/subprocess.ts'
 import { GenericWorkspaceStore } from '../src/backend.ts'
 import { bootstrapGenericWorkspaceCore } from '../src/index.ts'
@@ -336,6 +336,75 @@ describe('generic fs/subprocess seams (fake engine)', () => {
     // the deployment facade owns that fail-closed rule.
     rmSync(anchor, { recursive: true, force: true })
     expect(genericFsWorldFor(generic.core, anchor, [dir])).toBeUndefined()
+
+    await generic.core.closeAll()
+  })
+})
+
+describe('anchor-window probes answer NOT FOUND (regression: a run aborted with fs-ssh … fail closed)', () => {
+  it('lets the project-root walk step over the anchor root instead of killing the run', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'anchor-window-'))
+    // The managed anchor root, with ONE workspace anchor inside it.
+    const anchorRootDir = join(dir, 'ssh-workspaces')
+    const anchor = join(anchorRootDir, '2b0f-uuid')
+    mkdirSync(anchor, { recursive: true })
+    const record: SshWorkspaceRecord = {
+      id: 'ws-1', title: 'enhancement', alias: 'host', remoteRoot: '/srv/app', anchorPath: anchor, createdAt: '2025-01-01T00:00:00.000Z',
+    }
+    const generic = await makeGenericCore(dir, record)
+
+    const localFs = {
+      resolve: vi.fn(async (path: string) => ({ targetKey: path, displayPath: path })),
+      stat: vi.fn(async () => undefined),
+    } as unknown as FileSystem
+    const facade = new SwitchFileSystem(new Context(), {
+      local: localFs,
+      worldForAnchorPath: (path) => anchorWorldFor(generic.core, anchorRootDir, path),
+      worldFor: (cwd) => genericFsWorldFor(generic.core, cwd, [anchorRootDir]) ?? { backend: localFs, namespace: '' },
+      worldForNamespace: (namespace) => genericFsWorldForNamespace(generic.core, namespace),
+    })
+
+    // 1. An unowned path inside the anchor window is an ABSENCE with the code
+    //    the harness knows, and it never reaches the local backend.
+    for (const path of [join(anchorRootDir, '.git'), join(anchorRootDir, 'no-such-sibling')]) {
+      await expect(facade.resolve(path, { cwd: anchor })).rejects.toMatchObject({ code: 'FS_NOT_FOUND' })
+    }
+    expect(localFs.resolve).not.toHaveBeenCalled()
+
+    // 2. Owned paths still route to the workspace connection (no regression).
+    const owned = await facade.resolve('app.txt', { cwd: anchor })
+    expect(String(owned.targetKey)).toContain(`${WFS_NAMESPACE_MARKER}ws-1/`)
+    // ...and a path outside the anchor root stays local as before.
+    await facade.resolve(join(dir, 'local.txt'))
+    expect(localFs.resolve).toHaveBeenCalledWith(join(dir, 'local.txt'), undefined)
+
+    // 3. Replay what `dsh-agent-instructions.existsAsMarker` does at the start
+    //    of every run: resolve + stat a `<dir>/.git` marker while walking up,
+    //    where ONLY a not-found answer means "keep walking" — any other error
+    //    aborts the whole run (that is exactly how the reported failure hit).
+    const probed: string[] = []
+    const markerExists = async (path: string): Promise<boolean> => {
+      try {
+        return await facade.stat(await facade.resolve(path, { cwd: anchor })) !== undefined
+      } catch (error) {
+        expect((error as { code?: string }).code).toBe('FS_NOT_FOUND')
+        return false
+      }
+    }
+    const findProjectRoot = async (cwd: string): Promise<string> => {
+      let current = cwd
+      for (;;) {
+        const marker = join(current, '.git')
+        probed.push(marker)
+        if (await markerExists(marker)) return current
+        const parent = dirname(current)
+        if (parent === current) return cwd
+        current = parent
+      }
+    }
+    await expect(findProjectRoot(anchor)).resolves.toBe(anchor)
+    // The exact path from the reported failure must be among the probes stepped over.
+    expect(probed).toContain(join(anchorRootDir, '.git'))
 
     await generic.core.closeAll()
   })

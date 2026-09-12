@@ -2,6 +2,15 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.2.3 — 未发布
+
+### 修复
+
+- **SSH 工作区会话里每一轮运行都失败**：报错 `fs-ssh: '…\.dsh\ssh-workspaces\.git' is inside the workspace anchor root but no registered workspace owns it (fail closed)`。根因不在插件自身的调用，而在**探测协议**：harness 每次运行开始都要确定「项目根」，从会话 cwd 逐级向上探测 `<dir>/.git`（`dsh-agent-instructions.findProjectRoot` → `existsAsMarker`，`dsh-skill-filesystem` 同理）。SSH 工作区会话的 cwd 就是工作区锚点目录，于是第一层 `<锚点>/.git` 正确路由到远端，**再上一层 `<锚点根>/.git`** 落在锚点窗口内、不属于任何工作区——此前抛的是**没有错误码的普通 `Error`**，而调用方只把 `FS_NOT_FOUND` 视为「不存在，继续向上」，其它错误**直接中止整轮运行**。
+  现在：该路径**仍然不会**被交给本地后端（锚点窗口依旧不可读写，fail closed 的隔离性不变），只是答复改成带 `code: 'FS_NOT_FOUND'` 的 `FsError`、消息原文保留，探测于是把它当作「不存在」继续向上，运行不再中断。
+- **两处派发刻意不对称**（已写进注释）：只有「按路径派发」的 `worldForAnchorPath` 改成 not-found；「按 cwd 派发」的 `worldFor` 保持原样的显式失败——cwd 是会话自身的身份、不是被探测的路径，工作区被删除后仍应大声报错，而不是让每条相对路径都退化成「not found」。
+- 回归用例：在 seam 上复刻 harness 的向上探测循环（resolve + stat，只有 `FS_NOT_FOUND` 表示「继续走」），断言 `<锚点根>/.git` 返回 not-found、循环能越过锚点根并正常收尾；同时断言工作区自己的路径仍路由到远端、锚点根之外的路径仍走本地。
+
 ## v0.2.2 — 2026-09-11
 
 > 0.2.1 从未发布：该批次的修复与本轮对抗式复核的修正合并为本版本。已在真实 Linux 服务器上做过端到端验证。
