@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.2-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.3-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -97,7 +97,7 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm（当前版本 **`0.2.2`**，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
+已发布到 npm（当前版本 **`0.2.3`**，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
 
 ```sh
 dsh plugin --profile web add @tiphareth/dsh-hardssh
@@ -113,7 +113,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.2.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.3.tgz
 ```
 
 手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与

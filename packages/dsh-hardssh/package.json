@@ -1,7 +1,7 @@
 {
   "name": "@tiphareth/dsh-hardssh",
   "description": "Generic workspace base for the dsh harness (local + remote workspace providers with per-workspace routing), with SSH as one concrete provider: bind a server directory as an SSH workspace so the session's file I/O and commands run on that host, manage hosts and workspaces in the GUI, and operate remote servers through the ssh_* / remote_* agent tools",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "type": "module",
   "repository": {
     "type": "git",
