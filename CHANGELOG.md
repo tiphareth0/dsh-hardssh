@@ -2,6 +2,14 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.2.4 — 未发布
+
+### 修复
+
+- **原生右侧栏「工作区文件」把本地根误判为工作区外**：在本地 session 中打开与 `session.cwd` 完全相同的目录时，`dsh-api-workspace-files.list()` 最终调用 `ctx.fs.contains(root, target)`，此前返回 `false` 并显示「这个目录在工作区之外」。精确集成测试证明两次 `resolve()` 的 `targetKey` 与 `displayPath` 都逐字相同，且直接调用构造出的 facade 时 `contains()` 为 `true`；失败只发生在原生服务使用 Cordis 暴露的 `ctx.fs` 代理后，因此不是路径分隔符、`.dsh` 特例、localRoots 分类或 HardSSH 源码位置导致。
+- **明确归因：把 backend 对象引用误当成 world 身份**。`contains()` 原先要求 `p.world.backend === c.world.backend`；Cordis 服务代理对同一后端的两次读取可以产生不同包装对象，导致同一 local target 被误判为跨世界。现在改用 target key 已携带的稳定 namespace 比较：空 namespace = 本地世界，`wfs://<workspace-id>/`（兼容旧 `ssh:<id>:`）= 一个明确工作区。不同 namespace 仍严格返回 `false`，安全边界不放宽；同 namespace 才交给对应 backend 做真实路径包含判断。该修复**不读取或猜测任何路径字符**。
+- 新增对官方 `@deepseek-ai/dsh-api-workspace-files@0.1.5-rc.1` 的真实集成测试：① 本地基础设施根作为 root/path 同值时可列目录；② `ctx.fs` 代理下两个相同 target 能 containment；③ localRoots 内的已注册 SSH 锚点仍列出远端目录；④ 本地与 SSH target 双向 containment 仍为 `false`。原实现稳定复现失败，修复后两组通过。
+
 ## v0.2.3 — 2026-09-11
 
 ### 修复

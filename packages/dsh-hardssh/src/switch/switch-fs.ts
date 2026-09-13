@@ -291,7 +291,15 @@ export class SwitchFileSystem extends FileSystem {
   override contains(parent: FsTarget, child: FsTarget): boolean {
     const p = this.decode(String(parent.targetKey))
     const c = this.decode(String(child.targetKey))
-    if (p === undefined || c === undefined || p.world.backend !== c.world.backend) return false
+    // Namespace is the stable world identity carried by every target key:
+    // '' = this facade's local world, wfs://<workspace-id>/ (or the legacy
+    // ssh:<workspace-id>:) = one exact workspace. Do NOT compare backend object
+    // identity here. Cordis exposes services through a proxy and two reads of
+    // the same backend can be distinct wrapper objects; native WorkspaceFiles
+    // then rejected even two byte-identical local targets as "outside". The
+    // namespace check keeps the security boundary (different worlds never mix)
+    // without depending on runtime wrapper identity.
+    if (p === undefined || c === undefined || p.world.namespace !== c.world.namespace) return false
     return p.world.backend.contains(
       { targetKey: p.rawKey as FsTarget['targetKey'], displayPath: parent.displayPath },
       { targetKey: c.rawKey as FsTarget['targetKey'], displayPath: child.displayPath },
