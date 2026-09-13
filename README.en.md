@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.3-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.4-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -141,7 +141,7 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm (current version **`0.2.3`**, shipping the required `cordis.patch.yml`
+Published on npm (current version **`0.2.4`**, shipping the required `cordis.patch.yml`
 and built artifacts) — one command:
 
 ```sh
@@ -158,7 +158,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.3.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.4.tgz
 ```
 
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and

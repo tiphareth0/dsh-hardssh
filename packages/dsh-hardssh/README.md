@@ -1,6 +1,6 @@
 # dsh-hardssh — SSH 远程工作区 + SSH 运维插件
 
-已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`；本包版本 `0.2.3`）。在 DSH Web GUI 中提供两块能力（单包单引擎）：
+已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`；本包版本 `0.2.4`）。在 DSH Web GUI 中提供两块能力（单包单引擎）：
 
 1. **SSH 运维**：右侧栏「SSH」Tab（从右侧栏标签条的「+」或右侧栏引导页入口打开）→ Web 终端（xterm + WebSocket PTY）、文件上传下载、本地端口转发隧道、当前服务器的远端命令；`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster` 六个 Agent 工具；主机配置存 `~/.dsh/dsh-ssh.json`。
 2. **SSH 工作区**：左侧侧栏的全局入口行 → 中央面板管理服务器与工作区（增删改查 / `~/.ssh/config` 导入）；绑定后本地 harness 的 fs/subprocess 经接缝门面透明路由到远程主机执行（read/write/edit/bash 在绑定会话中即远程操作）；`remote_*` 三个 Agent 工具（`remote_ls` / `remote_search` / `remote_status`）用于显式操作远端工作区。
@@ -46,7 +46,7 @@
 ## 安装
 
 ```sh
-# 已发布 npm（当前 0.2.3）：profile 机制，热插拔，需重启 dsh
+# 已发布 npm（当前 0.2.4）：profile 机制，热插拔，需重启 dsh
 dsh plugin --profile <name> add @tiphareth/dsh-hardssh
 
 # 开发/迭代：源码链接（改码重建 lib/ 后重启即生效）

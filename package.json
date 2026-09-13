@@ -1,6 +1,6 @@
 {
   "name": "dsh-hardssh-workspace",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "description": "Utility workspace for @tiphareth/dsh-hardssh — a generic workspace base (local/remote providers) for the dsh harness, with SSH as one provider.",
   "packageManager": "pnpm@11.24.0",
