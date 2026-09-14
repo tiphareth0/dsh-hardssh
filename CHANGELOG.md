@@ -4,6 +4,8 @@
 
 ## v0.2.4 — 2026-09-13
 
+> 已发布 npm：`@tiphareth/dsh-hardssh@0.2.4`（dist-tag `latest`）；Awesome DSH Plugin 目录已同步显示 0.2.4，并使用不锁版本的 npm 安装命令。
+
 ### 修复
 
 - **原生右侧栏「工作区文件」把本地根误判为工作区外**：在本地 session 中打开与 `session.cwd` 完全相同的目录时，`dsh-api-workspace-files.list()` 最终调用 `ctx.fs.contains(root, target)`，此前返回 `false` 并显示「这个目录在工作区之外」。精确集成测试证明两次 `resolve()` 的 `targetKey` 与 `displayPath` 都逐字相同，且直接调用构造出的 facade 时 `contains()` 为 `true`；失败只发生在原生服务使用 Cordis 暴露的 `ctx.fs` 代理后，因此不是路径分隔符、`.dsh` 特例、localRoots 分类或 HardSSH 源码位置导致。
