@@ -29,6 +29,7 @@ import type { SshWorkspaceRecord } from '../protocol.ts'
 import { tt } from './text.ts'
 import css from './workspace.module.css'
 import { CloudIcon, ComputerIcon } from './icons.tsx'
+import { checkLocalWorkspacePath } from './local-workspace-path.ts'
 
 /** The injected face: host native picker + our workspace manager API. */
 export interface DirectoryFlowInjected {
@@ -271,9 +272,23 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
           if (request !== localPickRequestSequence.current || !openRef.current) return
           if (path === null || path === undefined) {
             outcome.current.onCancel()
-          } else {
-            outcome.current.onPicked(path)
+            return
           }
+          // The kernel's session creation runs mkdir(cwd, { recursive: true })
+          // and treats EPERM as fatal, so a drive/share ROOT would become a
+          // workspace whose "＋" can never open a session. Refuse it here with
+          // the reason spelled out, instead of storing a broken workspace.
+          const checked = checkLocalWorkspacePath(path)
+          if (!checked.ok) {
+            setChoice('menu')
+            reportFailure(new Error(tt(
+              checked.problem === 'filesystem-root' ? 'flow.rootPath'
+                : checked.problem === 'not-absolute' ? 'flow.relativePath'
+                  : 'flow.emptyPath',
+            )))
+            return
+          }
+          outcome.current.onPicked(checked.path)
         },
         (reason: unknown) => {
           if (request !== localPickRequestSequence.current || !openRef.current) return

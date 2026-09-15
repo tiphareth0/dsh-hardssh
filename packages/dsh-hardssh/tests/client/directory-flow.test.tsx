@@ -156,6 +156,24 @@ describe('DirectoryFlow local branch robustness', () => {
     await act(async () => { root.unmount() })
   })
 
+  it('refuses a filesystem root before the host stores an unopenable workspace', async () => {
+    // Reported: a workspace created at C:\ can never open a session, because
+    // the kernel's mkdir(cwd, {recursive:true}) gets EPERM on a drive root.
+    const { root, menu, onError, onPicked } = await mount(async () => 'C:\\')
+    await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })
+    expect(onPicked).not.toHaveBeenCalled()
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(String(onError.mock.calls[0]?.[0])).toMatch(/root/i)
+    await act(async () => { root.unmount() })
+  })
+
+  it('trims a trailing separator before handing the path to the owner', async () => {
+    const { root, menu, onPicked } = await mount(async () => 'C:\\projects\\')
+    await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })
+    expect(onPicked).toHaveBeenCalledWith('C:\\projects')
+    await act(async () => { root.unmount() })
+  })
+
   it('treats a null result as a cancel, not as a pick', async () => {
     const { root, menu, onCancel, onPicked } = await mount(async () => null)
     await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })

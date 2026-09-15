@@ -12,6 +12,9 @@
   - 修法三：补上 `picking-local` 状态的渲染（等待提示 + 取消按钮），从根上消除「空白色条」这一现象。
   - 顺带：`inject` 去掉已失效的 `workspaces` 硬依赖（不再因旧服务名存在与否影响整个客户端半边激活）；触发按钮的锚点匹配扩充到「添加工作区 / 添加本地工作区 / 新建工作区 / Add (local) workspace / New workspace」。
   - 回归用例（`tests/client/directory-flow.test.tsx`）：等待态必须有可见内容；**同步抛错**必须落到 `onError` 且菜单重新就绪；owner 没有 `onError` 时错误留在下拉框内；`null` 结果按取消处理。
+- **把盘符根目录（如 `C:\`）建成工作区后，「＋」无法创建会话**：报 `gateway/internal: failed to create session … failed to ensure project directory "C:\": EPERM: operation not permitted, mkdir 'C:\'`。根因在**内核侧**：会话创建无条件执行 `mkdir(cwd, { recursive: true })` 并把任何失败当作致命错误（`dsh-api-session-controller` 的 `createOrAdopt`）；Windows 上 `recursive: true` 会吞掉 `EEXIST`，但**盘符根目录返回 `EPERM`**，于是这样的工作区建得出来、永远打不开会话。内核直接调用 `node:fs`，文件系统 seam 无法拦截。
+  - 修法：本地分支在交给宿主**之前**校验挑选结果（新增 `src/client/local-workspace-path.ts`，纯函数）：拒绝盘符根（`C:\` / `C:`）、UNC 共享根（`\\server\share` / `//server/share`）与 POSIX 根 `/`，拒绝相对路径与空值，并只做「去尾部多余分隔符」的规范化（不改写大小写与内部结构）。拒绝时给出可操作提示，例如「请改选子目录，例如 C:\projects」。
+  - 回归用例：`tests/client/local-workspace-path.test.ts`（根/UNC/相对/空值/规范化）+ 目录流两条（拒绝根目录且不调用 `onPicked`；`C:\projects\` 去尾部分隔符后交给宿主）。
 
 ## v0.2.4 — 2026-09-13
 
