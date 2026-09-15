@@ -80,6 +80,36 @@
   说明：P1-C 之后 `realpath`/`base64` 已不再是依赖，因此探测**不包含**这两个字段（无消费者不探测）；
   BSD/BusyBox 主机缺 `-printf`/`-Z` 时不做逐厂商 shell 模板，而是直接走 SFTP 兜底（见 P1-D）。
 
+### 远端搜索后端阶梯与正则（P1-D）
+
+- **三级阶梯**（按 P1-B 的实测能力选择，不看 `uname`）：内容检索 `rg` → POSIX `grep` 模板 → **SFTP 兜底**；
+  文件名/glob 为 POSIX `find` 模板 → **SFTP 兜底**。SFTP 兜底完全不执行远端命令：
+  用 `ls`/`lstat`/`stat`/`readFile` 遍历，**不进入符号链接目录**（`ls` 会跟随链接分类，
+  所以下钻前用 `lstat` 复核），跳过 `.git`/`node_modules`，带 `maxDepth`/`maxEntries`/`maxHits`/
+  `maxFiles`/单文件字节/总字节预算与并发上限，命中/预算触顶一律 `truncated: true`，
+  超时或中止明确报错（绝不把没跑完的搜索当成「无命中」）。
+- **修掉 glob 的语义 bug**：旧模板用 `find -path`，而 `*` 在 `-path` 里会跨过 `/`，
+  于是 `**/*.ts` 反而**漏掉**根目录下的 `a.ts`。现在 shell 端只列候选路径，
+  匹配由本地 `globToRegExp` 完成（`*` 不跨 `/`，`**` 跨目录且 `**/` 可匹配零层，
+  支持 `?`、`[abc]`、`[!abc]`），SFTP 兜底用同一个匹配器，两级语义一致。
+  带字面前缀的模式（`src/**/*.ts`）直接从该子目录开始搜，深度预算仍按工作区根计算。
+- **正则内容检索**：新增 `syntax: 'fixed' | 'regex'`（默认 fixed，保持原契约）。
+  `rg` 用 `--fixed-strings` 与否区分；GNU `grep` 用 `-F`/`-E`；
+  两者都不可用时（BSD/BusyBox）**明确报错**而不是把正则当字面量搜。
+  `remote_search` 工具与工作区 `workspace.search` 能力同步新增该可选参数。
+- **rg 后端与 POSIX 模板语义对齐**：`--no-ignore --hidden` 加显式 `!.git`/`!node_modules`，
+  使「搜远端代码」能看到 `.github` 等隐藏目录（rg 默认会跳过），并继续跳过 `.git`/`node_modules`；
+  `--vimgrep` 输出统一归一化成 `path:line:content`（与 grep 后端同形）；退出码 1 = 无命中，≥2 = 失败。
+- **字节上限真正生效**：状态包装器改为 `{ producer; 记录退出码 } | head -c CAP > out`，
+  超量输出在管道处被截断，不再先把整个结果写进远端临时目录（旧的 `grep -r` / rg 大结果可能写满 `/tmp`）。
+  `head` 提前关闭管道会让生产者收到 SIGPIPE（退出码 141，body 非空），
+  这种「被字节上限截断」仍按 `truncated: true` 报告；临时目录仍由 trap 清理、由下次搜索按 10 分钟清理残留。
+- 新增用例：`tests/remote/glob-match.test.ts`（匹配方言与字面前缀）、
+  `tests/remote/sftp-search.test.ts`（遍历/跳过目录/不跟随符号链接/各项预算/二进制与不可读文件/中止与超时）、
+  `tests/remote-search-ladder.test.ts`（rg 命令与退出码、SFTP 兜底不执行命令、正则拒绝、探测失败降级）；
+  `tests/remote-search.test.ts` 与 provider/tool-ops 用例同步到新的记录格式。
+  状态包装器已在真实 POSIX `sh` 上逐项验证（成功/无命中/失败+stderr/`find` 记录/字节截断/临时目录清理）。
+
 ### 修复
 
 - **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。

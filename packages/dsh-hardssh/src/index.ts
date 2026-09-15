@@ -342,7 +342,7 @@ export function localGuidance(): string {
 export function remoteGuidance(record: SshWorkspaceRecord): string {
   return `本机已安装 dsh-hardssh 插件（SSH 工作区）。当前会话绑定到远程工作区「${record.title}」（${record.alias} @ ${record.remoteRoot}）：
 - read / write / edit 自动路由到远程（SFTP）；路径用远程绝对路径（如 ${record.remoteRoot}/src/main.ts），相对路径以远程根目录为基准。
-- glob / grep 用的是**本机**打包的 ripgrep，看不到服务器内容；在 SSH 工作区里调用会被明确拒绝（不会静默返回空结果）。请在远端检索时用 remote_search（mode="glob" 按文件名、mode="grep" 按固定字符串搜内容，有限深与条数上限）、remote_ls、remote_status。
+- glob / grep 用的是**本机**打包的 ripgrep，看不到服务器内容；在 SSH 工作区里调用会被明确拒绝（不会静默返回空结果）。请在远端检索时用 remote_search（mode="glob" 按文件名匹配、mode="grep" 搜内容，默认按固定字符串，可加 syntax="regex"；有限深、条数与字节上限；宿主机只有 BusyBox/BSD 工具链时自动退回 SFTP 遍历）、remote_ls、remote_status。
 - pwsh / powershell / cmd 是客户端原生二进制，在本机执行；远端为 POSIX 主机时请用 bash 语义命令或 ssh_exec。
 - 远程操作消耗真实远程资源，先确认再执行。`
 }

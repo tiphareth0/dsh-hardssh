@@ -357,9 +357,9 @@ describe('SSH provider search wrapper (root/maxDepth/signal semantics)', () => {
     const fake = new FakeEngine()
     fake.seedDir('/srv/app/src')
     fake.seedFile('/srv/app/src/a.ts', 'const a = 1')
-    // Script the glob engine command (find -path ...) like a real remote.
+    // Script the glob engine command (find -printf records) like a real remote.
     fake.onUnknownCommand = (_alias: string, command: string) => {
-      if (command.includes('-path')) return '/srv/app/src/a.ts\0'
+      if (command.includes('-printf')) return 'f\0/srv/app/src/a.ts\0'
       return ''
     }
     const { connection } = await openSshConnection(fake, new Context())
@@ -372,7 +372,7 @@ describe('SSH provider search wrapper (root/maxDepth/signal semantics)', () => {
     // options.root is a workspace-relative search base; the fake remote only
     // emits paths under it, and the wrapper still reports workspace-relative rel.
     fake.onUnknownCommand = (_alias: string, command: string) => {
-      if (command.includes('-path')) return '/srv/app/src/a.ts\0'
+      if (command.includes('-printf')) return 'f\0/srv/app/src/a.ts\0'
       return ''
     }
     const scoped = await search.glob('*.ts', { root: 'src' })
@@ -387,7 +387,7 @@ describe('SSH provider search wrapper (root/maxDepth/signal semantics)', () => {
     fake.seedFile('/srv/app/nested/x.ts', 'x')
     // The fake remote does not honor -maxdepth itself, so the wrapper must clip.
     fake.onUnknownCommand = (_alias: string, command: string) => {
-      if (command.includes('-path')) return '/srv/app/top.ts\0/srv/app/nested/x.ts\0'
+      if (command.includes('-printf')) return 'f\0/srv/app/top.ts\0f\0/srv/app/nested/x.ts\0'
       return ''
     }
     const { connection } = await openSshConnection(fake, new Context())

@@ -179,7 +179,9 @@ export class SshWorkspaceSearch implements WorkspaceSearchService {
     private readonly alias: string,
     private readonly remoteRoot: string,
   ) {
-    this.service = new RemoteSearchService(engine)
+    // The connection-level capability probe decides which rung of the search
+    // ladder may run on this host (rg → POSIX templates → SFTP).
+    this.service = new RemoteSearchService(engine, (alias, signal) => engine.capabilities(alias, signal))
   }
 
   /** Workspace-relative POSIX search base → absolute remote root. */
@@ -220,13 +222,17 @@ export class SshWorkspaceSearch implements WorkspaceSearchService {
     return { hits, truncated: result.truncated }
   }
 
-  async grep(fixedPhrase: string, options?: { root?: string; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }> {
+  async grep(pattern: string, options?: { root?: string; syntax?: 'fixed' | 'regex'; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }> {
     options?.signal?.throwIfAborted()
     const [base, workspaceRoot] = await Promise.all([
       this.searchBase(options?.root, options?.signal),
       this.searchBase('.', options?.signal),
     ])
-    const result = await this.service.grepFixed({ alias: this.alias, root: base }, fixedPhrase, options?.signal)
+    const result = await this.service.grep(
+      { alias: this.alias, root: base },
+      pattern,
+      { syntax: options?.syntax, signal: options?.signal },
+    )
     options?.signal?.throwIfAborted()
     const hits: WorkspaceSearchHit[] = []
     for (const line of result.lines) {

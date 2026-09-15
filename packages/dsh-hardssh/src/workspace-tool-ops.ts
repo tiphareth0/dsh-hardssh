@@ -14,16 +14,26 @@ import type { WorkspaceSearchService } from './base/capability.ts'
 import { isInside, type WorkspaceStoreView } from './backend.ts'
 import type { SshWorkspaceRecord, WorkspaceEntry } from './protocol.ts'
 import type { WorkspaceCore } from './runtime/workspace-core.ts'
-import type { RemoteGlobResult, RemoteGrepResult } from './remote-search.ts'
+
+/** One search answer as the remote_* tools render it (backend-agnostic). */
+export interface ToolSearchHits {
+  hits: string[]
+  truncated: boolean
+}
+
+export interface ToolGrepLines {
+  lines: string[]
+  truncated: boolean
+}
 
 /** Operations one bound workspace exposes to the remote_* tools. */
 export interface WorkspaceToolOps {
   /** List one absolute directory path inside the workspace remote root. */
   listDir(abs: string): Promise<WorkspaceEntry[]>
   /** glob filename search (pattern keeps glob semantics). */
-  glob(pattern: string): Promise<RemoteGlobResult>
-  /** fixed-string content grep (returns matched `path:line:content` records). */
-  grep(fixedPhrase: string): Promise<RemoteGrepResult>
+  glob(pattern: string): Promise<ToolSearchHits>
+  /** Content search; `syntax` defaults to a fixed string. */
+  grep(pattern: string, options?: { syntax?: 'fixed' | 'regex' }): Promise<ToolGrepLines>
 }
 
 /** The bound record + its ops for one session cwd. */
@@ -73,9 +83,9 @@ function capabilityOps(root: string, fs: FileSystem, search: WorkspaceSearchServ
       const found = await search.glob(pattern)
       return { hits: found.hits.map(hit => hit.path), truncated: found.truncated }
     },
-    async grep(fixedPhrase) {
+    async grep(pattern, options) {
       if (search === undefined) throw new Error('remote_search (grep): this workspace provider exposes no workspace.search capability')
-      const found = await search.grep(fixedPhrase)
+      const found = await search.grep(pattern, options?.syntax === undefined ? {} : { syntax: options.syntax })
       return { lines: found.hits.map(hit => hit.match ?? hit.path), truncated: found.truncated }
     },
   }

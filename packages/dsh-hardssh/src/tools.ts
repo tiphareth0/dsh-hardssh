@@ -173,10 +173,11 @@ export function makeWorkspaceTools(deps: WorkspaceToolsDeps) {
 
     defineTool({
       name: 'remote_search',
-      description: 'Search the SSH workspace bound to the CALLING SESSION. mode="glob" matches FILE NAMES by pattern (root-relative, e.g. src/**/*.ts or *.log; capped at 200 hits); mode="grep" searches file CONTENTS for a FIXED STRING (not a regex; skips .git and node_modules) and returns matched `path:line:content` records. Triggers: find remote files by pattern, glob on the server, grep remote code, search remote contents.',
+      description: 'Search the SSH workspace bound to the CALLING SESSION. mode="glob" matches FILE NAMES by pattern (root-relative, e.g. src/**/*.ts or *.log; `*` does not cross "/", `**` does; capped at 200 hits); mode="grep" searches file CONTENTS (skips .git and node_modules) and returns matched `path:line:content` records. `syntax` defaults to "fixed" (literal text); "regex" needs ripgrep or GNU grep on the host and fails loudly when neither is available. Triggers: find remote files by pattern, glob on the server, grep remote code, search remote contents.',
       parameters: {
-        mode: { type: 'string', enum: ['glob', 'grep'], required: true, description: 'glob = match file names by pattern; grep = search file contents for a fixed string.' },
-        pattern: { type: 'string', required: true, description: 'glob: root-relative pattern like src/**/*.ts or *.log; grep: the literal text to find (not a regular expression).' },
+        mode: { type: 'string', enum: ['glob', 'grep'], required: true, description: 'glob = match file names by pattern; grep = search file contents.' },
+        pattern: { type: 'string', required: true, description: 'glob: root-relative pattern like src/**/*.ts or *.log; grep: the text to find (literal by default, regular expression with syntax="regex").' },
+        syntax: { type: 'string', enum: ['fixed', 'regex'], description: 'grep only: "fixed" (default) treats pattern as literal text; "regex" treats it as an extended regular expression.' },
       },
       output: {
         schema: {
@@ -205,7 +206,7 @@ export function makeWorkspaceTools(deps: WorkspaceToolsDeps) {
         if ('error' in check) return check
         return run(async () => {
           if (args.mode === 'grep') {
-            const found = await check.ops.grep(args.pattern)
+            const found = await check.ops.grep(args.pattern, args.syntax === undefined ? {} : { syntax: args.syntax })
             return { ok: true, mode: 'grep', lines: found.lines, hits: [], truncated: found.truncated }
           }
           const found = await check.ops.glob(args.pattern)

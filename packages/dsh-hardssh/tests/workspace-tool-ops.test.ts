@@ -45,7 +45,8 @@ async function makeResolver(dir: string) {
   // The search templates hit the unknown-command hook: return remote output.
   fake.onUnknownCommand = (_alias: string, command: string) => {
     if (command.includes('grep -rInFZ')) return '/srv/app/src/a.ts:1:const hello = 1\n'
-    if (command.includes('find ')) return '/srv/app/src/a.ts\0'
+    // `find -printf '%y\0%p\0'` records; matching itself is local (P1-D).
+    if (command.includes('find ')) return 'f\0/srv/app/src/a.ts\0'
     return ''
   }
   const providers = new WorkspaceProviderRegistry()

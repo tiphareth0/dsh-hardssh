@@ -14,6 +14,7 @@
 import { posix } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 import type { ExecResult, RemoteDirEntry } from '../../src/ssh/protocol.ts'
+import type { RemoteCapabilities } from '../../src/ssh/capabilities/service.ts'
 import type { ExecSession, SshEngine } from '../../src/ssh/engine.ts'
 
 /** Lexically canonicalize an absolute POSIX path (declared `symlinks` are applied separately). */
@@ -130,6 +131,19 @@ export class FakeEngine {
   readonly readStreamCalls: Array<{ remotePath: string; range?: { offset: number; length: number } }> = []
   /** Declared symlink resolutions (canonical link path → canonical target). */
   readonly symlinks = new Map<string, string>()
+  /**
+   * Capability report `capabilities()` answers with. Defaults to a GNU/POSIX
+   * host with the `find`/`grep` flags the POSIX search templates need; tests
+   * override it to exercise the ripgrep or SFTP rung of the search ladder.
+   */
+  capabilitiesResult: RemoteCapabilities = {
+    platform: 'posix',
+    shell: 'bash',
+    rg: { available: false },
+    find: { vendor: 'gnu', printf: true, mmin: true },
+    grep: { vendor: 'gnu', nullFile: true, excludeDir: true },
+    mktemp: true,
+  }
   /** Whether someone told the shared engine to shut down (close isolation check). */
   disposed = false
   /**
@@ -146,6 +160,11 @@ export class FakeEngine {
 
   /** dispose() is the engine-pool teardown a workspace close must NOT trigger. */
   dispose(): void { this.disposed = true }
+
+  /** Connection-level capability report (no probe round trip in the fake). */
+  async capabilities(_alias: string, _signal?: AbortSignal): Promise<RemoteCapabilities> {
+    return this.capabilitiesResult
+  }
 
   /** Seed one remote file for a fixture. */
   seedFile(absPath: string, content: string): void {

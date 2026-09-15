@@ -85,6 +85,6 @@ export interface WorkspaceSearchHit {
 export interface WorkspaceSearchService {
   /** glob-style filename search. */
   glob(pattern: string, options?: { root?: string; maxDepth?: number; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }>
-  /** fixed-string content search (skips .git / node_modules). */
-  grep(fixedPhrase: string, options?: { root?: string; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }>
+  /** Content search (skips .git / node_modules). `syntax` defaults to `fixed`. */
+  grep(pattern: string, options?: { root?: string; syntax?: 'fixed' | 'regex'; signal?: AbortSignal }): Promise<{ hits: WorkspaceSearchHit[]; truncated: boolean }>
 }
