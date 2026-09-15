@@ -47,7 +47,7 @@ import { SecureHostStore } from './ssh/store.ts'
 import { KnownHostsStore } from './ssh/known-hosts.ts'
 import { Vault } from './ssh/vault.ts'
 import { mountWorkspaceCore, genericLedgerPath, type WorkspaceCore } from './runtime/workspace-core.ts'
-import { mountHardsshHealth } from './runtime/health.ts'
+import { mountHardsshHealth, watchHardsshOptionalServices } from './runtime/health.ts'
 import { inspectGenericLedger, migrateLegacySshLedger, recoverGenericLedger, type WorkspaceMigrationReport } from './runtime/workspace-migration.ts'
 import type { SshWorkspaceRecord } from './protocol.ts'
 
@@ -399,6 +399,14 @@ export function apply(ctx: Context, config?: Config): void {
     vaultAutoUnlock: config?.vaultAutoUnlock === 'env' ? 'env' as const : 'off' as const,
   }
 
+  // Single provider ownership is established BEFORE store/engine/core
+  // construction. The fs/subprocess sibling rows bind dynamically and replay
+  // their latest state when this provider becomes visible, so Cordis parallel
+  // loading cannot race three `provide('hardsshHealth', …)` calls. Optional
+  // services are watched dynamically too (parallel activation + HMR safe).
+  const health = mountHardsshHealth(ctx)
+  watchHardsshOptionalServices(ctx, health)
+
   // Host-key TOFU: connections are refused until the operator confirms the
   // server fingerprint (see known-hosts.ts). Default-enabled for new installs;
   // the engine falls back to pre-security behavior when no store is passed.
@@ -422,12 +430,6 @@ export function apply(ctx: Context, config?: Config): void {
     engine.dispose()
     vault?.dispose()
   }, 'dsh-hardssh: engine')
-
-  // Compatibility/degradation registry. Every surface reports into it, and
-  // /api/dsh-ssh/health exposes a read-only copy so a degraded install is
-  // visible in the GUI instead of looking like a broken SSH connection.
-  const health = mountHardsshHealth(ctx)
-  health.probeServices(ctx)
 
   // Canonical provider-neutral workspace runtime. It is the only in-process
   // ledger/router used by fs, subprocess, routes, tools and host-delete guards.

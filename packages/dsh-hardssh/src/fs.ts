@@ -25,7 +25,7 @@ import { vaultDirectory, legacyVaultPath } from './ssh/vault.ts'
 import { WFS_NAMESPACE_MARKER, SwitchFileSystem, type WorkspaceWorld } from './switch/switch-fs.ts'
 import type { WorkspaceCore } from './runtime/workspace-core.ts'
 import type { WorkspaceRecord } from './base/model.ts'
-import { mountHardsshHealth } from './runtime/health.ts'
+import { bindHardsshHealthFeature } from './runtime/health.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'hardssh-fs'
@@ -132,18 +132,35 @@ export function apply(ctx: Context): void {
   })
   const workspaceCore = (): WorkspaceCore | undefined => ctx.get('workspaceCore') as WorkspaceCore | undefined
   const anchorRootDir = anchorRoot()
-  const health = mountHardsshHealth(ctx)
-  let warnedUnready = false
-  let markedReady = false
-  const markReady = (): void => {
-    if (markedReady) return
-    markedReady = true
-    health.set('fsRouting', { state: 'ready' })
-  }
   const atMount = workspaceCore()
-  health.set('fsRouting', atMount?.isReady() === true
+  const setHealth = bindHardsshHealthFeature(ctx, 'fsRouting', atMount?.isReady() === true
     ? { state: 'ready' }
     : { state: 'degraded', reason: atMount === undefined ? 'workspaceCore is unavailable; local filesystem fallback is active' : 'workspaceCore is still initializing; local filesystem fallback is active' })
+  let warnedUnready = false
+  const markReady = (): void => { setHealth({ state: 'ready' }) }
+
+  // The core service appears before its async initialize() settles. Observe the
+  // readiness promise so /health becomes accurate without waiting for the first
+  // filesystem call; bind dynamically so parallel load and HMR replacement are
+  // both covered. HealthRegistry de-duplicates identical writes.
+  ctx.inject(['workspaceCore'], (scoped) => {
+    const core = scoped.workspaceCore as WorkspaceCore
+    let active = true
+    if (core.isReady()) markReady()
+    else {
+      setHealth({ state: 'degraded', reason: 'workspaceCore is still initializing; local filesystem fallback is active' })
+      void core.whenReady().then(
+        () => { if (active) markReady() },
+        (error: unknown) => {
+          if (active) setHealth({ state: 'degraded', reason: `workspaceCore failed: ${error instanceof Error ? error.message : String(error)}; local filesystem fallback is active` })
+        },
+      )
+    }
+    return () => {
+      active = false
+      setHealth({ state: 'degraded', reason: 'workspaceCore is unavailable; local filesystem fallback is active' })
+    }
+  })
 
   new SwitchFileSystem(ctx, {
     local: localFs,
@@ -171,7 +188,7 @@ export function apply(ctx: Context): void {
     worldFor: (cwd) => {
       const ws = workspaceCore()
       if (ws === undefined || !ws.isReady()) {
-        health.set('fsRouting', {
+        setHealth({
           state: 'degraded',
           reason: ws === undefined ? 'workspaceCore is unavailable; local filesystem fallback is active' : 'workspaceCore failed or is still initializing; local filesystem fallback is active',
         })

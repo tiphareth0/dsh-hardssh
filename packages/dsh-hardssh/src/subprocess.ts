@@ -18,7 +18,7 @@ import { anchorRoot, isPathUnderAnchor } from './ledger.ts'
 import { SwitchSubprocessRuntime } from './switch/switch-subprocess.ts'
 import type { WorkspaceCore } from './runtime/workspace-core.ts'
 import type { WorkspaceRecord } from './base/model.ts'
-import { mountHardsshHealth } from './runtime/health.ts'
+import { bindHardsshHealthFeature } from './runtime/health.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'hardssh-subprocess'
@@ -59,18 +59,34 @@ export function apply(ctx: Context): void {
   const localSubprocess = new LocalSubprocessRuntime(localCtx)
   const workspaceCore = (): WorkspaceCore | undefined => ctx.get('workspaceCore') as WorkspaceCore | undefined
   const anchorRootDir = anchorRoot()
-  const health = mountHardsshHealth(ctx)
-  let warnedUnready = false
-  let markedReady = false
-  const markReady = (): void => {
-    if (markedReady) return
-    markedReady = true
-    health.set('subprocessRouting', { state: 'ready' })
-  }
   const atMount = workspaceCore()
-  health.set('subprocessRouting', atMount?.isReady() === true
+  const setHealth = bindHardsshHealthFeature(ctx, 'subprocessRouting', atMount?.isReady() === true
     ? { state: 'ready' }
     : { state: 'degraded', reason: atMount === undefined ? 'workspaceCore is unavailable; local subprocess fallback is active' : 'workspaceCore is still initializing; local subprocess fallback is active' })
+  let warnedUnready = false
+  const markReady = (): void => { setHealth({ state: 'ready' }) }
+
+  // Keep health accurate before the first spawn, and across core HMR cycles.
+  // Feature binding itself is provider-free; only the main entry owns the
+  // hardsshHealth service.
+  ctx.inject(['workspaceCore'], (scoped) => {
+    const core = scoped.workspaceCore as WorkspaceCore
+    let active = true
+    if (core.isReady()) markReady()
+    else {
+      setHealth({ state: 'degraded', reason: 'workspaceCore is still initializing; local subprocess fallback is active' })
+      void core.whenReady().then(
+        () => { if (active) markReady() },
+        (error: unknown) => {
+          if (active) setHealth({ state: 'degraded', reason: `workspaceCore failed: ${error instanceof Error ? error.message : String(error)}; local subprocess fallback is active` })
+        },
+      )
+    }
+    return () => {
+      active = false
+      setHealth({ state: 'degraded', reason: 'workspaceCore is unavailable; local subprocess fallback is active' })
+    }
+  })
 
   new SwitchSubprocessRuntime(ctx, {
     local: localSubprocess,
@@ -82,7 +98,7 @@ export function apply(ctx: Context): void {
     worldFor: (cwd) => {
       const ws = workspaceCore()
       if (ws === undefined || !ws.isReady()) {
-        health.set('subprocessRouting', {
+        setHealth({
           state: 'degraded',
           reason: ws === undefined ? 'workspaceCore is unavailable; local subprocess fallback is active' : 'workspaceCore failed or is still initializing; local subprocess fallback is active',
         })

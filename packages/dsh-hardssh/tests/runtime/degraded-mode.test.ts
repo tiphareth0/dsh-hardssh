@@ -12,11 +12,16 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Context } from '@deepseek-ai/cordis'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { apply as applyFs } from '../../src/fs.ts'
 import { apply as applySubprocess } from '../../src/subprocess.ts'
 import { anchorRoot } from '../../src/ledger.ts'
-import { HardsshHealthRegistry, mountHardsshHealth } from '../../src/runtime/health.ts'
+import {
+  bindHardsshHealthFeature,
+  HardsshHealthRegistry,
+  mountHardsshHealth,
+  watchHardsshOptionalServices,
+} from '../../src/runtime/health.ts'
 
 const created: string[] = []
 
@@ -51,7 +56,12 @@ describe('degraded mode without a workspace core', () => {
     const target = await ctx.fs.resolve(join(root, 'local.txt'))
     await expect(ctx.fs.readText(target)).resolves.toBe('local content')
 
-    const health = mountHardsshHealth(ctx).snapshot()
+    // The sibling row publishes state but never registers the shared service;
+    // only the main bundle entry owns `provide('hardsshHealth', ...)`.
+    expect(ctx.get('hardsshHealth')).toBeUndefined()
+    const registry = mountHardsshHealth(ctx)
+    await vi.waitFor(() => expect(registry.snapshot().features.fsRouting.state).toBe('degraded'))
+    const health = registry.snapshot()
     expect(health.features.fsRouting.state).toBe('degraded')
     expect(health.features.fsRouting.reason).toMatch(/workspaceCore/)
   })
@@ -93,8 +103,62 @@ describe('degraded mode without a workspace core', () => {
       graceMs: 10_000,
     } as never)).toThrow(/anchor root|fails closed/)
 
-    const health = mountHardsshHealth(ctx).snapshot()
+    expect(ctx.get('hardsshHealth')).toBeUndefined()
+    const registry = mountHardsshHealth(ctx)
+    await vi.waitFor(() => expect(registry.snapshot().features.subprocessRouting.state).toBe('degraded'))
+    const health = registry.snapshot()
     expect(health.features.subprocessRouting.state).toBe('degraded')
+  })
+})
+
+describe('workspaceCore readiness health', () => {
+  it('turns both seam features ready when a late core initializes, without a first fs/spawn call', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'health-core-ready-'))
+    created.push(root)
+    const ctx = degradedContext(root)
+    const registry = mountHardsshHealth(ctx)
+    applyFs(ctx)
+    applySubprocess(ctx)
+
+    let ready = false
+    let resolveReady!: () => void
+    const pending = new Promise<void>(resolve => { resolveReady = resolve })
+    const core = {
+      isReady: () => ready,
+      whenReady: () => pending,
+    }
+    ctx.provide('workspaceCore', core as never)
+
+    await vi.waitFor(() => {
+      expect(registry.snapshot().features.fsRouting.state).toBe('degraded')
+      expect(registry.snapshot().features.subprocessRouting.state).toBe('degraded')
+    })
+    ready = true
+    resolveReady()
+    await vi.waitFor(() => {
+      expect(registry.snapshot().features.fsRouting).toEqual({ state: 'ready' })
+      expect(registry.snapshot().features.subprocessRouting).toEqual({ state: 'ready' })
+    })
+  })
+
+  it('keeps local fallbacks degraded when late core initialization rejects', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'health-core-failed-'))
+    created.push(root)
+    const ctx = degradedContext(root)
+    const registry = mountHardsshHealth(ctx)
+    applyFs(ctx)
+    applySubprocess(ctx)
+    ctx.provide('workspaceCore', {
+      isReady: () => false,
+      whenReady: () => Promise.reject(new Error('ledger corrupt')),
+    } as never)
+
+    await vi.waitFor(() => {
+      expect(registry.snapshot().features.fsRouting.reason).toMatch(/ledger corrupt/)
+      expect(registry.snapshot().features.subprocessRouting.reason).toMatch(/ledger corrupt/)
+    })
+    expect(registry.snapshot().features.fsRouting.state).toBe('degraded')
+    expect(registry.snapshot().features.subprocessRouting.state).toBe('degraded')
   })
 })
 
@@ -108,6 +172,9 @@ describe('hardssh health registry', () => {
 
     health.set('sshTools', { state: 'ready' })
     expect(health.snapshot().features.sshTools.state).toBe('ready')
+    const updatedAt = health.snapshot().updatedAt
+    health.set('sshTools', { state: 'ready' })
+    expect(health.snapshot().updatedAt).toBe(updatedAt)
     // Unrelated features are untouched.
     expect(health.snapshot().features.workspaceCore.state).toBe('degraded')
   })
@@ -127,5 +194,59 @@ describe('hardssh health registry', () => {
     const ctx = new Context()
     const mounted = mountHardsshHealth(ctx)
     expect(mountHardsshHealth(ctx)).toBe(mounted)
+  })
+
+  it('lets a sibling publish before the main provider becomes visible', async () => {
+    const ctx = new Context()
+    const setHealth = bindHardsshHealthFeature(ctx, 'subprocessRouting', {
+      state: 'degraded',
+      reason: 'workspaceCore is unavailable',
+    })
+
+    // A later state must be replayed, and binding must not register a competing
+    // hardsshHealth provider while the main bundle entry is still activating.
+    setHealth({ state: 'ready' })
+    const registry = mountHardsshHealth(ctx)
+    await vi.waitFor(() => expect(registry.snapshot().features.subprocessRouting).toEqual({ state: 'ready' }))
+  })
+
+  it('binds immediately when the single provider is already visible', async () => {
+    const ctx = new Context()
+    const registry = mountHardsshHealth(ctx)
+    const setHealth = bindHardsshHealthFeature(ctx, 'fsRouting', { state: 'ready' })
+    await vi.waitFor(() => expect(registry.snapshot().features.fsRouting).toEqual({ state: 'ready' }))
+
+    setHealth({ state: 'failed', reason: 'later failure', missing: ['router'] })
+    await vi.waitFor(() => expect(registry.snapshot().features.fsRouting).toEqual({
+      state: 'failed',
+      reason: 'later failure',
+      missing: ['router'],
+    }))
+  })
+
+  it('copies an unbound latest value before replaying it', async () => {
+    const ctx = new Context()
+    const missing = ['workspaceCore']
+    const setHealth = bindHardsshHealthFeature(ctx, 'fsRouting', { state: 'degraded', missing })
+    missing.push('caller mutation')
+    setHealth({ state: 'degraded', reason: 'waiting', missing: ['router'] })
+    const registry = mountHardsshHealth(ctx)
+    await vi.waitFor(() => expect(registry.snapshot().features.fsRouting).toEqual({
+      state: 'degraded',
+      reason: 'waiting',
+      missing: ['router'],
+    }))
+  })
+
+  it('tracks an optional service that appears after the initial probe', async () => {
+    const ctx = new Context()
+    const registry = mountHardsshHealth(ctx)
+    watchHardsshOptionalServices(ctx, registry)
+    expect(registry.snapshot().optionalServices.find(item => item.service === 'systemPrompt')?.available).toBe(false)
+
+    ctx.provide('systemPrompt', { section: () => () => {} })
+    await vi.waitFor(() => expect(
+      registry.snapshot().optionalServices.find(item => item.service === 'systemPrompt')?.available,
+    ).toBe(true))
   })
 })

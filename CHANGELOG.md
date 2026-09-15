@@ -29,8 +29,16 @@
 - **降级可见**：新增 `runtime/health.ts` 与只读路由 `GET /api/dsh-ssh/health`（不拨号、不读凭据），
   报告 SSH 工具 / 工作区运行时 / 文件路由 / 命令路由四个功能面的 `ready|degraded|failed`；
   客户端工作区面板在存在非 ready 功能面时显示横幅（功能名/状态/原因 + 插件版本 + 已验证 DSH 范围）。
+  > **并行加载竞态修复**：Cordis 会并行激活 `hardssh`、`hardssh-fs`、`hardssh-subprocess`。初版让三者都调用
+  > `mountHardsshHealth()`，形成 check-then-provide 竞态，实际启动会因服务重复注册失败。现在只有主入口拥有
+  > `provide('hardsshHealth', …)`；两个 seam 入口只通过 `bindHardsshHealthFeature()` 动态订阅服务，主入口晚到时
+  > 回放最新状态，provider 卸载/HMR 时安全解绑、再次出现时重新回放。主入口在任何 store/engine/core 构造前
+  > 先注册 health；optional service 也由动态 inject 跟踪，解决并行加载后一开始误报缺失、以后永不刷新的问题。
+  > binder 捕获已绑定 provider（cleanup 不再二次读取已消失的 service）、复制待回放状态（调用方无法事后篡改），
+  > 相同状态写入为 no-op（避免每次本地调用都刷新 `updatedAt`）。
 - 新增 `tests/runtime/degraded-mode.test.ts`（挂载真实 `apply()`：无 core 时本地可用、锚点 fail closed、
-  健康状态为 degraded、注册表返回深拷贝）与 `/health` 路由用例（200 快照 / 405 / 无注册表时 `{}` / 不触发任何 exec）。
+  seam 入口不注册 provider、provider 先到/后到、未绑定时只回放最新状态、状态深拷贝、相同状态不产生时间戳抖动、
+  optional service 晚到后自动刷新）与 `/health` 路由用例（200 快照 / 405 / 无注册表时 `{}` / 不触发任何 exec）。
 
 ### 修复
 
