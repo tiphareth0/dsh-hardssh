@@ -25,12 +25,15 @@ import { vaultDirectory, legacyVaultPath } from './ssh/vault.ts'
 import { WFS_NAMESPACE_MARKER, SwitchFileSystem, type WorkspaceWorld } from './switch/switch-fs.ts'
 import type { WorkspaceCore } from './runtime/workspace-core.ts'
 import type { WorkspaceRecord } from './base/model.ts'
+import { mountHardsshHealth } from './runtime/health.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'hardssh-fs'
 
-/** The generic workspace core plus the policy used by the local fallback. */
-export const inject = ['sandboxPolicy', 'workspaceCore']
+/** Only the local sandbox policy is a hard requirement. WorkspaceCore is
+ * resolved lazily so an incompatible/failed workspace surface cannot remove
+ * the host's local filesystem after cordis.patch.yml disables fs-sandbox. */
+export const inject = ['sandboxPolicy']
 
 /** The record behind a router connection (sync snapshot lookup). */
 function genericRecordFor(core: WorkspaceCore, id: string): WorkspaceRecord | undefined {
@@ -127,9 +130,20 @@ export function apply(ctx: Context): void {
     cwd: process.env.DSH_CWD ?? process.cwd(),
     diffBasisMaxBytes: 10 * 1024 * 1024,
   })
-  const ws = ctx.workspaceCore
+  const workspaceCore = (): WorkspaceCore | undefined => ctx.get('workspaceCore') as WorkspaceCore | undefined
   const anchorRootDir = anchorRoot()
+  const health = mountHardsshHealth(ctx)
   let warnedUnready = false
+  let markedReady = false
+  const markReady = (): void => {
+    if (markedReady) return
+    markedReady = true
+    health.set('fsRouting', { state: 'ready' })
+  }
+  const atMount = workspaceCore()
+  health.set('fsRouting', atMount?.isReady() === true
+    ? { state: 'ready' }
+    : { state: 'degraded', reason: atMount === undefined ? 'workspaceCore is unavailable; local filesystem fallback is active' : 'workspaceCore is still initializing; local filesystem fallback is active' })
 
   new SwitchFileSystem(ctx, {
     local: localFs,
@@ -143,18 +157,34 @@ export function apply(ctx: Context): void {
     // pre-relocation path is denied too, because a failed move deliberately
     // leaves the original file in place.
     deniedRoots: [vaultDirectory(), legacyVaultPath()],
-    worldForAnchorPath: (path) => anchorWorldFor(ws, anchorRootDir, path),
+    worldForAnchorPath: (path) => {
+      const ws = workspaceCore()
+      if (ws === undefined) {
+        // The replacement row must stay mounted, but the managed anchor window
+        // must never fall through to the client filesystem without its router.
+        if (isPathUnderAnchor(anchorRootDir, path)) refuseUnownedAnchorPath(path)
+        return undefined
+      }
+      if (ws.isReady()) markReady()
+      return anchorWorldFor(ws, anchorRootDir, path)
+    },
     worldFor: (cwd) => {
-      if (!ws.isReady()) {
+      const ws = workspaceCore()
+      if (ws === undefined || !ws.isReady()) {
+        health.set('fsRouting', {
+          state: 'degraded',
+          reason: ws === undefined ? 'workspaceCore is unavailable; local filesystem fallback is active' : 'workspaceCore failed or is still initializing; local filesystem fallback is active',
+        })
         if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
           if (!warnedUnready) {
             warnedUnready = true
-            console.warn('[dsh-hardssh] fs routing is not ready yet (workspace core still initializing or failed) — refusing access beneath the workspace anchor root')
+            console.warn('[dsh-hardssh] fs routing is not ready — local filesystem remains available, but access beneath the workspace anchor root is refused')
           }
           throw new Error('fs-ssh: workspace routing is unavailable while the generic workspace core is not ready (anchor path fails closed)')
         }
         return { backend: localFs, namespace: '' }
       }
+      markReady()
       const world = genericFsWorldFor(ws, cwd, [anchorRootDir])
       if (world !== undefined) return world
       if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
@@ -166,6 +196,11 @@ export function apply(ctx: Context): void {
       }
       return { backend: localFs, namespace: '' }
     },
-    worldForNamespace: (namespace) => genericFsWorldForNamespace(ws, namespace),
+    worldForNamespace: (namespace) => {
+      const ws = workspaceCore()
+      if (ws === undefined) return undefined
+      if (ws.isReady()) markReady()
+      return genericFsWorldForNamespace(ws, namespace)
+    },
   })
 }

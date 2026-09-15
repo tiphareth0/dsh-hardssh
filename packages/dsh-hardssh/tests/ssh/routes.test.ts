@@ -19,6 +19,7 @@ import { Vault } from '../../src/ssh/vault.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from '../../src/ssh/known-hosts.ts'
 import { NeedsPasswordError } from '../../src/ssh/engine.ts'
 import { SSH_API, type SshHostSummary } from '../../src/ssh/protocol.ts'
+import { HardsshHealthRegistry } from '../../src/runtime/health.ts'
 import type { SshEngine, ShellSession } from '../../src/ssh/engine.ts'
 
 /** In-memory engine stub for route-level tests. */
@@ -191,6 +192,7 @@ async function startRouteServer(options: {
   store?: HostStore
   vault?: Vault
   uploadLimitBytes?: number
+  health?: { snapshot: () => unknown }
 }): Promise<{ routes: SshRoutes; server: Server; port: number }> {
   const routeSet = makeRoutes({
     store: options.store ?? new HostStore(join(dir, `hosts-${randomSuffix()}.json`)),
@@ -198,6 +200,7 @@ async function startRouteServer(options: {
     vault: options.vault,
     stagingDir: join(dir, `staging-${randomSuffix()}`),
     uploadLimitBytes: options.uploadLimitBytes,
+    health: options.health as never,
   })
   const server = createServer((req, res) => {
     const rawPath = new URL(req.url ?? '/', 'http://x').pathname
@@ -310,6 +313,43 @@ describe('loopback fence', () => {
       req.end()
     })
     expect(result.status).toBe(405)
+  })
+})
+
+describe('compatibility health route', () => {
+  it('serves the registry snapshot read-only, and stays absent without one', async () => {
+    const registry = new HardsshHealthRegistry()
+    registry.set('fsRouting', { state: 'degraded', reason: 'workspaceCore is unavailable', missing: ['router'] })
+    const quiet = new StubEngine()
+    const withHealth = await startRouteServer({ engine: engine(quiet), health: registry })
+    try {
+      const ok = await fetch(`http://127.0.0.1:${withHealth.port}${SSH_API.health}`)
+      expect(ok.status).toBe(200)
+      const body = await ok.json() as { health: { features: Record<string, { state: string; reason?: string; missing?: string[] }>; packageVersion: string } }
+      expect(body.health.features.fsRouting).toMatchObject({
+        state: 'degraded',
+        reason: 'workspaceCore is unavailable',
+        missing: ['router'],
+      })
+      expect(body.health.packageVersion).toMatch(/^\d+\.\d+\.\d+/)
+      // The route never dials a host and never mutates anything.
+      expect(quiet.execSignal).toBeUndefined()
+      expect(quiet.lsCalls).toHaveLength(0)
+
+      const wrongMethod = await fetch(`http://127.0.0.1:${withHealth.port}${SSH_API.health}`, { method: 'POST' })
+      expect(wrongMethod.status).toBe(405)
+    } finally {
+      await closeServer(withHealth.server)
+    }
+
+    const withoutHealth = await startRouteServer({ engine: engine(stub) })
+    try {
+      const empty = await fetch(`http://127.0.0.1:${withoutHealth.port}${SSH_API.health}`)
+      expect(empty.status).toBe(200)
+      expect(await empty.json()).toEqual({})
+    } finally {
+      await closeServer(withoutHealth.server)
+    }
   })
 })
 

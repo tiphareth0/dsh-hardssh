@@ -273,6 +273,8 @@ export interface SshRoutesDeps {
   /** Called after a host PATCH/DELETE persisted, so derived caches (e.g. the
    *  remote environment cache) can drop that alias. */
   onHostInvalidated?: (alias: string) => void
+  /** Read-only compatibility/degradation registry (`/health` serves a copy). */
+  health?: { snapshot: () => import('./protocol.ts').HardsshHealthSnapshot }
 }
 
 /** Every /api/dsh-ssh route plus the terminal upgrade, owned by one call. */
@@ -633,6 +635,26 @@ export function makeRoutes(deps: SshRoutesDeps): SshRoutes {
         // pooled connection's lifetime (idle 30 min auto-disconnect).
         engine.setSessionPassword(alias, { password, passphrase })
         writeJson(res, 200, { ok: true })
+      },
+    },
+    // -------------------------------------------------------- health
+    // Read-only compatibility/degradation report. Deliberately never dials a
+    // host and never reads credentials: it only reflects what the host process
+    // managed to mount. The client renders a banner from it so a degraded
+    // install is visible instead of looking like a broken SSH connection.
+    {
+      kind: 'exact',
+      path: SSH_API.health,
+      handler: async (req, res) => {
+        if (!isLoopbackRequest(req)) {
+          writeJson(res, 403, { error: 'forbidden: loopback-only' })
+          return
+        }
+        if ((req.method ?? '') !== 'GET') {
+          writeJson(res, 405, { error: `method not allowed: ${req.method}` })
+          return
+        }
+        writeJson(res, 200, { health: deps.health?.snapshot() })
       },
     },
     // --------------------------------------------------- connections

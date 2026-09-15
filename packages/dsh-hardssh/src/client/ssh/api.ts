@@ -8,6 +8,7 @@ import {
   SSH_API,
   type ClusterResult,
   type ExecResult,
+  type HardsshHealthSnapshot,
   type HostPayload,
   type ImportResult,
   type KnownHostAction,
@@ -530,6 +531,14 @@ export class SshApi {
     const response = await fetch(SSH_API.connections)
     const body = await readJson<{ connected: string[] }>(response)
     return body.connected
+  }
+
+  // --------------------------------------------------------------- health
+  /** Compatibility/degradation report; no host/credential access happens. */
+  async health(): Promise<HardsshHealthSnapshot | undefined> {
+    const response = await fetch(SSH_API.health)
+    const body = await readJson<{ health?: HardsshHealthSnapshot }>(response)
+    return body.health
   }
 
   // ------------------------------------------------------ session secrets

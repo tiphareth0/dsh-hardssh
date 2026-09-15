@@ -18,12 +18,14 @@ import { anchorRoot, isPathUnderAnchor } from './ledger.ts'
 import { SwitchSubprocessRuntime } from './switch/switch-subprocess.ts'
 import type { WorkspaceCore } from './runtime/workspace-core.ts'
 import type { WorkspaceRecord } from './base/model.ts'
+import { mountHardsshHealth } from './runtime/health.ts'
 
 /** Stable cordis plugin name. */
 export const name = 'hardssh-subprocess'
 
-/** Workspace routing is exclusively provided by the generic core. */
-export const inject = ['workspaceCore']
+/** No hard WorkspaceCore inject: this replacement row must always mount its
+ * local fallback after cordis.patch.yml disables the deployment subprocess. */
+export const inject: string[] = []
 
 /** The record behind a router connection (sync snapshot lookup). */
 function genericRecordFor(core: WorkspaceCore, id: string): WorkspaceRecord | undefined {
@@ -55,9 +57,20 @@ export function genericSubprocessFor(
 export function apply(ctx: Context): void {
   const localCtx = ctx.isolate('subprocess')
   const localSubprocess = new LocalSubprocessRuntime(localCtx)
-  const ws = ctx.workspaceCore
+  const workspaceCore = (): WorkspaceCore | undefined => ctx.get('workspaceCore') as WorkspaceCore | undefined
   const anchorRootDir = anchorRoot()
+  const health = mountHardsshHealth(ctx)
   let warnedUnready = false
+  let markedReady = false
+  const markReady = (): void => {
+    if (markedReady) return
+    markedReady = true
+    health.set('subprocessRouting', { state: 'ready' })
+  }
+  const atMount = workspaceCore()
+  health.set('subprocessRouting', atMount?.isReady() === true
+    ? { state: 'ready' }
+    : { state: 'degraded', reason: atMount === undefined ? 'workspaceCore is unavailable; local subprocess fallback is active' : 'workspaceCore is still initializing; local subprocess fallback is active' })
 
   new SwitchSubprocessRuntime(ctx, {
     local: localSubprocess,
@@ -67,16 +80,22 @@ export function apply(ctx: Context): void {
     // made the client-search refusal fire for local sessions and broke
     // glob/grep in every session.
     worldFor: (cwd) => {
-      if (!ws.isReady()) {
+      const ws = workspaceCore()
+      if (ws === undefined || !ws.isReady()) {
+        health.set('subprocessRouting', {
+          state: 'degraded',
+          reason: ws === undefined ? 'workspaceCore is unavailable; local subprocess fallback is active' : 'workspaceCore failed or is still initializing; local subprocess fallback is active',
+        })
         if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {
           if (!warnedUnready) {
             warnedUnready = true
-            console.warn('[dsh-hardssh] subprocess routing is not ready yet (workspace core still initializing or failed) — refusing to run beneath the workspace anchor root')
+            console.warn('[dsh-hardssh] subprocess routing is not ready — local subprocess remains available, but execution beneath the workspace anchor root is refused')
           }
           throw new Error('subprocess-ssh: workspace routing is unavailable while the generic workspace core is not ready (anchor path fails closed)')
         }
         return undefined
       }
+      markReady()
       const runtime = genericSubprocessFor(ws, cwd, [anchorRootDir])
       if (runtime !== undefined) return runtime
       if (cwd !== undefined && isPathUnderAnchor(anchorRootDir, cwd)) {

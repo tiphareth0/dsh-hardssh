@@ -196,6 +196,27 @@ export type TerminalClientFrame =
   | { type: 'input'; data: string }
   | { type: 'resize'; cols: number; rows: number }
 
+/** Host-side compatibility/degradation state exposed to the client. */
+export type HardsshHealthState = 'ready' | 'degraded' | 'failed'
+export type HardsshHealthFeature = 'sshTools' | 'workspaceCore' | 'fsRouting' | 'subprocessRouting'
+export interface HardsshFeatureHealth {
+  state: HardsshHealthState
+  reason?: string
+  missing?: string[]
+}
+export interface HardsshServiceProbe {
+  service: string
+  available: boolean
+  missingMethods: string[]
+}
+export interface HardsshHealthSnapshot {
+  packageVersion: string
+  testedDshRange: string
+  features: Record<HardsshHealthFeature, HardsshFeatureHealth>
+  optionalServices: HardsshServiceProbe[]
+  updatedAt: string
+}
+
 /** Route paths the client calls (shared literals). */
 export const SSH_API_BASE = '/api/dsh-ssh' as const
 
@@ -214,6 +235,7 @@ export const SSH_API = {
   vault: SSH_API_BASE + '/vault',
   sessionSecret: SSH_API_BASE + '/session-secret',
   connections: SSH_API_BASE + '/connections',
+  health: SSH_API_BASE + '/health',
 } as const
 
 /** One known-host record as seen by the browser (no secrets). */

@@ -16,7 +16,12 @@ import type { SshWorkspaceRecord } from '../protocol.ts'
 import { tt } from './text.ts'
 import css from './workspace.module.css'
 import { CloudIcon, ComputerIcon } from './icons.tsx'
-import type { SshHostSummary } from '../ssh/protocol.ts'
+import type {
+  HardsshFeatureHealth,
+  HardsshHealthFeature,
+  HardsshHealthSnapshot,
+  SshHostSummary,
+} from '../ssh/protocol.ts'
 import { HostFormDialog } from './ssh/panel/HostFormDialog.tsx'
 import type { SshApi } from './ssh/api.ts'
 
@@ -41,6 +46,27 @@ export function WorkspaceManagerPanel({ manager, sshApi }: WorkspaceManagerPanel
   const [deleting, setDeleting] = useState<string | null>(null)
   const [deletingAlias, setDeletingAlias] = useState<string | null>(null)
   const [hostDialog, setHostDialog] = useState<HostDialogState | null>(null)
+  /** Compatibility/degradation report; a missing route degrades to null. */
+  const [health, setHealth] = useState<HardsshHealthSnapshot | null>(null)
+
+  useEffect(() => {
+    // Tolerant of minimal API doubles (and of a host that predates /health):
+    // a missing probe just means no banner.
+    if (sshApi === undefined || typeof sshApi.health !== 'function') return
+    let disposed = false
+    void sshApi.health().then(
+      (value) => { if (!disposed) setHealth(value ?? null) },
+      () => { if (!disposed) setHealth(null) },
+    )
+    return () => { disposed = true }
+  }, [sshApi])
+
+  // Only non-ready surfaces are listed: a healthy install shows no banner at
+  // all, so this never becomes decoration the operator learns to ignore.
+  const degradedFeatures: Array<[HardsshHealthFeature, HardsshFeatureHealth]> = health === null
+    ? []
+    : (Object.entries(health.features) as Array<[HardsshHealthFeature, HardsshFeatureHealth]>)
+      .filter(([, value]) => value.state !== 'ready')
 
   const loadHosts = (): void => {
     if (sshApi === undefined) {
@@ -123,6 +149,23 @@ export function WorkspaceManagerPanel({ manager, sshApi }: WorkspaceManagerPanel
       </div>
 
       {error !== null && <div className={css.dialogFail}>{error}</div>}
+
+      {health !== null && degradedFeatures.length > 0 && (
+        <div className={css.dialogFail} data-test="hardssh-health-banner">
+          <div>{tt('health.title')}</div>
+          <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+            {degradedFeatures.map(([feature, value]) => (
+              <li key={feature}>
+                {tt(`health.feature.${feature}` as 'health.feature.sshTools')}
+                {' — '}
+                {tt(`health.state.${value.state}` as 'health.state.degraded')}
+                {value.reason !== undefined ? `：${value.reason}` : ''}
+              </li>
+            ))}
+          </ul>
+          <div>{tt('health.detail', health.packageVersion, health.testedDshRange)}</div>
+        </div>
+      )}
 
       {connectionError !== null && (
         <div className={css.dialogFail} data-test="connection-state-error">

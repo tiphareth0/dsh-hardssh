@@ -63,6 +63,8 @@ export interface SshCapabilityDeps {
    *  legacy ledger in legacy mode, the generic WorkspaceCore-backed projection
    *  store in the default generic mode. */
   ledger?: import('../backend.ts').WorkspaceStoreView
+  /** Compatibility/degradation registry served by `/api/dsh-ssh/health`. */
+  health?: import('../runtime/health.ts').HardsshHealthRegistry
 }
 
 /**
@@ -92,6 +94,7 @@ export function mountSshCapability(ctx: Context, deps: SshCapabilityDeps): void 
     knownHosts: deps.knownHosts,
     vault: deps.vault,
     ledger: deps.ledger,
+    health: deps.health,
     // Host PATCH/DELETE also invalidates the per-alias environment cache so
     // a re-pointed alias cannot keep serving the old host's env.
     onHostInvalidated: (alias) => invalidateRemoteEnvironment(engine, alias),
@@ -139,13 +142,21 @@ export function mountSshCapability(ctx: Context, deps: SshCapabilityDeps): void 
       disposeTools()
       disposeTools = undefined
     }
-    if (!value.enabled) return
+    if (!value.enabled) {
+      deps.health?.set('sshTools', { state: 'degraded', reason: 'SSH capability is disabled in the dsh-ssh settings namespace' })
+      return
+    }
     if (value.announceToAgent) {
-      disposeSection = ctx.systemPrompt.section({
-        name: 'plugin:dsh-ssh',
-        order: SECTION_ORDER,
-        text: SSH_GUIDANCE,
-      })
+      // Optional integration: a headless/degraded deployment without the
+      // system-prompt service keeps its tools instead of failing to mount.
+      const systemPrompt = ctx.get('systemPrompt') as { section?: (options: { name: string; order: number; text: string }) => () => void } | undefined
+      if (typeof systemPrompt?.section === 'function') {
+        disposeSection = systemPrompt.section({
+          name: 'plugin:dsh-ssh',
+          order: SECTION_ORDER,
+          text: SSH_GUIDANCE,
+        })
+      }
     }
     disposeTools = ctx.effect(
       () => {
@@ -154,6 +165,7 @@ export function mountSshCapability(ctx: Context, deps: SshCapabilityDeps): void 
       },
       'dsh-ssh: tools',
     )
+    deps.health?.set('sshTools', { state: 'ready' })
   }
 
   // Settings-backed configuration (dsh-settings service; optional in

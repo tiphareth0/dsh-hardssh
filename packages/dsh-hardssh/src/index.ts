@@ -47,6 +47,7 @@ import { SecureHostStore } from './ssh/store.ts'
 import { KnownHostsStore } from './ssh/known-hosts.ts'
 import { Vault } from './ssh/vault.ts'
 import { mountWorkspaceCore, genericLedgerPath, type WorkspaceCore } from './runtime/workspace-core.ts'
+import { mountHardsshHealth } from './runtime/health.ts'
 import { inspectGenericLedger, migrateLegacySshLedger, recoverGenericLedger, type WorkspaceMigrationReport } from './runtime/workspace-migration.ts'
 import type { SshWorkspaceRecord } from './protocol.ts'
 
@@ -59,7 +60,7 @@ export const name = 'hardssh'
  * block the whole load tree — routes register through the dynamic
  * ctx.inject(['webServer'], …) below (DSH 插件规范 §4.2).
  */
-export const inject = ['tools', 'systemPrompt']
+export const inject = ['tools']
 
 /** Plugin config (schemastery; optional fields use .default, never .optional). */
 export interface Config {
@@ -422,18 +423,31 @@ export function apply(ctx: Context, config?: Config): void {
     vault?.dispose()
   }, 'dsh-hardssh: engine')
 
+  // Compatibility/degradation registry. Every surface reports into it, and
+  // /api/dsh-ssh/health exposes a read-only copy so a degraded install is
+  // visible in the GUI instead of looking like a broken SSH connection.
+  const health = mountHardsshHealth(ctx)
+  health.probeServices(ctx)
+
   // Canonical provider-neutral workspace runtime. It is the only in-process
   // ledger/router used by fs, subprocess, routes, tools and host-delete guards.
   const genericCore = mountWorkspaceCore(ctx, { engine, hosts: secureHosts })
+  health.set('workspaceCore', { state: 'degraded', reason: 'workspace core is still initializing' })
   const boot = bootstrapGenericWorkspaceCore(genericCore, {
     legacyPath: ledgerPath(),
     genericPath: genericLedgerPath(),
     // The atomically published report is also the permanent cutover marker.
     reportPath: genericMigrationReportPath(),
   })
-  // A failed startup must not become an unhandled rejection: consumers await
-  // this same promise and fail closed; there is no in-process legacy fallback.
-  void boot.catch((error: unknown) => {
+  void boot.then(() => {
+    health.set('workspaceCore', { state: 'ready' })
+  }).catch((error: unknown) => {
+    // A failed startup must not become an unhandled rejection: consumers await
+    // this same promise and fail closed; there is no in-process legacy fallback.
+    health.set('workspaceCore', {
+      state: 'failed',
+      reason: `workspace runtime failed to initialize: ${error instanceof Error ? error.message : String(error)}`,
+    })
     console.error('[dsh-hardssh] generic workspace runtime failed to initialize — workspace consumers will fail closed (no silent local fallback):', error instanceof Error ? error.message : String(error))
   })
   // Preserve the established SSH anchor layout across the one-time import.
@@ -450,7 +464,7 @@ export function apply(ctx: Context, config?: Config): void {
   // kept independent of the workspace `enabled` switch below (its own
   // `dsh-ssh` settings namespace toggles it). The host-delete reference guard
   // reads the same record source as the workspace surfaces.
-  mountSshCapability(ctx, { store: secureHosts, engine, knownHosts, vault, ledger: workspaces })
+  mountSshCapability(ctx, { store: secureHosts, engine, knownHosts, vault, ledger: workspaces, health })
 
   // C-04: secretStorage is a construction-time decision (vault + store above).
   // The dsh-ssh settings namespace exposes the same key for the settings UI,
@@ -526,10 +540,15 @@ export function apply(ctx: Context, config?: Config): void {
   // subprocess switch. See switch-fs.ts / switch-subprocess.ts.
 
   if (resolved.announceToAgent) {
-    ctx.systemPrompt.section({
-      name: 'plugin:dsh-hardssh',
-      order: SECTION_ORDER,
-      text: (context) => renderWorkspaceGuidance(workspaces, context),
-    })
+    // Optional integration (see the inject note above): no system-prompt
+    // service means no announcement, never a failed plugin load.
+    const systemPrompt = ctx.get('systemPrompt') as { section?: (options: { name: string; order: number; text: (context: unknown) => string }) => unknown } | undefined
+    if (typeof systemPrompt?.section === 'function') {
+      systemPrompt.section({
+        name: 'plugin:dsh-hardssh',
+        order: SECTION_ORDER,
+        text: (context) => renderWorkspaceGuidance(workspaces, context as never),
+      })
+    }
   }
 }
