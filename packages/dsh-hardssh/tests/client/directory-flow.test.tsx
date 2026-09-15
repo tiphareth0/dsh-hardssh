@@ -87,3 +87,80 @@ describe('DirectoryFlow request sequencing', () => {
     await act(async () => { root.unmount() })
   })
 })
+
+describe('DirectoryFlow local branch robustness', () => {
+  /** Mount the flow open, with the given picker behaviour, and return helpers. */
+  async function mount(pickDirectory: DirectoryFlowInjected['pickDirectory'], withOnError = true) {
+    const injected: DirectoryFlowInjected = {
+      pickDirectory,
+      createSshWorkspace: vi.fn(),
+      listHosts: vi.fn(async () => []),
+      createHost: vi.fn(),
+      listRemoteDir: vi.fn(),
+      ensureConnected: vi.fn(async () => true),
+    }
+    const onError = vi.fn()
+    const onPicked = vi.fn()
+    const onCancel = vi.fn()
+    const container = document.createElement('div')
+    document.body.appendChild(container)
+    const root = createRoot(container)
+    const props = {
+      open: true,
+      busy: false,
+      onPicked,
+      onCancel,
+      ...(withOnError ? { onError } : {}),
+    }
+    await act(async () => { root.render(<DirectoryFlow {...props} {...injected} />) })
+    const menu = () => document.querySelector<HTMLElement>('[data-ssh-workspace-flow-menu]')!
+    return { root, menu, onError, onPicked, onCancel }
+  }
+
+  it('shows a visible waiting state instead of an empty dropdown while the picker is open', async () => {
+    const pending = deferred<string | null>()
+    const { root, menu } = await mount(() => pending.promise)
+    // First entry is "Local workspace…" (the reported click target).
+    await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })
+    // The regression: this used to render a zero-content white strip. Locale is
+    // whatever the dictionary default is, so assert structure, not copy.
+    expect(menu().querySelector('[role="status"]')).not.toBeNull()
+    expect((menu().textContent ?? '').trim().length).toBeGreaterThan(0)
+    await act(async () => { pending.resolve('/tmp/picked') })
+    await act(async () => { root.unmount() })
+  })
+
+  it('surfaces a synchronous picker failure instead of swallowing it', async () => {
+    // Exactly the shipped kernel bug: the service method did not exist, so the
+    // call threw before returning a promise.
+    const throwing = ((): Promise<string> => {
+      throw new TypeError('ctx.workspaces.pickDirectory is not a function')
+    }) as DirectoryFlowInjected['pickDirectory']
+    const { root, menu, onError } = await mount(throwing)
+    await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })
+    expect(onError).toHaveBeenCalledTimes(1)
+    expect(String(onError.mock.calls[0]?.[0])).toContain('pickDirectory is not a function')
+    // The menu is re-armed rather than left in the empty waiting state.
+    expect(menu().querySelector('[role="status"]')).toBeNull()
+    expect(menu().querySelectorAll('button').length).toBeGreaterThanOrEqual(2)
+    await act(async () => { root.unmount() })
+  })
+
+  it('keeps the message inside the dropdown when the owner provides no onError', async () => {
+    const throwing = ((): Promise<string> => {
+      throw new Error('no picker service')
+    }) as DirectoryFlowInjected['pickDirectory']
+    const { root, menu } = await mount(throwing, false)
+    await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })
+    expect(menu().textContent).toContain('no picker service')
+    await act(async () => { root.unmount() })
+  })
+
+  it('treats a null result as a cancel, not as a pick', async () => {
+    const { root, menu, onCancel, onPicked } = await mount(async () => null)
+    await act(async () => { menu().querySelectorAll<HTMLButtonElement>('button')[0].click() })
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(onPicked).not.toHaveBeenCalled()
+    await act(async () => { root.unmount() })
+  })
+})

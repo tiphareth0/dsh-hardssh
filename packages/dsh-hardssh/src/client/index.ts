@@ -21,7 +21,7 @@ import { SshHostsApi, WorkspaceApi } from './api.ts'
 import { SshApi } from './ssh/api.ts'
 import { NS, dictionaries, type WorkspaceKey } from './locales.ts'
 import { WorkspaceManager } from './state.ts'
-import { setLanguage } from './text.ts'
+import { setLanguage, tt } from './text.ts'
 import { registerWorkspacePanel } from './workspace-panel-entry.tsx'
 import { migrateLegacySessionMemory } from './migrate.ts'
 import { DirectoryFlow } from './directory-flow.tsx'
@@ -53,7 +53,29 @@ export type { SshKey } from './ssh/locales.ts'
  *  operations console type. Keep the registry explicit: without it Cordis may
  *  activate this client before ui-sidebar-right provides the service; the
  *  guarded registration then degrades silently and no HardSSH tab exists. */
-export const inject = ['slots', 'locale', 'workspaces', 'sessions', 'sidebarRightTabs']
+export const inject = ['slots', 'locale', 'sessions', 'sidebarRightTabs']
+
+/**
+ * Resolve the kernel's directory-picker service.
+ *
+ * The 0.1.5 kernel line renamed it: the old `ctx.workspaces.pickDirectory()`
+ * no longer exists (the service is now `ctx.uiWorkspace`, constructed in
+ * `dsh-client-ui-workspace` as `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`).
+ * Calling the stale name threw a synchronous TypeError inside the click
+ * handler, which the browser swallowed — the flow then sat in its
+ * `picking-local` state and rendered an EMPTY dropdown (the "narrow white box"
+ * users saw). Resolve both names lazily and report a usable error when neither
+ * exposes the picker, so the failure is visible instead of silent.
+ */
+function resolveDirectoryPicker(ctx: ClientContext): { pickDirectory: () => Promise<string> } | undefined {
+  for (const name of ['uiWorkspace', 'workspaces']) {
+    const service = (ctx.get as (key: string) => unknown)(name) as { pickDirectory?: unknown } | undefined
+    if (service !== undefined && typeof service.pickDirectory === 'function') {
+      return service as { pickDirectory: () => Promise<string> }
+    }
+  }
+  return undefined
+}
 
 /** Apply the browser half. */
 export function apply(ctx: ClientContext): void {
@@ -100,7 +122,11 @@ export function apply(ctx: ClientContext): void {
     // live. A negative priority beats the native occupant (priority 0) under
     // the single-slot "lowest wins" rule.
     const flowInject = (): Record<string, unknown> => ({
-      pickDirectory: () => ctx.workspaces.pickDirectory(),
+      pickDirectory: async () => {
+        const picker = resolveDirectoryPicker(ctx)
+        if (picker === undefined) throw new Error(tt('flow.noPicker'))
+        return await picker.pickDirectory()
+      },
       createSshWorkspace: (input: { title: string; alias: string; remoteRoot: string }) => api.createWorkspace(input),
       listHosts: () => api.listHosts(),
       createHost: (input: {

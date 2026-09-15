@@ -65,8 +65,18 @@ interface AnchorRect {
   width: number
 }
 
-/** Labels the host "Add workspace…" entry can carry (zh / en). */
-const ADD_WORKSPACE_LABELS = ['添加工作区', 'Add workspace']
+/** Labels the host "Add workspace…" entry can carry (zh / en). Covers the
+ *  kernel's own `workspace.add` / `menu.addWorkspace` copy plus the
+ *  "local workspace" wording used by newer/other surfaces, since the anchor is
+ *  only a positioning hint (a miss falls back to the viewport corner). */
+const ADD_WORKSPACE_LABELS = [
+  '添加工作区',
+  '添加本地工作区',
+  '新建工作区',
+  'Add workspace',
+  'Add local workspace',
+  'New workspace',
+]
 
 /**
  * Find the host "Add workspace…" trigger element. It is a button/menu item
@@ -164,14 +174,21 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
     // Lazy-load the host list for the SSH branch. A later refresh (for
     // example after adding a host) supersedes this request.
     const request = ++hostsRequestSequence.current
-    void props.listHosts().then(
-      (list) => {
-        if (request === hostsRequestSequence.current && openRef.current) setHosts(list)
-      },
-      () => {
-        if (request === hostsRequestSequence.current && openRef.current) setHosts([])
-      },
-    )
+    // A synchronous throw here (missing injected dep) must not break the menu
+    // render: the SSH branch then degrades to "no hosts", the local branch and
+    // Cancel stay usable.
+    try {
+      void props.listHosts().then(
+        (list) => {
+          if (request === hostsRequestSequence.current && openRef.current) setHosts(list)
+        },
+        () => {
+          if (request === hostsRequestSequence.current && openRef.current) setHosts([])
+        },
+      )
+    } catch {
+      if (request === hostsRequestSequence.current && openRef.current) setHosts([])
+    }
     return () => {
       localPickRequestSequence.current += 1
       hostsRequestSequence.current += 1
@@ -221,25 +238,50 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
 
   if (!open) return null
 
-  /** Choose "Local workspace": drive the native chooser once. */
+  /** Surface a failure where the operator can see it. The kernel owner's
+   *  `onError` opens its folder-error modal; a standalone mount without that
+   *  callback keeps the message inside the dropdown instead of going silent. */
+  const reportFailure = (reason: unknown): void => {
+    const message = reason instanceof Error ? reason.message : String(reason)
+    const onError = outcome.current.onError
+    if (typeof onError === 'function') {
+      onError(message)
+      return
+    }
+    setError(message)
+  }
+
+  /**
+   * Choose "Local workspace": drive the kernel's native chooser once.
+   *
+   * `props.pickDirectory` is wrapped in `Promise.resolve().then(...)` on
+   * purpose: a synchronous throw (the 0.1.5 kernel renamed the picker service,
+   * so the old call threw `TypeError: …pickDirectory is not a function`) used
+   * to escape the click handler and leave the menu body empty. Converting it
+   * into a rejection routes it through the same visible error path.
+   */
   const pickLocal = (): void => {
     const request = ++localPickRequestSequence.current
     setChoice('picking-local')
-    props.pickDirectory().then(
-      (path) => {
-        if (request !== localPickRequestSequence.current || !openRef.current) return
-        if (path === null) {
-          outcome.current.onCancel()
-        } else {
-          outcome.current.onPicked(path)
-        }
-      },
-      (reason) => {
-        if (request === localPickRequestSequence.current && openRef.current) {
-          outcome.current.onError(reason instanceof Error ? reason.message : String(reason))
-        }
-      },
-    )
+    setError(null)
+    Promise.resolve()
+      .then(() => props.pickDirectory())
+      .then(
+        (path) => {
+          if (request !== localPickRequestSequence.current || !openRef.current) return
+          if (path === null || path === undefined) {
+            outcome.current.onCancel()
+          } else {
+            outcome.current.onPicked(path)
+          }
+        },
+        (reason: unknown) => {
+          if (request !== localPickRequestSequence.current || !openRef.current) return
+          // Re-arm the menu so the operator can retry or choose the SSH branch.
+          setChoice('menu')
+          reportFailure(reason)
+        },
+      )
   }
 
   /** Browse a remote dir level for the SSH branch. When the connection needs
@@ -485,6 +527,21 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
                 </button>
               </div>
             )}
+          </div>
+        )}
+
+        {/* The native picker is open (or its service is missing and the
+            failure is being reported). Rendering this state explicitly is the
+            point: without it the dropdown showed an EMPTY white strip while
+            waiting — the symptom "点击后没有任何反应". */}
+        {choice === 'picking-local' && (
+          <div className={css.dialogGrid}>
+            <div className={css.dialogInfo} role="status">{tt('flow.picking')}</div>
+            <div className={css.dialogActions}>
+              <button type="button" className={css.button} onClick={() => outcome.current.onCancel()}>
+                {tt('create.cancel')}
+              </button>
+            </div>
           </div>
         )}
 

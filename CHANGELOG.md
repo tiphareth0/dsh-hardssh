@@ -2,6 +2,17 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.2.5 — 2026-09-15
+
+### 修复
+
+- **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。
+  - 修法一：`pickDirectory` 改为**按名解析**（先 `uiWorkspace`，回退 `workspaces`），两者都没有时抛出可读错误，而不是 `TypeError`。
+  - 修法二：`pickLocal` 用 `Promise.resolve().then(...)` 包住调用，把**同步抛错转成拒绝**，走与异步失败相同的可见错误路径；内核 owner 的 `onError` 会弹出文件夹错误对话框，没有该回调时错误显示在菜单内，绝不再静默。
+  - 修法三：补上 `picking-local` 状态的渲染（等待提示 + 取消按钮），从根上消除「空白色条」这一现象。
+  - 顺带：`inject` 去掉已失效的 `workspaces` 硬依赖（不再因旧服务名存在与否影响整个客户端半边激活）；触发按钮的锚点匹配扩充到「添加工作区 / 添加本地工作区 / 新建工作区 / Add (local) workspace / New workspace」。
+  - 回归用例（`tests/client/directory-flow.test.tsx`）：等待态必须有可见内容；**同步抛错**必须落到 `onError` 且菜单重新就绪；owner 没有 `onError` 时错误留在下拉框内；`null` 结果按取消处理。
+
 ## v0.2.4 — 2026-09-13
 
 > 已发布 npm：`@tiphareth/dsh-hardssh@0.2.4`（dist-tag `latest`）；Awesome DSH Plugin 目录已同步显示 0.2.4，并使用不锁版本的 npm 安装命令。
