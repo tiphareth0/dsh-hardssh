@@ -24,6 +24,7 @@ import type { WorkspaceState } from '../protocol.ts'
 import { quoteShellArg } from './environment.ts'
 import { SshSubprocessHandle } from './remote-process.ts'
 import { SshTerminalHandle, spawnSshTerminal } from './remote-terminal.ts'
+import { WorkspaceSearchSpawner } from './search-bridge.ts'
 
 /**
  * Enforce the seam's documented grace bound (positive, finite, one Node timer).
@@ -50,6 +51,7 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
   private readonly live = new Set<SshSubprocessHandle>()
   private readonly terminals = new Set<SshTerminalHandle>()
   private readonly spillDir = mkdtempSync(join(tmpdir(), 'dsh-subprocess-ssh-'))
+  private readonly searchSpawner: WorkspaceSearchSpawner
   private closePromise: Promise<void> | undefined
 
   constructor(
@@ -58,6 +60,16 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     private readonly getState: () => WorkspaceState,
   ) {
     super(ctx)
+    // P1-E: the model-facing glob/grep tools spawn the CLIENT's bundled
+    // ripgrep through this seam. In a bound workspace that spawn is served by
+    // the workspace search instead (identical argv when the host has ripgrep,
+    // the P1-D ladder otherwise) instead of being refused.
+    this.searchSpawner = new WorkspaceSearchSpawner({
+      engine,
+      getState,
+      spillDir: this.spillDir,
+      forward: spec => this.spawnPlain(spec),
+    })
     ctx.effect(() => async () => {
       // The effect's own body would duplicate close(); delegating keeps one
       // idempotent teardown path for host shutdown and on-demand connection close.
@@ -156,6 +168,18 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
 
   /** @inheritdoc */
   spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
+    // A client-side search helper (the bundled ripgrep behind glob/grep) is
+    // served from the bound workspace's search instead of being sent to the
+    // host as a client path or run against the local anchor placeholder.
+    if (this.searchSpawner.handles(spec)) {
+      if (this.closePromise !== undefined) throw new Error('subprocess-ssh: service is disposing')
+      return this.searchSpawner.spawn(spec)
+    }
+    return this.spawnPlain(spec)
+  }
+
+  /** The unmodified remote spawn path (also the bridge's forwarding target). */
+  private spawnPlain(spec: SubprocessSpawnSpec): SubprocessHandle {
     if (this.closePromise !== undefined) throw new Error('subprocess-ssh: service is disposing')
     const program = spec.argv[0]
     if (program === undefined || program.length === 0) {

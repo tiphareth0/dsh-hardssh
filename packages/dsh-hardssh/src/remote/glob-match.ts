@@ -64,6 +64,21 @@ export function globMatches(pattern: string, relativePath: string): boolean {
 }
 
 /**
+ * Match an *include* filter the way ripgrep's `--glob` does: a pattern without
+ * `/` matches the basename at any depth, a pattern with `/` is anchored at the
+ * search root. Used by the emulated grep rung, which must honour `--glob`.
+ */
+export function includeMatches(pattern: string, relativePath: string): boolean {
+  const normalized = pattern.replace(/^\/+/, '')
+  if (normalized === '') return true
+  if (!normalized.includes('/')) {
+    const base = relativePath.slice(relativePath.lastIndexOf('/') + 1)
+    return globToRegExp(normalized).test(base)
+  }
+  return globToRegExp(normalized).test(relativePath)
+}
+
+/**
  * The longest literal directory prefix of a pattern (used to start a shell
  * search deeper than the root instead of walking the whole tree).
  *

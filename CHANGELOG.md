@@ -110,6 +110,36 @@
   `tests/remote-search.test.ts` 与 provider/tool-ops 用例同步到新的记录格式。
   状态包装器已在真实 POSIX `sh` 上逐项验证（成功/无命中/失败+stderr/`find` 记录/字节截断/临时目录清理）。
 
+### glob / grep 透明接管（P1-E）
+
+- **先是兼容 spike，结论决定了做法**：
+  - 原生行 id 是 **`tool-fs-search`**（由 `@deepseek-ai/dsh-base` bundle 挂载，插件名
+    `@deepseek-ai/dsh-tool-fs-search`），不是 `dsh-tool-fs-search`；
+  - 工具 schema：`glob { pattern, path? }`、`grep { pattern, path?, include? }`（**pattern 是正则**）；
+  - 同名注册：`ToolRuntime.register` 在同一层重复注册会失败，scoped 注册虽能遮蔽 global 但绑定 agent scope，
+    插件侧拿不到 —— 所以「替换工具」必须先禁用原生行，一旦我们的行加载失败，用户就彻底没有 glob/grep；
+  - 执行方式：两个工具都用 `ctx.subprocess.spawn([本机 rg 绝对路径, '--no-config', …])`，cwd = 会话 cwd
+    （在 SSH 会话里就是本地锚点目录），随后读 `handle.collected.stdout.readFrom(0)` 与 `done.exitCode`（0 有结果 / 1 无结果）；
+  - **因此不替换工具行，改在已被本插件替换的 subprocess seam 上接管**：本地行为按构造不变，契约不匹配时退回原有行为。
+- 新增 `src/remote/search-bridge.ts`：识别这次 spawn（「路径形态的 rg/ripgrep」，正是 seam 早已用来分类的判据），
+  拆解 `--files` / `--json` argv（未知**裸** flag 一律拒绝——它可能吃掉下一个参数；未知 inline flag 容忍），
+  并把搜索根限制在工作区根内（Windows 形态路径给出可操作报错，而不是变成「找不到」）：
+  - **宿主机有 ripgrep**（P1-B 探测）：argv[0] 换成 `rg`、其余原样转发到服务器执行，原生格式化拿到真 rg 输出
+    （排序、cap、`--glob` 语义全部保持）；
+  - **宿主机没有**：由 P1-D 阶梯回答，并投影回 rg 自己的输出形状 —— `--files` 只列**文件**（新增 `filesOnly`），
+    grep 生成 `rg --json` 的 `match` 记录（官方解析器只消费 `path.text` / `line_number` / `lines.text`），
+    `--glob` include 按 rg 语义本地过滤，无结果时退出码 1；
+  - 输出仍走同一个 `SshOutputCollector`（maxBytes/spill 语义不变）并经过会话凭据脱敏。
+- seam 路由：`SwitchSubprocessRuntime` 不再对客户端 rg 抛错，而是把这次 spawn 交给世界运行时（由桥回答）；
+  裸 `rg` 与其它命令路由不变。桥无法识别的 argv 仍抛原来那条可操作错误（指向 `remote_search`），
+  于是上游模板变化只会退回「显式拒绝」，绝不会变成静默错答。
+- 测试：新增 `tests/remote/search-bridge.test.ts`（10 例：两种 argv 识别与拒绝、根限制、
+  转发保持同一 argv、代答档的 `--files` 与 `--json` 形状、include 过滤、脱敏、退出码）；
+  `tests/switch.test.ts` 的「拒绝」用例改为「路由」断言；`remoteGuidance` 与 `tests/workspace-guidance.test.ts` 同步。
+- **残余边界（诚实说明）**：代答档受 P1-D 上限约束（glob 200 命中、grep 200 行 / 200KB），
+  比原生 rg 的 250 行 / 20MB 更紧；`--sort=modified` 的文件名排序只在转发档保留；
+  宿主机既无 rg 也无 GNU grep 时，正则内容检索明确报错（不会把正则当字面量搜）。
+
 ### 修复
 
 - **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。

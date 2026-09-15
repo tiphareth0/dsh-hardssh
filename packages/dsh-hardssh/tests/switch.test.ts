@@ -429,11 +429,13 @@ describe('SwitchSubprocessRuntime cwd routing', () => {
     expect(localSpawn).toHaveBeenCalledTimes(3)
   })
 
-  it('refuses the client search helper in a remote session instead of returning local matches', () => {
+  it('routes the client search helper to the world runtime instead of running it locally', () => {
     // glob/grep spawn the CLIENT's bundled ripgrep at an absolute path. In a
     // bound session the local run would search the empty anchor and answer
-    // "no matches"; sending that path to the server cannot work either. Both
-    // are silently wrong, so the facade refuses and names the remote tools.
+    // "no matches"; sending that path to the server cannot work either. Since
+    // P1-E the WORLD runtime owns that spawn: its workspace-search bridge runs
+    // the identical argv when the host has ripgrep, or answers from the search
+    // ladder — either way the local anchor is never searched.
     const localSpawn = vi.fn(() => ({ pid: 1 }) as unknown as SubprocessHandle)
     const remoteSpawn = vi.fn(() => ({ pid: -1 }) as unknown as SubprocessHandle)
     const local = { spawn: localSpawn } as unknown as SubprocessRuntime
@@ -447,30 +449,29 @@ describe('SwitchSubprocessRuntime cwd routing', () => {
     })
 
     // Windows-packaged ripgrep: would have been classified client-native and run
-    // LOCALLY against the anchor.
-    expect(() => switcher.spawn(search('C:\\ProgramData\\rg\\rg.exe', '/workspace/a')))
-      .toThrow(/client-side search tool and cannot read the remote workspace/)
-    // POSIX-packaged ripgrep: would have been sent to the server as a client path.
-    expect(() => switcher.spawn(search('/opt/dsh/ripgrep/bin/rg', '/workspace/a')))
-      .toThrow(/remote_search/)
+    // LOCALLY against the anchor — now the world runtime owns it.
+    switcher.spawn(search('C:\\ProgramData\\rg\\rg.exe', '/workspace/a'))
+    // POSIX-packaged ripgrep: would have been sent to the server as a client
+    // path — same routing answer.
+    switcher.spawn(search('/opt/dsh/ripgrep/bin/rg', '/workspace/a'))
     expect(localSpawn).not.toHaveBeenCalled()
-    expect(remoteSpawn).not.toHaveBeenCalled()
+    expect(remoteSpawn).toHaveBeenCalledTimes(2)
 
-    // A BARE `rg` is an ordinary server command and still belongs to the remote
-    // world: the refusal is only about client-PACKAGED paths.
+    // A BARE `rg` is an ordinary server command and belongs to the remote world.
     switcher.spawn(search('rg', '/workspace/a'))
-    expect(remoteSpawn).toHaveBeenCalledTimes(1)
+    expect(remoteSpawn).toHaveBeenCalledTimes(3)
     expect(localSpawn).not.toHaveBeenCalled()
 
     // A LOCAL session keeps using the bundled helper normally. Regression: the
     // facade used to decide locality by identity-comparing the routed runtime
     // against `deps.local`, and a container-provided service is not the same
-    // object — so this refusal fired for LOCAL sessions too and broke glob/grep
-    // in every session. Locality is now the routing answer itself (`undefined`).
+    // object — so the client-search special case fired for LOCAL sessions too
+    // and broke glob/grep in every session. Locality is the routing answer
+    // itself (`undefined`), so these run locally.
     switcher.spawn(search('C:\\ProgramData\\rg\\rg.exe', '/workspace/local'))
     switcher.spawn(search('/opt/dsh/ripgrep/bin/rg', '/workspace/local'))
     expect(localSpawn).toHaveBeenCalledTimes(2)
-    expect(remoteSpawn).toHaveBeenCalledTimes(1)
+    expect(remoteSpawn).toHaveBeenCalledTimes(3)
   })
 })
 

@@ -17,6 +17,7 @@ import type {
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import type { Context } from '@deepseek-ai/cordis'
+import { isClientSearchHelperPath } from '../remote/search-bridge.ts'
 
 /** Route one spawn cwd to a runtime. */
 export interface SwitchSubprocessDeps {
@@ -49,21 +50,11 @@ const CLIENT_EXECUTABLE_RE = /\.(exe|cmd|bat|ps1|com)$/i
  * not shells: running one locally while the session's world is remote searches
  * the local anchor directory (an empty placeholder) and reports "no matches",
  * and sending the client's absolute PATH to the server cannot work either.
- * Either way the answer is wrong, so a path-shaped invocation is refused
- * loudly. A BARE `rg` is left alone: that is an ordinary server command and
- * belongs to the remote world like any other.
+ * Either way the answer is wrong, so such a spawn is routed to the WORLD
+ * runtime, which owns the workspace-search bridge that answers it (P1-E).
+ * A BARE `rg` is left alone: that is an ordinary server command and belongs to
+ * the remote world like any other.
  */
-const CLIENT_WORKSPACE_SEARCH_RE = /^(rg|ripgrep)(\.exe)?$/i
-
-/** True for a PATH-shaped (not bare-name) invocation of a search helper. */
-function isClientSearchHelperPath(exe: string): boolean {
-  if (!exe.includes('/') && !exe.includes('\\')) return false
-  const base = exe.split(/[\\/]/).pop() ?? exe
-  return CLIENT_WORKSPACE_SEARCH_RE.test(base)
-}
-
-/** A client-native executable: Windows-format path/extension, or a bare name
- *  on the declared client-tool list (remote POSIX hosts never carry these). */
 function isClientNativeExecutable(exe: string, names: ReadonlyArray<string>): boolean {
   if (exe === '') return false
   if (/^[a-zA-Z]:[\\/]/.test(exe) || exe.includes('\\') || CLIENT_EXECUTABLE_RE.test(exe)) return true
@@ -86,11 +77,13 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
    *  the local anchor (which exists locally), so local execution is sound.
    *  Everything else runs in the session's world (remote on a bound host).
    *
-   *  ONE exception is refused rather than routed: a client-side SEARCH helper
-   *  (rg) in a remote-bound session would search the empty local anchor and
-   *  report "no matches" — a confidently wrong answer about the server's
-   *  contents. There is no way to make a local index-of-files tool read the
-   *  remote workspace, so the caller is told to use the remote tools.
+   *  ONE category is neither: a client-side SEARCH helper (the bundled rg) in
+   *  a remote-bound session. Running it locally would search the empty anchor
+   *  and report "no matches" — a confidently wrong answer about the server's
+   *  contents — and the client's path cannot run on the host either. Since
+   *  P1-E the world runtime answers that spawn from the bound workspace's
+   *  search (identical argv when the host has ripgrep, the search ladder
+   *  otherwise), so it is routed there rather than refused.
    *
    *  Locality comes from the routing answer (`undefined`), never from an
    *  identity comparison against `deps.local`: that comparison silently failed
@@ -100,13 +93,7 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
     if (runtime === undefined) return this.deps.local
     const names = this.deps.clientToolNames ?? DEFAULT_CLIENT_TOOL_NAMES
     const exe = spec.argv !== undefined && spec.argv.length > 0 ? spec.argv[0] : ''
-    if (isClientSearchHelperPath(exe)) {
-      throw new Error(
-        `dsh-hardssh: '${exe.split(/[\\/]/).pop()}' is a client-side search tool and cannot read the remote workspace bound to this session `
-        + '(its working directory is the local anchor placeholder, not the server). '
-        + 'Search remote content with the remote_search tool (mode="glob" for file names, mode="grep" for content) or ssh_exec instead.',
-      )
-    }
+    if (isClientSearchHelperPath(exe)) return runtime
     return isClientNativeExecutable(exe, names) ? this.deps.local : runtime
   }
 

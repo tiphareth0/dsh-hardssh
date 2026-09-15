@@ -38,12 +38,16 @@ awareness of the remote side at all.
 
 > In short: **your existing plugin ecosystem runs on the server out of the box.**
 
-**One exception has to be stated plainly: `glob` / `grep` are NOT part of that.**
-They run the client's bundled ripgrep (spawned by `dsh-tool-fs-search` at an absolute
-local path), which cannot read the remote workspace, and sending that client path to
-the server cannot work either. This plugin therefore **refuses** those calls inside an
-SSH session (it never silently answers "no matches") and points at the remote tools
-`remote_search` (`mode="glob"` / `mode="grep"`) or `ssh_exec`. Likewise `pwsh` /
+**`glob` / `grep` are part of that too, through the workspace-search bridge.** The
+official `dsh-tool-fs-search` plugin spawns the client's bundled ripgrep at an absolute
+local path, which cannot read the remote workspace. Instead of refusing that spawn (the
+pre-0.2.5 behaviour) the subprocess seam now serves it from the bound host: when the
+host has ripgrep the **identical argv runs on the server**, and when it does not the
+search ladder answers and the result is projected back into ripgrep's own output shape
+(a `--files` listing / `rg --json` match records), so the native tool layer formats it
+unchanged. Paths are POSIX paths under the workspace root, and a `path` argument outside
+that root is refused. `remote_search` remains the tool for regex syntax and explicit
+budgets, and for hosts where no regex engine is available. Likewise `pwsh` /
 `powershell` / `cmd` are client-native binaries and run on this machine. Remote file
 I/O and command execution (`read` / `write` / `edit` / `bash`) go through the replaced
 seams and **do** take effect on the server.

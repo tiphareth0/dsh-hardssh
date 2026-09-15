@@ -8,7 +8,7 @@
 | 插件的做法 | 结论 |
 |---|---|
 | 通过 `ctx.fs` / `ctx.subprocess`（DSH 标准服务）或标准工具（read / write / edit / bash / pwsh…）访问文件与进程 | **0 改动**。seam 已被替换，路由自动生效 |
-| 依赖 **glob / grep** 做检索 | 这两个工具走**本机打包的 ripgrep**（不经 `ctx.fs`），在远端会话里读不到服务器内容、会被**显式拒绝**；远端检索改用 `remote_search`（`mode="glob"` / `mode="grep"`）、`remote_ls`、`ssh_exec` |
+| 依赖 **glob / grep** 做检索 | **0 改动**（0.2.5 起）。它们走 `dsh-tool-fs-search` 打包的 ripgrep，spawn 会被 subprocess seam 交给绑定的主机：宿主机有 rg 就跑同一条 argv，否则由搜索阶梯代答并投影成 rg 的输出形状。需要正则/显式预算时仍可用 `remote_search`，列目录用 `remote_ls` |
 | 直接 `import 'node:fs'` / `node:child_process`，或自建「本地/远端」状态、自建 workspace 句柄 | 需要改接口，按第 1～3 节替换 |
 
 判定命令（在插件源码根执行）：

@@ -45,6 +45,12 @@ export interface SftpGrepLimits extends SftpSearchLimits {
   maxTotalBytes: number
 }
 
+/** Glob limits; `filesOnly` mirrors ripgrep's `--files` listing contract. */
+export interface SftpGlobLimits extends SftpSearchLimits {
+  maxHits: number
+  filesOnly?: boolean
+}
+
 export interface SftpNameHit {
   path: string
   isDir: boolean
@@ -115,12 +121,13 @@ export class SftpSearchService {
     return { hits, truncated: capped || outcome.truncated }
   }
 
-  /** Glob match on the root-relative path; files and directories both hit. */
-  async glob(alias: string, root: string, pattern: string, limits: SftpSearchLimits & { maxHits: number }): Promise<{ hits: string[]; truncated: boolean }> {
+  /** Glob match on the root-relative path; directories only when not `filesOnly`. */
+  async glob(alias: string, root: string, pattern: string, limits: SftpGlobLimits): Promise<{ hits: string[]; truncated: boolean }> {
     const matcher = globToRegExp(pattern.replace(/^\/+/, ''))
     const hits: string[] = []
     let capped = false
-    const outcome = await this.walk(alias, root, limits, (absPath) => {
+    const outcome = await this.walk(alias, root, limits, (absPath, entry) => {
+      if (limits.filesOnly === true && entry.type !== 'file') return undefined
       if (!matcher.test(this.relativeTo(root, absPath))) return undefined
       hits.push(absPath)
       if (hits.length >= limits.maxHits) {

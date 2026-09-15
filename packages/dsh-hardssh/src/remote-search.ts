@@ -302,7 +302,7 @@ export class RemoteSearchService {
    * the old template missed depth-1 hits of `**` patterns. The SFTP rung walks
    * and matches with the same matcher, so both rungs agree.
    */
-  async glob(target: SearchTarget, pattern: string, signal?: AbortSignal): Promise<RemoteGlobResult> {
+  async glob(target: SearchTarget, pattern: string, signal?: AbortSignal, options: { filesOnly?: boolean } = {}): Promise<RemoteGlobResult> {
     const relative = pattern.replace(/^\/+/, '')
     const capabilities = await this.probe(target.alias, signal)
     const matcher = globToRegExp(relative)
@@ -311,6 +311,7 @@ export class RemoteSearchService {
         ...SFTP_WALK,
         maxDepth: GLOB_MAX_DEPTH,
         maxHits: SEARCH_HIT_CAP,
+        ...(options.filesOnly === true ? { filesOnly: true } : {}),
         ...(signal === undefined ? {} : { signal }),
       })
       return { ...fallback, backend: 'sftp' }
@@ -331,6 +332,7 @@ export class RemoteSearchService {
     }
     const hits: string[] = []
     for (const hit of parseNameRecords(result.body)) {
+      if (options.filesOnly === true && hit.isDir) continue
       if (!matcher.test(relativeTo(target.root, hit.path))) continue
       hits.push(hit.path)
     }

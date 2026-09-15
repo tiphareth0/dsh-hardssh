@@ -33,10 +33,11 @@
 
 > 换句话说：**你已有的插件生态，开箱即可在服务器上跑。**
 
-**一个必须说清的例外：`glob` / `grep` 不在其中。** 它们走的是本机打包的 ripgrep（由
-`dsh-tool-fs-search` 直接用绝对路径 spawn），本机工具无法读取服务器上的工作区；把本机路径发到服务器上也不可能成立。
-所以本插件在 SSH 会话里**明确拒绝**这两种调用（不会静默返回「无匹配」），并提示改用远端检索工具
-`remote_search`（`mode="glob"` / `mode="grep"`）或 `ssh_exec`。同理，`pwsh` / `powershell` / `cmd`
+**`glob` / `grep` 也包含在内——通过「工作区搜索桥」。** 官方 `dsh-tool-fs-search` 会用本机绝对路径 spawn 打包的
+ripgrep，本机工具读不到服务器上的工作区。现在这条 spawn 不再被拒绝（0.2.5 之前的行为），而是由 subprocess seam 交给
+绑定的主机来回答：宿主机有 ripgrep 就**在服务器上执行同一条 argv**；没有则由搜索阶梯代答，并把结果投影回 ripgrep 自己的
+输出形状（`--files` 列表 / `rg --json` 匹配记录），原生工具层原样格式化。路径是工作区根下的 POSIX 路径，`path` 参数超出
+工作区根会被拒绝。需要正则语法与显式预算、或宿主机没有可用正则引擎时，仍用 `remote_search`。同理，`pwsh` / `powershell` / `cmd`
 是客户端原生二进制，在本机执行。远端文件读写与命令执行（`read` / `write` / `edit` / `bash`）走的是已替换的 seam，**在远端生效**。
 
 ### 2. 通用工作区底座：一套底座，适配所有插件
@@ -91,7 +92,7 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 - **SSH 工作区**：任意 `user@host` 的目录即可成为工作区。绑定的会话透明远端路由；侧边栏工作区带服务器标识（已连接 / 未连接，悬停显示远端目录）。
 - **SSH 运维（跟随会话）**：Web 终端（xterm + WebSocket PTY）、SFTP 上传下载、本地端口转发（访问内网数据库/服务）、当前服务器的远端命令。
 - **主机管理**：左侧「SSH 工作区」面板按服务器分组列出全部主机与工作区，带已连接 / 未连接徽章，支持增删改查与 `~/.ssh/config` 导入。
-- **Agent 工具**：`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`，以及远端工作区工具 `remote_status` / `remote_ls` / `remote_search`（远端检索，替代在 SSH 会话里不可用的 `glob` / `grep`）。
+- **Agent 工具**：`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`，以及远端工作区工具 `remote_status` / `remote_ls` / `remote_search`（远端检索：正则语法、显式预算，以及宿主机没有可用正则引擎时的明确报错；`glob` / `grep` 已能直接查远端，见上文）。
 - **多主机**：任意数量主机（`host` / `port` / `user` + 私钥、密码或 `SSH_AUTH_SOCK` agent），密码免提交、连接时输入；跨主机并发命令用 `ssh_cluster`。
 - **不修改官方内核**：只作为普通插件挂载（目录流、左侧全局入口行、右侧栏 Tab），`dsh-workspace` 内核原样工作。
 
