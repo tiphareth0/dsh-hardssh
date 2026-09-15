@@ -136,6 +136,7 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 - **可选集成**：`settings` / `systemPrompt` / `webServer` / 客户端 slot 缺失时**降级而不是失败**——插件照常加载，只是少了对应界面。
 - **可见状态**：`GET /api/dsh-ssh/health` 返回各功能面（SSH 工具、工作区运行时、文件路由、命令路由）的 `ready/degraded/failed`；非 ready 时工作区面板顶部会显示横幅说明原因。
 - **seam 失败不会拖垮宿主**：工作区运行时初始化失败时，替换行仍挂载本地后端（本机读写与命令继续可用），管理锚点窗口继续 fail closed；`ssh_*` 运维能力独立存活。
+- **远端路径规范化不依赖 GNU 工具**：`workspace.fs` 的路径解析改走协议级 SFTP `realpath`（缺失叶子按「最近已存在祖先 + 后缀」逐级解析），不再执行 `realpath -mz … | base64 -w0`，BSD/macOS、BusyBox 主机不会仅因缺少 GNU `realpath -m/-z` 就整条路径解析失败。远端搜索、`mktemp`/`chmod` 等仍按 POSIX + GNU 假设，见上表「远端主机」列。
 
 ## 快速开始
 

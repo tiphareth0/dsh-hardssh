@@ -4,7 +4,7 @@
  * the dsh-ssh engine's SFTP/exec primitives. Ported and adapted from
  * UynajGI/dsh-ssh (MIT, https://github.com/UynajGI/dsh-ssh) — the seam
  * contract (targets, versions, atomic writes, CRLF handling, canonical path
- * transport) is preserved; the connection owner is replaced by the shared
+ * resolution) is preserved; the connection owner is replaced by the shared
  * SshEngine and the working directory follows the mode store's remote root.
  *
  * @module dsh-hardssh/remote-fs
@@ -37,7 +37,6 @@ const FULL_READ_MAX_BYTES = 32 * 1024 * 1024
  *  backend's `diffBasisMaxBytes` (an over-limit file skips the diff basis and
  *  falls back to a whole-file diff instead of failing the write). */
 const DIFF_BASIS_MAX_BYTES = 10 * 1024 * 1024
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/
 
 /** Shape of one remote stat the provider works with (engine-normalized). */
 interface RemoteStats {
@@ -77,25 +76,6 @@ function decodeText(bytes: Uint8Array, displayPath: string): string {
   } catch (error: unknown) {
     throw new FsError(`cannot read "${displayPath}": invalid UTF-8 text`, 'FS_NOT_TEXT', { cause: error })
   }
-}
-
-/** Decode a base64-wrapped NUL-terminated canonical path from `realpath -mz`. */
-export function decodeCanonicalPath(encoded: string): string {
-  if (encoded.length === 0 || !BASE64.test(encoded)) {
-    throw new Error('fs-ssh: canonical path transport returned invalid base64')
-  }
-  const framed = Buffer.from(encoded, 'base64')
-  if (framed.toString('base64') !== encoded || framed.length < 2 || framed.at(-1) !== 0 || framed.subarray(0, -1).includes(0)) {
-    throw new Error('fs-ssh: canonical path transport returned invalid NUL framing')
-  }
-  let path: string
-  try {
-    path = new TextDecoder('utf-8', { fatal: true }).decode(framed.subarray(0, -1))
-  } catch (error: unknown) {
-    throw new Error('fs-ssh: canonical path is not valid UTF-8', { cause: error })
-  }
-  if (!posix.isAbsolute(path)) throw new Error('fs-ssh: canonical path is not absolute')
-  return path
 }
 
 function entryType(stats: RemoteStats): FsInfo['type'] {
@@ -212,6 +192,11 @@ export class SshFileSystem extends FileSystem {
     if (path.trim().length === 0) throw new FsError('file_path must be a non-empty string', 'FS_NOT_FOUND')
     const displayPath = posix.resolve(this.resolveRemoteCwd(opts?.cwd), path)
     try {
+      // Refuse a lexically-outside path before spending an SFTP round-trip on it
+      // (and so the answer does not depend on whether it exists remotely). The
+      // confinement check below still runs on the CANONICAL target, which is
+      // what catches a symlink that resolves out of the root.
+      this.confine(displayPath)
       const targetKey = await this.canonicalPath(displayPath, opts?.signal)
       assertNotAborted(opts?.signal, 'resolve')
       // Root confinement is checked on the CANONICAL target so a symlink that
@@ -496,12 +481,17 @@ export class SshFileSystem extends FileSystem {
     return { targetKey: FsTargetKey(canonical), displayPath: target.displayPath }
   }
 
+  /**
+   * Canonicalize over SFTP, not over a shell (P1-C). The previous
+   * `realpath -mz … | base64 -w0` exec assumed GNU userland, so every resolve
+   * on BSD/macOS/BusyBox hosts failed. `allowMissingLeaf` keeps the `-m`
+   * semantics this call site needs (writes target paths that do not exist yet).
+   */
   private async canonicalPath(path: string, signal?: AbortSignal): Promise<string> {
     const { alias } = this.current()
-    const result = await this.engine.exec(alias, `set -o pipefail; realpath -mz -- ${quoteShellArg(path)} | base64 -w0`, { timeoutMs: 10_000, signal })
+    const canonical = await this.engine.canonicalRemotePath(alias, path, { allowMissingLeaf: true, signal })
     signal?.throwIfAborted()
-    if (!result.success || result.exitCode !== 0) throw new Error(result.stderr || `realpath failed for ${path}`)
-    return decodeCanonicalPath(result.stdout.trim())
+    return canonical
   }
 
   private async probe(path: string, displayPath: string, signal?: AbortSignal): Promise<RemoteStats | undefined> {

@@ -40,6 +40,25 @@
   seam 入口不注册 provider、provider 先到/后到、未绑定时只回放最新状态、状态深拷贝、相同状态不产生时间戳抖动、
   optional service 晚到后自动刷新）与 `/health` 路由用例（200 快照 / 405 / 无注册表时 `{}` / 不触发任何 exec）。
 
+### 路径规范化不再依赖 GNU 工具（P1-C）
+
+- **规范路径改走 SFTP，不再 shell 出 `realpath -mz … | base64 -w0`**：旧实现要求远端有 GNU `realpath -m/-z`
+  与 `base64 -w0`，在 BSD/macOS、BusyBox 容器以及 Windows OpenSSH 上直接不可用（每次 `resolve` 都失败）。
+  现在 `SftpService.canonicalPath()` 用协议级 `sftp.realpath`（等价于服务端 `realpath(3)`），
+  缺失叶子/中间目录时退化为「最近已存在祖先 + 未解析后缀」的逐级解析；带 `sftpOperationTimeoutMs` 超时，
+  权限等**非「不存在」错误原样上抛**（不把 permission denied 当路径不存在），一路走到根都没有可解析祖先时
+  **fail closed**，绝不凭空编造规范形式。
+- **修掉一个由它引入的回归**：叶子缺失时后缀必须**包含叶子自身**。初版祖先遍历从 `dirname` 起步、后缀为空，
+  于是写新文件 `a/new.txt` 会被规范化成已存在的父目录 `a`，落盘时报
+  `cannot write "…/new.txt": not a regular file`。现有「写入并读回」「staging 失败」「提交后对账」等用例
+  立刻照出这个问题，现已补齐，并用 `tests/ssh/canonical-path.test.ts` 永久锁死：存在路径、符号链接、
+  单层/多层缺失叶子、未开启 `allowMissingLeaf`、无任何已存在祖先、permission、realpath 超时与 signal 透传。
+- **外层路径先做词法拒绝再拨号**：绝对路径落在工作区根之外时，在发起 SFTP 之前就按词法拒绝，
+  答复不再取决于该路径在远端是否存在，也省掉一次无意义的远端往返；**规范化后的包含性检查照旧执行**，
+  符号链接逃逸仍由它拦截（`link-out` → `/etc/passwd` 用例保留）。工作区文件读写仍先规范化再判界，不放松。
+- 删掉随旧协议失效的死代码（`base64` 规范路径解码器及其正则），测试用的假引擎改为按声明式符号链接表解析，
+  不再模拟 `realpath -mz` 命令输出。
+
 ### 修复
 
 - **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。

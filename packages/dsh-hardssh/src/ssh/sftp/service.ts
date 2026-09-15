@@ -1,6 +1,6 @@
 import type { Readable, Writable } from 'node:stream'
 import { existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs'
-import { dirname, join, relative, resolve as resolvePath } from 'node:path'
+import { dirname, join, posix, relative, resolve as resolvePath } from 'node:path'
 import { Client, type SFTPWrapper, type Stats } from 'ssh2'
 import type { ClientLease } from '../connection/lease.ts'
 import { createTransferProgressTracker } from '../transfer/progress.ts'
@@ -203,6 +203,77 @@ async realpaths(alias: string, remotePaths: readonly string[], signal?: AbortSig
       for (let i = 0; i < batch.length; i += 1) results[start + i] = resolved[i]!
     }
     return results
+  }, { signal })
+}
+
+/**
+ * Canonicalize one remote path over SFTP — no shell, no GNU tools.
+ *
+ * `sftp.realpath` is the protocol-level equivalent of `realpath(3)`: the server
+ * resolves the path itself, so this works on BSD/macOS, BusyBox images and any
+ * host whose `realpath` binary lacks `-m`/`-z` (the previous implementation
+ * shelled out to `realpath -mz … | base64 -w0`).
+ *
+ * The leaf may legitimately not exist yet (a file about to be written), so with
+ * `allowMissingLeaf` the path is canonicalized through its nearest EXISTING
+ * ancestor and the unresolved suffix is re-appended — the same semantics as
+ * `realpath -m`, resolved ancestor-by-ancestor on the server.
+ *
+ * @param alias - host alias owning the SFTP subsystem.
+ * @param remotePath - absolute POSIX path to canonicalize.
+ * @param options.allowMissingLeaf - canonicalize a not-yet-existing leaf/parents.
+ * @param options.signal - caller cancellation.
+ * @returns the canonical absolute path.
+ * @throws when the path (or, without `allowMissingLeaf`, a component) is absent,
+ *   or when the walk reaches the filesystem root without any resolvable ancestor.
+ */
+async canonicalPath(
+  alias: string,
+  remotePath: string,
+  options: { allowMissingLeaf?: boolean; signal?: AbortSignal } = {},
+): Promise<string> {
+  const { signal } = options
+  const allowMissingLeaf = options.allowMissingLeaf === true
+  return this.access.withClient(alias, async (client) => {
+    const sftp = await this.sftpFor(client)
+    const attempt = async (path: string): Promise<string | undefined> => {
+      try {
+        return await this.withSftpTimeout(
+          sftp,
+          new Promise<string>((resolve, reject) => {
+            sftp.realpath(path, (error, canonical) => error !== undefined ? reject(error) : resolve(canonical))
+          }),
+          this.sftpOpts.sftpOperationTimeoutMs,
+          `remote realpath timed out after ${this.sftpOpts.sftpOperationTimeoutMs}ms: ${path}`,
+        )
+      } catch (error) {
+        // "missing" is a normal answer for the leaf walk; anything else (timeout,
+        // permission, aborted request) must surface instead of being treated as
+        // absence — a permission error is not "this directory does not exist".
+        if (isMissingSftpError(error)) return undefined
+        throw error
+      }
+    }
+
+    const direct = await attempt(remotePath)
+    if (direct !== undefined) return direct
+    if (!allowMissingLeaf) throw new Error(`remote path does not exist: ${remotePath}`)
+
+    // The leaf itself is part of the unresolved suffix: `realpath -m` keeps it,
+    // so writes to a not-yet-existing file canonicalize to that file rather than
+    // to its parent directory.
+    let suffix: string[] = [posix.basename(remotePath)]
+    let cursor = posix.dirname(remotePath)
+    for (;;) {
+      const canonical = await attempt(cursor)
+      if (canonical !== undefined) return posix.join(canonical, ...suffix)
+      const parent = posix.dirname(cursor)
+      // Reached the root without finding anything that exists: fail closed
+      // rather than inventing a canonical form for a path nothing backs.
+      if (parent === cursor) throw new Error(`remote path has no existing ancestor: ${remotePath}`)
+      suffix = [posix.basename(cursor), ...suffix]
+      cursor = parent
+    }
   }, { signal })
 }
 

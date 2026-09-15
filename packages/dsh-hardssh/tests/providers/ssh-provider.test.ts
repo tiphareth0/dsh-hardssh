@@ -211,14 +211,9 @@ describe('SSH provider (cordis ctx) serves the real production classes', () => {
 
   it('rejects direct and canonical-symlink escapes from the workspace root', async () => {
     const fake = new FakeEngine()
-    const exec = fake.exec.bind(fake)
-    vi.spyOn(fake, 'exec').mockImplementation(async (alias, command) => {
-      if (command.includes("realpath -mz -- '/srv/app/link-out'")) {
-        const stdout = Buffer.from('/etc/passwd\0', 'utf8').toString('base64')
-        return { success: true, exitCode: 0, timedOut: false, stdout, stderr: '', durationMs: 0 }
-      }
-      return exec(alias, command)
-    })
+    // `link-out` is a remote symlink pointing outside the workspace root; the
+    // provider must confine the canonical (resolved) target, not the link name.
+    fake.symlinks.set('/srv/app/link-out', '/etc/passwd')
     const { connection } = await openSshConnection(fake, new Context())
     const fs = connection.get('workspace.fs') as unknown as SshFileSystem
 
@@ -229,14 +224,8 @@ describe('SSH provider (cordis ctx) serves the real production classes', () => {
 
   it('rejects every lexical and canonical escape shape on the production capability', async () => {
     const fake = new FakeEngine()
-    const originalExec = fake.exec.bind(fake)
-    vi.spyOn(fake, 'exec').mockImplementation(async (alias, command) => {
-      // A remotely-resolving symlink inside the root whose realpath leaves it.
-      if (command.includes('realpath -mz --') && command.includes('link-out')) {
-        return { success: true, exitCode: 0, timedOut: false, stdout: Buffer.from('/outside/new.txt\0').toString('base64'), stderr: '', durationMs: 0 }
-      }
-      return originalExec(alias, command)
-    })
+    // A remotely-resolving symlink inside the root whose target leaves it.
+    fake.symlinks.set('/srv/app/link-out', '/outside')
     const ctx = new Context()
     const { connection } = await openSshConnection(fake, ctx)
     const fs = connection.get('workspace.fs') as unknown as SshFileSystem

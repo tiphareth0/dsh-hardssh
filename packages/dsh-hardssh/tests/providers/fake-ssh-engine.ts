@@ -6,16 +6,17 @@
  *
  * The fake is scripted like tests/remote-search.test.ts: `exec` returns
  * constructed output for the exact remote-command templates the production
- * classes issue (realpath canonicalization, chmod, env dump), and the
- * SFTP-shaped calls (stat/ls/lstat/readFile/writeFile/mkdir/rm/rename/
- * realpaths) operate on an in-memory POSIX path map.
+ * classes issue (chmod, env dump), and the SFTP-shaped calls (stat/ls/lstat/
+ * readFile/writeFile/mkdir/rm/rename/realpaths/canonicalRemotePath) operate on
+ * an in-memory POSIX path map.
  */
 
+import { posix } from 'node:path'
 import { PassThrough, Writable } from 'node:stream'
 import type { ExecResult, RemoteDirEntry } from '../../src/ssh/protocol.ts'
 import type { ExecSession, SshEngine } from '../../src/ssh/engine.ts'
 
-/** Lexically canonicalize an absolute POSIX path (no symlinks exist in the fake). */
+/** Lexically canonicalize an absolute POSIX path (declared `symlinks` are applied separately). */
 export function canonicalPosix(path: string): string {
   const segments = (path.startsWith('/') ? path : `/${path}`).split('/')
   const out: string[] = []
@@ -127,6 +128,8 @@ export class FakeEngine {
   readonly readStreams: PassThrough[] = []
   /** Path/range forwarded to readStream (byte-window compatibility surface). */
   readonly readStreamCalls: Array<{ remotePath: string; range?: { offset: number; length: number } }> = []
+  /** Declared symlink resolutions (canonical link path → canonical target). */
+  readonly symlinks = new Map<string, string>()
   /** Whether someone told the shared engine to shut down (close isolation check). */
   disposed = false
   /**
@@ -181,14 +184,6 @@ export class FakeEngine {
     if (command === 'env -0') {
       return this.ok('PATH=/usr/bin\0HOME=/root\0')
     }
-    // `realpath -mz -- '<path>' | base64 -w0`: canonical path transport used by
-    // SshFileSystem.resolve / listDir; replies with base64(NUL-framed canonical).
-    const realpath = /^set -o pipefail; realpath -mz -- (.+) \| base64 -w0$/.exec(command)
-    if (realpath !== null) {
-      const target = unquoteShellToken(realpath[1]!)
-      const framed = `${canonicalPosix(target)}\0`
-      return this.ok(Buffer.from(framed, 'utf8').toString('base64'))
-    }
     // `chmod <mode> -- '<path>'`: staging-file mode fix in writeAtomic.
     const chmod = /^chmod \d+ -- (.+)$/.exec(command)
     if (chmod !== null) {
@@ -240,7 +235,47 @@ export class FakeEngine {
   }
 
   async realpaths(_alias: string, remotePaths: readonly string[]): Promise<string[]> {
-    return remotePaths.map(path => canonicalPosix(path))
+    return remotePaths.map(path => this.resolveSymlinks(canonicalPosix(path)))
+  }
+
+  /** Apply the longest declared symlink prefix to one canonical path. */
+  private resolveSymlinks(canonical: string): string {
+    let best: { from: string; to: string } | undefined
+    for (const [from, to] of this.symlinks) {
+      if (canonical !== from && !canonical.startsWith(`${from}/`)) continue
+      if (best === undefined || from.length > best.from.length) best = { from, to }
+    }
+    if (best === undefined) return canonical
+    return `${best.to}${canonical.slice(best.from.length)}`
+  }
+
+  /**
+   * SFTP-level canonicalization (P1-C): the real engine resolves through
+   * `sftp.realpath` and an ancestor walk for a missing leaf. The fake mirrors
+   * that against its in-memory map plus `symlinks`.
+   */
+  async canonicalRemotePath(
+    _alias: string,
+    remotePath: string,
+    options?: { allowMissingLeaf?: boolean; signal?: AbortSignal },
+  ): Promise<string> {
+    const direct = canonicalPosix(remotePath)
+    // A declared link resolves whether or not its target is seeded in the map
+    // (the real `sftp.realpath` resolves on the host, where the target exists).
+    const linked = this.resolveSymlinks(direct)
+    if (linked !== direct) return linked
+    if (this.files.has(direct)) return direct
+    if (options?.allowMissingLeaf !== true) throw this.notFound(remotePath)
+    let suffix: string[] = [posix.basename(direct)]
+    let cursor = posix.dirname(direct)
+    for (;;) {
+      const resolved = this.resolveSymlinks(cursor)
+      if (this.files.has(resolved)) return posix.join(resolved, ...suffix)
+      const parent = posix.dirname(cursor)
+      if (parent === cursor) throw this.notFound(remotePath)
+      suffix = [posix.basename(cursor), ...suffix]
+      cursor = parent
+    }
   }
 
   async readStream(
@@ -331,12 +366,4 @@ export class FakeEngine {
 /** Cast a FakeEngine to the SshEngine type (same style as tests/remote-search.test.ts). */
 export function asSshEngine(fake: FakeEngine): SshEngine {
   return fake as unknown as SshEngine
-}
-
-/** Undo quoteShellArg's single-quote wrapping for fake-command parsing. */
-function unquoteShellToken(raw: string): string {
-  if (raw.length >= 2 && raw.startsWith("'") && raw.endsWith("'")) {
-    return raw.slice(1, -1).replace(/'\\''/g, "'")
-  }
-  return raw
 }

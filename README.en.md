@@ -182,6 +182,7 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 - **Optional integrations** (`settings` / `systemPrompt` / `webServer` / client slots) degrade instead of failing: the plugin loads and only the corresponding surface is missing.
 - **Visible state**: `GET /api/dsh-ssh/health` reports `ready/degraded/failed` per surface (SSH tools, workspace runtime, file routing, command routing); the workspace panel shows a banner explaining any non-ready surface.
 - **A failing seam cannot take down the host**: if the workspace runtime fails to initialize, the replacement rows still mount the local backend (local I/O and commands keep working), the managed anchor window stays fail-closed, and the `ssh_*` capability survives on its own.
+- **Remote path canonicalization needs no GNU tools**: `workspace.fs` path resolution now uses the protocol-level SFTP `realpath` (a missing leaf is resolved through its nearest existing ancestor with the suffix re-appended) instead of running `realpath -mz … | base64 -w0`, so a BSD/macOS or BusyBox host no longer breaks every path resolution just for lacking GNU `realpath -m/-z`. Remote search and `mktemp`/`chmod` still assume POSIX + GNU — see the "Remote hosts" column above.
 
 ## Quick start
 

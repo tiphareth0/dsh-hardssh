@@ -33,7 +33,7 @@ import type {
 } from '../../base/capability.ts'
 import type { SshEngine } from '../../ssh/engine.ts'
 import type { WorkspaceState } from '../../protocol.ts'
-import { decodeCanonicalPath, SshFileSystem } from '../../remote/remote-fs.ts'
+import { SshFileSystem } from '../../remote/remote-fs.ts'
 import { SshSubprocessRuntime } from '../../remote/remote-subprocess.ts'
 import { RemoteSearchService } from '../../remote-search.ts'
 
@@ -146,6 +146,11 @@ export function joinRemoteRoot(root: string, path: string): string {
   return candidate
 }
 
+/**
+ * Confine one workspace-relative path to the workspace root, canonicalizing
+ * BOTH sides over SFTP (P1-C) so the comparison cannot be defeated by a symlink
+ * and does not depend on the host having GNU `realpath -m`/`base64 -w0`.
+ */
 async function canonicalRemotePath(
   engine: SshEngine,
   alias: string,
@@ -155,13 +160,10 @@ async function canonicalRemotePath(
 ): Promise<string> {
   signal?.throwIfAborted()
   const candidate = joinRemoteRoot(root, path)
-  const canonical = async (value: string): Promise<string> => {
-    const result = await engine.exec(alias, `set -o pipefail; realpath -mz -- ${quote(value)} | base64 -w0`, 10_000)
-    signal?.throwIfAborted()
-    if (!result.success || result.exitCode !== 0) throw new Error(result.stderr || `realpath failed for '${value}'`)
-    return decodeCanonicalPath(result.stdout.trim())
-  }
+  const canonical = (value: string): Promise<string> =>
+    engine.canonicalRemotePath(alias, value, { allowMissingLeaf: true, signal })
   const [canonicalRoot, canonicalCandidate] = await Promise.all([canonical(joinRemoteRoot(root, '.')), canonical(candidate)])
+  signal?.throwIfAborted()
   if (canonicalRoot !== '/' && canonicalCandidate !== canonicalRoot && !canonicalCandidate.startsWith(`${canonicalRoot}/`)) {
     throw new Error(`workspace.ssh-outside-root: '${path}' resolves outside '${canonicalRoot}'`)
   }

@@ -471,6 +471,20 @@ export class SshEngine {
   }
 
   /**
+   * Canonicalize one remote path without a shell: `sftp.realpath` plus an
+   * ancestor walk when the leaf (or its parents) may not exist yet. Replaces
+   * the former `realpath -mz … | base64 -w0` exec, which assumed GNU userland
+   * and therefore broke on BSD/macOS/BusyBox hosts.
+   */
+  canonicalRemotePath(
+    alias: string,
+    remotePath: string,
+    options?: { allowMissingLeaf?: boolean; signal?: AbortSignal },
+  ): Promise<string> {
+    return this.sftpService.canonicalPath(alias, remotePath, options ?? {})
+  }
+
+  /**
    * Read one remote file fully into memory (text or binary) with its mtime.
    * The workspace plugin's text gate (UTF-8 + size caps) lives on its caller.
    */
