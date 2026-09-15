@@ -251,7 +251,7 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
   private active: SubprocessHandle | undefined
   private readonly abort = new AbortController()
   private settled = false
-  private rejectForced: ((error: Error) => void) | undefined
+  private resolveForced: ((outcome: SubprocessOutcome) => void) | undefined
 
   constructor(
     private readonly deps: SearchBridgeDeps,
@@ -269,7 +269,7 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
       : undefined
 
     spec.signal?.addEventListener('abort', this.onAbort, { once: true })
-    const forced = new Promise<SubprocessOutcome>((_resolve, reject) => { this.rejectForced = reject })
+    const forced = new Promise<SubprocessOutcome>((resolve) => { this.resolveForced = resolve })
     this.done = Promise.race([this.run(), forced]).finally(() => { this.settle() })
     void this.done.catch(() => {})
     if (spec.signal?.aborted === true) this.terminate()
@@ -295,8 +295,12 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
       this.active.terminate()
       return
     }
+    this.writeStderr('dsh-hardssh: remote search aborted (caller cancellation)')
     this.abort.abort(new Error('dsh-hardssh: search bridge terminated'))
-    this.rejectForced?.(new Error('dsh-hardssh: emulated search terminated'))
+    // Settle rather than reject: the native tool turns a rejected `done` into an
+    // opaque "provider failure" without consulting its own abort signal, while a
+    // settled outcome lets it report SEARCH_ABORTED.
+    this.resolveForced?.({ exitCode: 2, signal: null })
   }
 
   waitForExit(signal?: AbortSignal): Promise<boolean> {
@@ -316,7 +320,7 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
   private settle(): void {
     if (this.settled) return
     this.settled = true
-    this.rejectForced = undefined
+    this.resolveForced = undefined
     this.spec.signal?.removeEventListener('abort', this.onAbort)
     this.stdout?.end()
     this.stderr?.end()
@@ -325,6 +329,24 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
   }
 
   private async run(): Promise<SubprocessOutcome> {
+    try {
+      return await this.perform()
+    } catch (error: unknown) {
+      // The native caller only reads stderr for a SETTLED outcome, and turns a
+      // REJECTED `done` into an opaque "ripgrep provider failure". Every
+      // post-spawn failure therefore settles as exit 2 with its reason on
+      // stderr, so the tool reports the real cause (grep's "Unmatched (" for an
+      // rg-only regex, an out-of-root search path, …). A caller abort still
+      // surfaces as SEARCH_ABORTED: the tool checks its own signal immediately
+      // after `done` settles.
+      const message = error instanceof Error ? error.message : String(error)
+      const aborted = this.spec.signal?.aborted === true || this.abort.signal.aborted
+      this.writeStderr(`${aborted ? 'dsh-hardssh: remote search aborted' : 'dsh-hardssh: remote search failed'}: ${message}`)
+      return { exitCode: 2, signal: null }
+    }
+  }
+
+  private async perform(): Promise<SubprocessOutcome> {
     const state = this.deps.getState()
     if (state.mode !== 'remote' || state.alias === undefined) {
       throw new Error('subprocess-ssh: not in remote mode — switch the GUI to SSH mode first')
@@ -335,7 +357,7 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
     // Prefer running the IDENTICAL argv on a host that has ripgrep: the native
     // tool layer then formats real rg output (paths, ordering, caps and all).
     const capabilities = await this.deps.engine.capabilities(state.alias, this.spec.signal)
-    if (this.abort.signal.aborted) throw new Error('dsh-hardssh: emulated search aborted')
+    if (this.abort.signal.aborted) throw new Error('emulated search aborted')
     if (capabilities.rg.available) {
       const forwarded = this.deps.forward({
         ...this.spec,
@@ -383,6 +405,17 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
     if (mode === 'pipe') this.stdout?.write(bytes)
     else if (mode === 'inherit') process.stdout.write(bytes)
     else this.ownStdoutCollector?.push(bytes)
+  }
+
+  /** Diagnostic tail for a failed search (the native tool shows this excerpt). */
+  private writeStderr(text: string): void {
+    if (text === '') return
+    const safe = typeof this.deps.engine.redact === 'function' ? this.deps.engine.redact(text) : text
+    const mode = this.spec.stdio.stderr
+    const bytes = Buffer.from(`${safe}\n`, 'utf8')
+    if (mode === 'pipe') this.stderr?.write(bytes)
+    else if (mode === 'inherit') process.stderr.write(bytes)
+    else this.ownStderrCollector?.push(bytes)
   }
 }
 

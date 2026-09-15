@@ -227,10 +227,34 @@ describe('search bridge rungs', () => {
     )
   })
 
+  it('reports a failed search as exit 2 with its reason on stderr, never as an opaque rejection', async () => {
+    const h = harness()
+    h.search.grep.mockRejectedValue(new Error('remote grep failed with exit code 2 (grep: Unmatched ( or \\()'))
+    const handle = h.spawner.spawn(h.spec({ argv: grepArgv('(unclosed') }))
+    // Settled, not rejected: the native tool reads stderr only for a settled
+    // outcome, so a rejection would reach the model as a bare "provider failure".
+    await expect(handle.done).resolves.toEqual({ exitCode: 2, signal: null })
+    expect(handle.collected.stderr?.readFrom(0).text ?? '').toContain('Unmatched (')
+    expect(handle.collected.stdout?.readFrom(0).text ?? '').toBe('')
+  })
+
+  it('settles a caller abort without an opaque failure (the tool classifies the abort itself)', async () => {
+    const h = harness()
+    const controller = new AbortController()
+    h.search.glob.mockImplementation(async () => {
+      controller.abort(new Error('tool timed out'))
+      throw new Error('aborted while searching')
+    })
+    const handle = h.spawner.spawn(h.spec({ signal: controller.signal }))
+    await expect(handle.done).resolves.toEqual({ exitCode: 2, signal: null })
+    expect(handle.collected.stderr?.readFrom(0).text ?? '').toContain('aborted')
+  })
+
   it('refuses a search root outside the workspace and runs nothing', async () => {
     const h = harness()
     const handle = h.spawner.spawn(h.spec({ argv: globArgv('**/*.ts', '/etc') }))
-    await expect(handle.done).rejects.toThrow(/outside the workspace root/)
+    await expect(handle.done).resolves.toEqual({ exitCode: 2, signal: null })
+    expect(handle.collected.stderr?.readFrom(0).text ?? '').toContain('outside the workspace root')
     expect(h.search.glob).not.toHaveBeenCalled()
     expect(h.forward).not.toHaveBeenCalled()
   })
