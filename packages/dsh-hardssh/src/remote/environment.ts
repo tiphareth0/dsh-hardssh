@@ -89,7 +89,17 @@ async function fetchScrubbedEnvironment(engine: SshEngine, alias: string): Promi
     if (name.includes('\0')) continue
     environment.set(name, record.slice(separator + 1))
   }
-  return scrubRemoteEnvironment(environment)
+  const scrubbed = scrubRemoteEnvironment(environment)
+  if (!scrubbed.has('HOME')) {
+    // A stripped account (or a shell that exports no HOME) makes every
+    // `$HOME/...` resolve to `/`, which is exactly how site scripts end up
+    // writing `/ .ssh` — the passwd entry is the authoritative fallback. One
+    // extra round trip, and only when the dump carried no HOME.
+    const passwd = await engine.exec(alias, 'getent passwd "$(id -un)" 2>/dev/null | cut -d: -f6', 10_000).catch(() => undefined)
+    const home = passwd?.success === true ? passwd.stdout.split('\n')[0]?.trim() ?? '' : ''
+    if (home.startsWith('/')) scrubbed.set('HOME', home)
+  }
+  return scrubbed
 }
 
 /**
@@ -136,8 +146,14 @@ export function serializeEnvironment(
     if (name.length === 0 || name.includes('=') || name.includes('\0') || value?.includes('\0') === true) {
       throw new Error('subprocess-ssh: environment entries require non-empty NUL-free names without = and NUL-free values')
     }
-    if (value === undefined) environment.delete(name)
-    else environment.set(name, value)
+    // An explicit `undefined` removes a name — EXCEPT for the login-critical
+    // ones: a caller spreading its own environment (Windows has USERPROFILE, not
+    // HOME) must not be able to delete the remote HOME the scan resolved.
+    if (value === undefined) {
+      if (!CRITICAL_ENV_ORDER.includes(name as typeof CRITICAL_ENV_ORDER[number])) environment.delete(name)
+      continue
+    }
+    environment.set(name, value)
   }
   const ordered = [...environment].sort(([a], [b]) => priorityOf(a) - priorityOf(b))
   return ordered.map(([name, value]) => quoteShellArg(`${name}=${value}`)).join(' ')

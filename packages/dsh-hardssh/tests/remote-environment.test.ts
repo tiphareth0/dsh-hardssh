@@ -108,11 +108,39 @@ describe('readScrubbedRemoteEnvironment (P1-12)', () => {
     expect(env.get('B')).toBe('line1\nline2')
   })
 
-  it('serializeEnvironment overlays and deletes explicit entries', async () => {
+  it('serializeEnvironment overlays explicit entries and protects login-critical deletes', async () => {
     const fake = new FakeEngine()
     const env = await readScrubbedRemoteEnvironment(engine(fake), 'a')
     const serialized = serializeEnvironment(env, { PATH: '/custom', HOME: undefined })
     expect(serialized).toContain('PATH=/custom')
-    expect(serialized).not.toContain('HOME=/root')
+    // A caller spreading its own environment can carry `HOME: undefined`
+    // (Windows has USERPROFILE, not HOME); that must never delete the remote
+    // HOME the scan resolved — an empty HOME is how `~/.ssh` becomes `/.ssh`.
+    expect(serialized).toContain('HOME=/root')
+  })
+
+  it('still deletes an explicit undefined for a non-critical name', async () => {
+    const serialized = serializeEnvironment(new Map([['HOME', '/root'], ['FOO', 'bar']]), { FOO: undefined })
+    expect(serialized).toContain('HOME=/root')
+    expect(serialized).not.toContain('FOO')
+  })
+
+  it('fills HOME from the passwd entry when the login dump carries none', async () => {
+    class CommandAwareEngine {
+      calls: string[] = []
+      constructor(private readonly byCommand: ReadonlyArray<{ match: string; stdout: string }>) {}
+      async exec(_alias: string, command: string): Promise<{ success: boolean; exitCode: number; stdout: string; stderr: string }> {
+        this.calls.push(command)
+        const hit = this.byCommand.find(entry => command.includes(entry.match))
+        return { success: true, exitCode: 0, stdout: hit?.stdout ?? '', stderr: '' }
+      }
+    }
+    const fake = new CommandAwareEngine([
+      { match: 'env -0', stdout: 'PATH=/usr/bin\0' },
+      { match: 'getent passwd', stdout: '/data/home/alice\n' },
+    ])
+    const env = await readScrubbedRemoteEnvironment(fake as unknown as SshEngine, 'nodump')
+    expect(env.get('HOME')).toBe('/data/home/alice')
+    expect(fake.calls).toHaveLength(2)
   })
 })
