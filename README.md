@@ -128,7 +128,7 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | 插件版本 | 已验证 DSH | Node | 远端主机 |
 |---|---|---|---|
-| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6`（生产环境实测 `0.1.5-rc.1`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX + GNU 用户态（CentOS/RHEL 等实测） |
+| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6`（生产环境实测 `0.1.5-rc.1`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
 
 > 更早的 `0.1.5-alpha.1` **不支持**：`dsh-client-ui-slots@0.1.5-alpha.1` 没有 `main` 槽位，工作区面板无处挂载（矩阵实测 typecheck 直接失败）。见 `compat/README.md`。
 
@@ -136,7 +136,8 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 - **可选集成**：`settings` / `systemPrompt` / `webServer` / 客户端 slot 缺失时**降级而不是失败**——插件照常加载，只是少了对应界面。
 - **可见状态**：`GET /api/dsh-ssh/health` 返回各功能面（SSH 工具、工作区运行时、文件路由、命令路由）的 `ready/degraded/failed`；非 ready 时工作区面板顶部会显示横幅说明原因。
 - **seam 失败不会拖垮宿主**：工作区运行时初始化失败时，替换行仍挂载本地后端（本机读写与命令继续可用），管理锚点窗口继续 fail closed；`ssh_*` 运维能力独立存活。
-- **远端路径规范化不依赖 GNU 工具**：`workspace.fs` 的路径解析改走协议级 SFTP `realpath`（缺失叶子按「最近已存在祖先 + 后缀」逐级解析），不再执行 `realpath -mz … | base64 -w0`，BSD/macOS、BusyBox 主机不会仅因缺少 GNU `realpath -m/-z` 就整条路径解析失败。远端搜索、`mktemp`/`chmod` 等仍按 POSIX + GNU 假设，见上表「远端主机」列。
+- **远端路径规范化不依赖 GNU 工具**：`workspace.fs` 的路径解析改走协议级 SFTP `realpath`（缺失叶子按「最近已存在祖先 + 后缀」逐级解析），不再执行 `realpath -mz … | base64 -w0`，BSD/macOS、BusyBox 主机不会仅因缺少 GNU `realpath -m/-z` 就整条路径解析失败。
+- **远端搜索按实测能力分三级**：连接建立后探测一次该主机能用什么（`rg`、`find -printf`/`-mmin`、`grep -Z`/`--exclude-dir`、`mktemp`，**不猜 `uname`**），内容检索走 `rg` → POSIX `grep` → **SFTP 遍历**兜底，文件名/glob 走 POSIX `find` → SFTP 兜底；SFTP 兜底不执行任何远端命令，带深度/条数/字节预算并跳过 `.git`、`node_modules` 与符号链接目录。`remote_search` 支持 `syntax="fixed"`（默认）或 `"regex"`，正则需要主机有 `rg` 或 GNU `grep`，否则明确报错。
 
 ## 快速开始
 

@@ -174,7 +174,7 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | Plugin | Verified DSH | Node | Remote hosts |
 |---|---|---|---|
-| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6` (production verified on `0.1.5-rc.1`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX with GNU userland (verified on CentOS/RHEL) |
+| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6` (production verified on `0.1.5-rc.1`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
 
 > The earlier `0.1.5-alpha.1` is **not** supported: `dsh-client-ui-slots@0.1.5-alpha.1` declares no `main` slot, so the workspace panel has nowhere to mount (the matrix fails typecheck). See `compat/README.md`.
 
@@ -182,7 +182,8 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 - **Optional integrations** (`settings` / `systemPrompt` / `webServer` / client slots) degrade instead of failing: the plugin loads and only the corresponding surface is missing.
 - **Visible state**: `GET /api/dsh-ssh/health` reports `ready/degraded/failed` per surface (SSH tools, workspace runtime, file routing, command routing); the workspace panel shows a banner explaining any non-ready surface.
 - **A failing seam cannot take down the host**: if the workspace runtime fails to initialize, the replacement rows still mount the local backend (local I/O and commands keep working), the managed anchor window stays fail-closed, and the `ssh_*` capability survives on its own.
-- **Remote path canonicalization needs no GNU tools**: `workspace.fs` path resolution now uses the protocol-level SFTP `realpath` (a missing leaf is resolved through its nearest existing ancestor with the suffix re-appended) instead of running `realpath -mz … | base64 -w0`, so a BSD/macOS or BusyBox host no longer breaks every path resolution just for lacking GNU `realpath -m/-z`. Remote search and `mktemp`/`chmod` still assume POSIX + GNU — see the "Remote hosts" column above.
+- **Remote path canonicalization needs no GNU tools**: `workspace.fs` path resolution now uses the protocol-level SFTP `realpath` (a missing leaf is resolved through its nearest existing ancestor with the suffix re-appended) instead of running `realpath -mz … | base64 -w0`, so a BSD/macOS or BusyBox host no longer breaks every path resolution just for lacking GNU `realpath -m/-z`.
+- **Remote search picks its rung from a probed capability report**: once per connection generation the plugin asks the host what it can actually do (`rg`, `find -printf`/`-mmin`, `grep -Z`/`--exclude-dir`, `mktemp` — never inferred from `uname`). Content search runs `rg` → POSIX `grep` → an **SFTP walk**, filename/glob search runs POSIX `find` → the same SFTP walk. The SFTP rung runs no remote command at all, carries depth/hit/byte budgets, and skips `.git`, `node_modules` and symlinked directories. `remote_search` accepts `syntax="fixed"` (default) or `"regex"`; regex needs ripgrep or GNU grep on the host and fails loudly otherwise.
 
 ## Quick start
 
