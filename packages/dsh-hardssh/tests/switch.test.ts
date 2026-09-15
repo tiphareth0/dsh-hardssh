@@ -438,11 +438,19 @@ describe('SwitchSubprocessRuntime cwd routing', () => {
     // ladder — either way the local anchor is never searched.
     const localSpawn = vi.fn(() => ({ pid: 1 }) as unknown as SubprocessHandle)
     const remoteSpawn = vi.fn(() => ({ pid: -1 }) as unknown as SubprocessHandle)
+    const foreignSpawn = vi.fn(() => ({ pid: -1 }) as unknown as SubprocessHandle)
     const local = { spawn: localSpawn } as unknown as SubprocessRuntime
-    const remote = { spawn: remoteSpawn } as unknown as SubprocessRuntime
+    // The bound world runtime advertises the workspace-search bridge (P1-E);
+    // `foreign` is a remote world that does not.
+    const remote = { spawn: remoteSpawn, handlesClientSearchSpawns: true } as unknown as SubprocessRuntime
+    const foreign = { spawn: foreignSpawn } as unknown as SubprocessRuntime
     const switcher = new SwitchSubprocessRuntime(new Context(), {
       local,
-      worldFor: cwd => (cwd !== undefined && cwd.startsWith('/workspace/a') ? remote : undefined),
+      worldFor: cwd => cwd === undefined
+        ? undefined
+        : cwd.startsWith('/workspace/a')
+          ? remote
+          : cwd.startsWith('/workspace/foreign') ? foreign : undefined,
     })
     const search = (exe: string, cwd: string): Parameters<typeof switcher.spawn>[0] => ({
       argv: [exe, '--no-config', '--files'], cwd, stdio: { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' }, graceMs: 1000,
@@ -456,6 +464,13 @@ describe('SwitchSubprocessRuntime cwd routing', () => {
     switcher.spawn(search('/opt/dsh/ripgrep/bin/rg', '/workspace/a'))
     expect(localSpawn).not.toHaveBeenCalled()
     expect(remoteSpawn).toHaveBeenCalledTimes(2)
+
+    // A world runtime that does NOT advertise the workspace-search bridge keeps
+    // the explicit refusal: a client path must never reach an incapable host.
+    expect(() => switcher.spawn(search('C:\\ProgramData\\rg\\rg.exe', '/workspace/foreign')))
+      .toThrow(/client-side search tool and cannot read the remote workspace/)
+    expect(foreignSpawn).not.toHaveBeenCalled()
+    expect(localSpawn).not.toHaveBeenCalled()
 
     // A BARE `rg` is an ordinary server command and belongs to the remote world.
     switcher.spawn(search('rg', '/workspace/a'))

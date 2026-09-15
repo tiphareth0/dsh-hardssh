@@ -17,7 +17,7 @@ import type {
   SubprocessTerminalSpawnSpec,
 } from '@deepseek-ai/dsh-subprocess'
 import type { Context } from '@deepseek-ai/cordis'
-import { isClientSearchHelperPath } from '../remote/search-bridge.ts'
+import { isClientSearchHelperPath, searchBridgeRefusal } from '../remote/search-bridge.ts'
 
 /** Route one spawn cwd to a runtime. */
 export interface SwitchSubprocessDeps {
@@ -93,7 +93,13 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
     if (runtime === undefined) return this.deps.local
     const names = this.deps.clientToolNames ?? DEFAULT_CLIENT_TOOL_NAMES
     const exe = spec.argv !== undefined && spec.argv.length > 0 ? spec.argv[0] : ''
-    if (isClientSearchHelperPath(exe)) return runtime
+    if (isClientSearchHelperPath(exe)) {
+      // Only a runtime that SAYS it serves these spawns may receive one; any
+      // other provider keeps the explicit refusal (a client path must never be
+      // sent to a host that cannot answer it).
+      if ((runtime as { handlesClientSearchSpawns?: boolean }).handlesClientSearchSpawns === true) return runtime
+      throw searchBridgeRefusal(exe)
+    }
     return isClientNativeExecutable(exe, names) ? this.deps.local : runtime
   }
 

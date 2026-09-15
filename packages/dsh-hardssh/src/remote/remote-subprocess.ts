@@ -48,6 +48,14 @@ function delay(ms: number): Promise<void> {
 
 /** SSH command manager registered as `ctx.subprocess` (remote mode). */
 export class SshSubprocessRuntime extends SubprocessRuntime {
+  /**
+   * Marker the routing facade reads: this runtime answers client-side search
+   * helper spawns through its workspace-search bridge (P1-E). A world runtime
+   * WITHOUT this marker keeps the explicit refusal instead, so a provider that
+   * cannot serve the search never sends a client path to its host.
+   */
+  readonly handlesClientSearchSpawns = true
+
   private readonly live = new Set<SshSubprocessHandle>()
   private readonly terminals = new Set<SshTerminalHandle>()
   private readonly spillDir = mkdtempSync(join(tmpdir(), 'dsh-subprocess-ssh-'))
