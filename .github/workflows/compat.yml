@@ -1,0 +1,53 @@
+name: compatibility
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    name: Node ${{ matrix.node }} / ${{ matrix.dsh }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22.19.0', '24']
+        dsh: ['dsh-0.1.5-alpha.1', 'dsh-0.1.5-rc.1']
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.24.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - name: Apply DSH component set
+        run: node scripts/compat/apply-set.mjs compat/${{ matrix.dsh }}.json
+
+      - name: Install matrix dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Test default suite
+        run: pnpm test
+
+      - name: Test complete suite once
+        if: matrix.node == '24' && matrix.dsh == 'dsh-0.1.5-rc.1'
+        run: pnpm test:all
+
+      - name: Build
+        run: pnpm --filter @tiphareth/dsh-hardssh build
+
+      - name: Verify publish shape
+        working-directory: packages/dsh-hardssh
+        run: npm pack --dry-run --ignore-scripts

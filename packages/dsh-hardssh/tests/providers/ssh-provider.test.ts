@@ -151,6 +151,30 @@ describe('SSH provider (cordis ctx) serves the real production classes', () => {
     await connection.close()
   })
 
+  it('implements the DSH 0.1.5 byte-window contract without reading the whole file', async () => {
+    const fake = new FakeEngine()
+    fake.seedFile('/srv/app/window.bin', '0123456789')
+    const { connection } = await openSshConnection(fake, new Context())
+    const fs = connection.get('workspace.fs') as unknown as SshFileSystem & {
+      readByteRange(target: Awaited<ReturnType<SshFileSystem['resolve']>>, range: { offset: number; length: number }): Promise<Uint8Array>
+    }
+    const target = await fs.resolve('window.bin')
+
+    await expect(fs.readByteRange(target, { offset: 3, length: 4 }))
+      .resolves.toEqual(Buffer.from('3456'))
+    expect(fake.readStreamCalls.at(-1)).toEqual({
+      remotePath: '/srv/app/window.bin',
+      range: { offset: 3, length: 4 },
+    })
+    // Zero-length still validates that the target is a regular file, but does
+    // not acquire a stream/lease.
+    const streamsBefore = fake.readStreams.length
+    await expect(fs.readByteRange(target, { offset: 100, length: 0 }))
+      .resolves.toEqual(new Uint8Array(0))
+    expect(fake.readStreams).toHaveLength(streamsBefore)
+    await connection.close()
+  })
+
   it('destroys a stalled stream and reports FS_ABORTED for non-Error abort reasons', async () => {
     const fake = new FakeEngine()
     fake.seedFile('/srv/app/stalled.txt', 'stream fixture')

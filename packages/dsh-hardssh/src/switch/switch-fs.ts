@@ -17,7 +17,7 @@
  * @module dsh-hardssh/switch-fs
  */
 
-import { FileSystem } from '@deepseek-ai/dsh-fs'
+import { FileSystem, FsError } from '@deepseek-ai/dsh-fs'
 import type {
   FsDirEntry,
   FsEditOutcome,
@@ -340,6 +340,29 @@ export class SwitchFileSystem extends FileSystem {
     const decoded = this.decode(String(target.targetKey))
     if (decoded === undefined) throw new Error('fs-ssh: cannot route target')
     return decoded.world.backend.readBytes({ targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath }, signal, maxBytes)
+  }
+
+  /** DSH 0.1.5 byte-window contract; no `override` so the same source still
+   *  compiles against the earliest 0.1.5-alpha base class that lacks it. */
+  async readByteRange(
+    target: FsTarget,
+    range: { offset: number; length: number },
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    const decoded = this.decode(String(target.targetKey))
+    if (decoded === undefined) throw new Error('fs-ssh: cannot route target')
+    const backend = decoded.world.backend as FileSystem & {
+      readByteRange?: (target: FsTarget, range: { offset: number; length: number }, signal?: AbortSignal) => Promise<Uint8Array>
+    }
+    if (typeof backend.readByteRange !== 'function') {
+      throw new FsError('filesystem backend does not support byte-range reads on this DSH version', 'FS_IO_ERROR')
+    }
+    return await backend.readByteRange.call(
+      backend,
+      { targetKey: decoded.rawKey as FsTarget['targetKey'], displayPath: target.displayPath },
+      range,
+      signal,
+    )
   }
 
   override async listDir(target: FsTarget, signal?: AbortSignal): Promise<FsDirEntry[]> {

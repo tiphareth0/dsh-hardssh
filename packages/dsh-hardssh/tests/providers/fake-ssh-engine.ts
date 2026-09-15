@@ -125,6 +125,8 @@ export class FakeEngine {
   readonly liveShells: FakeShellSession[] = []
   /** Every streaming remote file lease opened by readStream. */
   readonly readStreams: PassThrough[] = []
+  /** Path/range forwarded to readStream (byte-window compatibility surface). */
+  readonly readStreamCalls: Array<{ remotePath: string; range?: { offset: number; length: number } }> = []
   /** Whether someone told the shared engine to shut down (close isolation check). */
   disposed = false
   /**
@@ -241,9 +243,29 @@ export class FakeEngine {
     return remotePaths.map(path => canonicalPosix(path))
   }
 
-  async readStream(_alias: string, _remotePath: string): Promise<PassThrough> {
+  async readStream(
+    _alias: string,
+    remotePath: string,
+    _signal?: AbortSignal,
+    range?: { offset: number; length: number },
+  ): Promise<PassThrough> {
+    const canonical = canonicalPosix(remotePath)
     const stream = new PassThrough()
     this.readStreams.push(stream)
+    this.readStreamCalls.push({ remotePath: canonical, ...(range === undefined ? {} : { range: { ...range } }) })
+    // Whole-file streams stay hand-driven by streamText tests. A byte-window
+    // stream is deterministic and can finish itself from the seeded fixture.
+    if (range !== undefined) {
+      const entry = this.files.get(canonical)
+      queueMicrotask(() => {
+        if (entry === undefined || entry.type !== 'file') {
+          stream.destroy(this.notFound(canonical))
+          return
+        }
+        const content = Buffer.from(entry.content, 'utf8')
+        stream.end(content.subarray(range.offset, range.offset + range.length))
+      })
+    }
     return stream
   }
 

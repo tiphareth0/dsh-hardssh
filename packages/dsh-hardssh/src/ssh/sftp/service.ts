@@ -291,7 +291,17 @@ async lstat(alias: string, remotePath: string, signal?: AbortSignal): Promise<{ 
  * for the stream's lifetime (P0-10: a 'stream' lease, released on
  * end/close/error/destroy — not when this function returns).
  */
-async readStream(alias: string, remotePath: string, signal?: AbortSignal): Promise<import('node:stream').Readable> {
+async readStream(
+  alias: string,
+  remotePath: string,
+  signal?: AbortSignal,
+  range?: { offset: number; length: number },
+): Promise<import('node:stream').Readable> {
+  if (range !== undefined) {
+    if (!Number.isSafeInteger(range.offset) || range.offset < 0) throw new Error('read stream offset must be a non-negative safe integer')
+    if (!Number.isSafeInteger(range.length) || range.length <= 0) throw new Error('read stream length must be a positive safe integer')
+    if (!Number.isSafeInteger(range.offset + range.length)) throw new Error('read stream range must stay within safe integer bounds')
+  }
   let lease: ClientLease | undefined
   let lastError: unknown
 
@@ -316,7 +326,10 @@ async readStream(alias: string, remotePath: string, signal?: AbortSignal): Promi
 
   try {
     const sftp = await this.sftpFor(lease.client)
-    const stream = sftp.createReadStream(remotePath) as unknown as import('node:stream').Readable
+    const options = range === undefined
+      ? undefined
+      : { start: range.offset, end: range.offset + range.length - 1 }
+    const stream = sftp.createReadStream(remotePath, options) as unknown as import('node:stream').Readable
 
     let released = false
     let idleTimer: NodeJS.Timeout | undefined

@@ -461,8 +461,13 @@ export class SshEngine {
    * for the stream's lifetime (a 'stream' lease, released on
    * end/close/error/destroy — not when this function returns).
    */
-  readStream(alias: string, remotePath: string, signal?: AbortSignal): Promise<import('node:stream').Readable> {
-    return this.sftpService.readStream(alias, remotePath, signal)
+  readStream(
+    alias: string,
+    remotePath: string,
+    signal?: AbortSignal,
+    range?: { offset: number; length: number },
+  ): Promise<import('node:stream').Readable> {
+    return this.sftpService.readStream(alias, remotePath, signal, range)
   }
 
   /**

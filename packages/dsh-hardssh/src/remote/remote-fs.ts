@@ -292,6 +292,45 @@ export class SshFileSystem extends FileSystem {
     return bytes
   }
 
+  /** DSH 0.1.5 byte-window contract. Deliberately omits `override`: the
+   *  earliest compatibility set does not declare this method, while adding an
+   *  extra method remains source-compatible and the rc base class requires it. */
+  async readByteRange(
+    target: FsTarget,
+    range: { offset: number; length: number },
+    signal?: AbortSignal,
+  ): Promise<Uint8Array> {
+    if (!Number.isSafeInteger(range.offset) || range.offset < 0) throw new FsError('read offset must be a non-negative safe integer', 'FS_NOT_FOUND')
+    if (!Number.isSafeInteger(range.length) || range.length < 0) throw new FsError('read length must be a non-negative safe integer', 'FS_NOT_FOUND')
+    if (!Number.isSafeInteger(range.offset + range.length)) throw new FsError('read byte range must stay within safe integer bounds', 'FS_TOO_LARGE')
+
+    let stream: import('node:stream').Readable | undefined
+    try {
+      const safeTarget = await this.canonicalTarget(target, signal)
+      await this.requireRegular(safeTarget, signal)
+      if (range.length === 0) return new Uint8Array(0)
+      const { alias } = this.current()
+      stream = await this.engine.readStream(alias, String(safeTarget.targetKey), signal, range)
+      const chunks: Buffer[] = []
+      let bytes = 0
+      for await (const chunk of stream) {
+        assertNotAborted(signal, 'read')
+        const buffer = Buffer.from(chunk as Uint8Array)
+        const remaining = range.length - bytes
+        if (remaining <= 0) break
+        const accepted = buffer.length <= remaining ? buffer : buffer.subarray(0, remaining)
+        chunks.push(accepted)
+        bytes += accepted.length
+      }
+      assertNotAborted(signal, 'read')
+      return Buffer.concat(chunks, bytes)
+    } catch (error: unknown) {
+      throw mapError(error, 'read', target.displayPath, signal)
+    } finally {
+      if (stream !== undefined && !stream.destroyed) stream.destroy()
+    }
+  }
+
   override async streamText(target: FsTarget, signal?: AbortSignal): Promise<AsyncIterable<string>> {
     const filesystem = this
     const displayPath = target.displayPath
