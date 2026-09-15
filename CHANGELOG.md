@@ -4,6 +4,34 @@
 
 ## v0.2.5 — 2026-09-15
 
+### 兼容性与稳健性（P0）
+
+- **依赖声明与真实契约对齐**：20 个 `@deepseek-ai/*` peer 不再使用无边界 `"*"`，限定为
+  `>=0.1.5-rc.1 <0.1.6`（`dsh-client-runtime` 独立为 `>=0.1.1-rc.2 <0.1.2`，Schemastery `<4`）。
+  新增 `src/runtime/compat-contract.ts` 列明实际使用的运行时导出与必需/可选/纯类型三级契约，
+  测试逐个 import 校验。
+- **矩阵先验证再声明**：新增 `compat/*.json` 版本集 + `scripts/compat/apply-set.mjs` +
+  `.github/workflows/compat.yml`（Node 22.19/24 × 已验证组件线）。
+  > **矩阵立刻纠出一个错误声明**：原打算支持 `>=0.1.5-alpha.1`，实测 `dsh-client-ui-slots@0.1.5-alpha.1`
+  > **没有 `main` 槽位**，工作区面板无处挂载（typecheck 直接失败）。声明范围因此收窄到
+  > `0.1.5-rc.1` 起，失败证据保留在 `compat/verified-incompatible-dsh-0.1.5-alpha.1.json`
+  > 与 `compat/README.md`，避免以后又悄悄把范围写宽。
+- **补齐 0.1.5 内核契约缺口**：`FileSystem` 在 rc 线新增抽象 `readByteRange`（typecheck 实测发现）。
+  现已实现：`SwitchFileSystem` 解码 namespace 后委托 backend（旧 backend 无此方法时返回结构化
+  `FS_IO_ERROR`，绝不误路由），`SshFileSystem` 通过 SFTP `createReadStream(start/end)` 只读取请求
+  窗口；返回窗口内容、0 长度不占流租约，均有回归用例。
+- **seam 失败不再拖垮宿主**：`fs`/`subprocess` 替换行不再硬 inject `workspaceCore`
+  （fs 只硬依赖 `sandboxPolicy`）。`cordis.patch.yml` 已禁用部署自带的 `fs-sandbox`/`subprocess`，
+  因此这两个入口必须永远挂载：工作区运行时缺失或未就绪时退回本地后端（本机读写与命令继续可用），
+  管理锚点窗口继续 fail closed，`ssh_*` 运维能力独立存活。
+- **可选集成降级**：`inject` 从 `['tools','systemPrompt']` 降为 `['tools']`，`settings`/`systemPrompt`/
+  `webServer`/客户端 slot 改为运行时探测；缺失只少对应界面，不再影响插件加载。
+- **降级可见**：新增 `runtime/health.ts` 与只读路由 `GET /api/dsh-ssh/health`（不拨号、不读凭据），
+  报告 SSH 工具 / 工作区运行时 / 文件路由 / 命令路由四个功能面的 `ready|degraded|failed`；
+  客户端工作区面板在存在非 ready 功能面时显示横幅（功能名/状态/原因 + 插件版本 + 已验证 DSH 范围）。
+- 新增 `tests/runtime/degraded-mode.test.ts`（挂载真实 `apply()`：无 core 时本地可用、锚点 fail closed、
+  健康状态为 degraded、注册表返回深拷贝）与 `/health` 路由用例（200 快照 / 405 / 无注册表时 `{}` / 不触发任何 exec）。
+
 ### 修复
 
 - **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。

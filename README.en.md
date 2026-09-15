@@ -166,8 +166,22 @@ to `dsh.profile.bundles`, then restart `dsh web`.
 
 npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
-> Compatible with DSH **0.1.5** (tested against kernel `0.1.5-rc.1`; see "Why this plugin 1"
-> for the seam mechanism — no per-core-version adaptation is needed).
+> See "Why this plugin 1" for the seam mechanism: it compresses core-version adaptation
+> into a thin layer, but **not to zero** — the plugin still depends statically on public DSH
+> contracts, so the supported range is declared explicitly below.
+
+## Compatibility
+
+| Plugin | Verified DSH | Node | Remote hosts |
+|---|---|---|---|
+| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6` (production verified on `0.1.5-rc.1`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX with GNU userland (verified on CentOS/RHEL) |
+
+> The earlier `0.1.5-alpha.1` is **not** supported: `dsh-client-ui-slots@0.1.5-alpha.1` declares no `main` slot, so the workspace panel has nowhere to mount (the matrix fails typecheck). See `compat/README.md`.
+
+- **Core contract**: the runtime exports the plugin actually uses (`FileSystem`/`FsError`/`SubprocessRuntime`/`SandboxedFileSystem`/`defineTool`, …) are listed in `src/runtime/compat-contract.ts` and imported individually by a test; `peerDependencies` no longer use an unbounded `"*"`.
+- **Optional integrations** (`settings` / `systemPrompt` / `webServer` / client slots) degrade instead of failing: the plugin loads and only the corresponding surface is missing.
+- **Visible state**: `GET /api/dsh-ssh/health` reports `ready/degraded/failed` per surface (SSH tools, workspace runtime, file routing, command routing); the workspace panel shows a banner explaining any non-ready surface.
+- **A failing seam cannot take down the host**: if the workspace runtime fails to initialize, the replacement rows still mount the local backend (local I/O and commands keep working), the managed anchor window stays fail-closed, and the `ssh_*` capability survives on its own.
 
 ## Quick start
 

@@ -1,7 +1,15 @@
 import type { Context } from '@deepseek-ai/cordis'
 
-/** DSH component line covered by the compatibility matrix. */
-export const TESTED_DSH_RANGE = '>=0.1.5-alpha.1 <0.1.6'
+/**
+ * DSH component line covered by the compatibility matrix.
+ *
+ * The matrix first claimed `>=0.1.5-alpha.1`; running that earliest set
+ * disproved it — `@deepseek-ai/dsh-client-ui-slots@0.1.5-alpha.1` has no `main`
+ * slot, so `registerWorkspacePanel` fails typecheck and the center panel would
+ * have nowhere to mount. The declared range is the line that actually passes;
+ * alpha.1 is recorded as verified-incompatible (see compat/README.md).
+ */
+export const TESTED_DSH_RANGE = '>=0.1.5-rc.1 <0.1.6'
 /** Node versions exercised in CI and accepted by package.json. */
 export const TESTED_NODE_RANGE = '^22.19.0 || >=24.0.0'
 

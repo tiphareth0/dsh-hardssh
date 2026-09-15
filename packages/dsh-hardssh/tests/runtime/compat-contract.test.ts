@@ -41,16 +41,29 @@ describe('runtime compatibility contract', () => {
     expect(probes.every(probe => !probe.available && probe.missingMethods.length > 0)).toBe(true)
   })
 
-  it('covers every DeepSeek peer in both tested component manifests', () => {
+  it('covers every DeepSeek peer in the tested component manifest', () => {
     const peers = Object.keys(packageJson.peerDependencies).filter(name => name.startsWith('@deepseek-ai/'))
-    for (const set of [manifest('dsh-0.1.5-alpha.1'), manifest('dsh-0.1.5-rc.1')]) {
-      expect(set.name).toMatch(/^dsh-0\.1\.5-/)
-      for (const peer of peers) expect(set.packages[peer], `${set.name} omits ${peer}`).toBeTypeOf('string')
+    const set = manifest('dsh-0.1.5-rc.1')
+    expect(set.name).toBe('dsh-0.1.5-rc.1')
+    for (const peer of peers) expect(set.packages[peer], `${set.name} omits ${peer}`).toBeTypeOf('string')
+  })
+
+  it('records the disproved alpha.1 set instead of silently claiming it', () => {
+    // The matrix caught a false declaration: alpha.1 has no `main` slot, so the
+    // workspace panel has nowhere to mount. Keep the evidence on disk so the
+    // declared range cannot quietly widen again.
+    const rejected = manifest('verified-incompatible-dsh-0.1.5-alpha.1')
+    expect(rejected.name).toContain('alpha.1')
+    expect(TESTED_DSH_RANGE.startsWith('>=0.1.5-rc.1')).toBe(true)
+    for (const [name, range] of Object.entries(packageJson.peerDependencies)) {
+      if (name.startsWith('@deepseek-ai/') && range.includes('0.1.5')) {
+        expect(range, `${name} must not claim the disproved alpha.1 line`).not.toContain('alpha.1')
+      }
     }
   })
 
   it('publishes bounded compatibility claims, never an unbounded wildcard', () => {
-    expect(TESTED_DSH_RANGE).toBe('>=0.1.5-alpha.1 <0.1.6')
+    expect(TESTED_DSH_RANGE).toBe('>=0.1.5-rc.1 <0.1.6')
     expect(TESTED_NODE_RANGE).toContain('22.19')
     for (const [name, range] of Object.entries(packageJson.peerDependencies)) {
       if (name.startsWith('@deepseek-ai/')) expect(range, `${name} must be bounded`).not.toBe('*')

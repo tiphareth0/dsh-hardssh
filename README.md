@@ -121,7 +121,21 @@ dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
-> 已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`）。seam 替换机制见上文「核心优势 1」，无需按内核版本做适配。
+> seam 替换机制见上文「核心优势 1」：它把「内核版本适配」压缩成很薄的一层，但**并不是零**——
+> 插件仍静态依赖 DSH 的公共契约，因此声明了明确的支持区间，见下表。
+
+## 兼容性
+
+| 插件版本 | 已验证 DSH | Node | 远端主机 |
+|---|---|---|---|
+| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6`（生产环境实测 `0.1.5-rc.1`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX + GNU 用户态（CentOS/RHEL 等实测） |
+
+> 更早的 `0.1.5-alpha.1` **不支持**：`dsh-client-ui-slots@0.1.5-alpha.1` 没有 `main` 槽位，工作区面板无处挂载（矩阵实测 typecheck 直接失败）。见 `compat/README.md`。
+
+- **内核侧契约**：插件实际使用的运行时导出（`FileSystem`/`FsError`/`SubprocessRuntime`/`SandboxedFileSystem`/`defineTool` 等）都由 `src/runtime/compat-contract.ts` 列明，并在测试里逐个 import 校验；`peerDependencies` 不再使用无边界 `"*"`。
+- **可选集成**：`settings` / `systemPrompt` / `webServer` / 客户端 slot 缺失时**降级而不是失败**——插件照常加载，只是少了对应界面。
+- **可见状态**：`GET /api/dsh-ssh/health` 返回各功能面（SSH 工具、工作区运行时、文件路由、命令路由）的 `ready/degraded/failed`；非 ready 时工作区面板顶部会显示横幅说明原因。
+- **seam 失败不会拖垮宿主**：工作区运行时初始化失败时，替换行仍挂载本地后端（本机读写与命令继续可用），管理锚点窗口继续 fail closed；`ssh_*` 运维能力独立存活。
 
 ## 快速开始
 

@@ -17,7 +17,11 @@ jobs:
       fail-fast: false
       matrix:
         node: ['22.19.0', '24']
-        dsh: ['dsh-0.1.5-alpha.1', 'dsh-0.1.5-rc.1']
+        # Only sets that pass (see compat/README.md). 0.1.5-alpha.1 was tried and
+        # failed: dsh-client-ui-slots@0.1.5-alpha.1 declares no `main` slot, so
+        # the center panel has nowhere to mount. It is kept as
+        # compat/verified-incompatible-*.json rather than as a matrix leg.
+        dsh: ['dsh-0.1.5-rc.1']
 
     steps:
       - uses: actions/checkout@v4
