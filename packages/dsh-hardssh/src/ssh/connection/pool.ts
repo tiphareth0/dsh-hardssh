@@ -19,6 +19,12 @@ export interface SshConnectionService {
   invalidateAll(): void
   /** Aliases currently holding a live pooled transport. */
   liveAliases(): string[]
+  /**
+   * Monotonic per-alias generation, bumped by every `invalidate`. Read-only
+   * consumers (the capability probe) stamp their cached answer with it, so a
+   * host-config change invalidates that cache without them knowing the pool.
+   */
+  generation(alias: string): number
 }
 
 export interface ConnectionPoolOptions {
@@ -164,6 +170,10 @@ export class ConnectionPool implements SshConnectionService {
       if (!record.closed && !record.broken && !record.draining) aliases.push(alias)
     }
     return aliases
+  }
+
+  generation(alias: string): number {
+    return this.generations.get(alias) ?? 0
   }
 
   private async acquireRecord(alias: string, signal?: AbortSignal): Promise<PoolRecord> {

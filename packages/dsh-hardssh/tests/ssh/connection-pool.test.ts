@@ -81,6 +81,20 @@ describe('ConnectionPool cancellation', () => {
     newLease.release()
     pool.invalidateAll()
   })
+
+  it('exposes a monotonic generation a config change bumps (P1-B cache stamp)', async () => {
+    const connect = vi.fn(async () => ({ client: fakeClient(), hops: [] }))
+    const pool = new ConnectionPool({ idleTimeoutMs: 60_000, connect })
+    expect(pool.generation('host')).toBe(0)
+    const lease = await pool.acquire('host', { kind: 'operation' })
+    // A pooled connection does not change the generation; only a config change does.
+    expect(pool.generation('host')).toBe(0)
+    pool.invalidate('host', { mode: 'drain' })
+    expect(pool.generation('host')).toBe(1)
+    expect(lease.generation).toBe(0)
+    lease.release()
+    pool.invalidateAll()
+  })
 })
 
 describe('ConnectionPool lease visibility', () => {

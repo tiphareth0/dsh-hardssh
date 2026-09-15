@@ -11,6 +11,7 @@
  *
  *   connection/manager.ts  pooled connections, connect chains, secrets,
  *                          retry/replay policy, exec/cluster/test, redaction
+ *   capabilities/service.ts per-connection-generation capability probe
  *   sftp/service.ts        SFTP subsystem channel cache + every SFTP operation
  *   terminal/service.ts    standalone PTY shell / streaming exec transports
  *   tunnel/service.ts      local listeners, forwarded sockets, tunnel leases
@@ -32,6 +33,7 @@ import {
   type SshInvalidateOptions,
 } from './connection/manager.ts'
 import { SftpService } from './sftp/service.ts'
+import { RemoteCapabilityService, type RemoteCapabilities } from './capabilities/service.ts'
 import { TerminalService } from './terminal/service.ts'
 import { TunnelService } from './tunnel/service.ts'
 import type { SshHostSummary, TransferProgress, TunnelInfo } from './protocol.ts'
@@ -99,6 +101,13 @@ export type {
   RetryPolicy,
   SshInvalidateOptions,
 } from './connection/manager.ts'
+export { unknownCapabilities } from './capabilities/service.ts'
+export type {
+  RemoteCapabilities,
+  RemotePlatform,
+  RemoteShell,
+  RemoteToolVendor,
+} from './capabilities/service.ts'
 
 /** A live PTY shell session. */
 export interface ShellSession {
@@ -148,6 +157,7 @@ export interface ExecSession extends ShellSession {
 export class SshEngine {
   private readonly manager: ConnectionManager
   private readonly sftpService: SftpService
+  private readonly capabilityService: RemoteCapabilityService
   private readonly tunnelService: TunnelService
   private readonly terminalService: TerminalService
 
@@ -178,6 +188,12 @@ export class SshEngine {
       },
       resolved,
     )
+    // The capability probe rides the normal exec path (bounded output, redaction
+    // and deadlines) and is cached per connection generation.
+    this.capabilityService = new RemoteCapabilityService({
+      exec: (alias, command, options) => this.exec(alias, command, options),
+      generation: alias => this.manager.connections.generation(alias),
+    })
     this.tunnelService = new TunnelService({
       connections: this.manager.connections,
       findEntry: alias => store.find(alias),
@@ -245,6 +261,20 @@ export class SshEngine {
   /** Retire the pooled connection for one alias (optionally its dependents). */
   invalidate(alias: string, options: SshInvalidateOptions = {}): void {
     this.manager.invalidate(alias, options)
+    // The host config may have changed; the capability report describes a host.
+    this.capabilityService.forget(alias)
+  }
+
+  /**
+   * What this host's userland can actually do (P1-B): probed once per
+   * connection generation with a short, read-only command, then cached.
+   *
+   * Never rejects because the remote cannot answer — an unusable report
+   * resolves to `unknownCapabilities()` and is not cached, so callers can
+   * always fall back to a slower backend instead of failing the operation.
+   */
+  capabilities(alias: string, signal?: AbortSignal): Promise<RemoteCapabilities> {
+    return this.capabilityService.capabilities(alias, signal)
   }
 
   /**
@@ -565,6 +595,7 @@ export class SshEngine {
     this.tunnelService.dispose()
     this.terminalService.dispose()
     this.sftpService.dispose(new Error('SSH engine disposed while SFTP was active'))
+    this.capabilityService.dispose()
     // Retires every pooled transport (whose onDispose hook drops the SFTP
     // channel of that client) and then clears the session secrets.
     this.manager.disposeSensitive()

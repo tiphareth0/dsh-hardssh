@@ -59,6 +59,27 @@
 - 删掉随旧协议失效的死代码（`base64` 规范路径解码器及其正则），测试用的假引擎改为按声明式符号链接表解析，
   不再模拟 `realpath -mz` 命令输出。
 
+### 连接级远端能力探测（P1-B）
+
+- 新增 `src/ssh/capabilities/service.ts` 与 `engine.capabilities(alias)`：一条**只读、短超时（4s）**的
+  POSIX-sh 探测命令问清远端用户态到底能做什么——`rg` 是否可用及版本、`find`/`grep` 厂商，
+  以及后端模板真正依赖的**参数**（`find -printf`/`-mmin`、`grep -Z`/`--exclude-dir`）。
+  **不根据 `uname` 字符串猜参数支持**：每个参数都实际执行一次（`grep -Z -F --version` 这类
+  「参数接受即退出 0」的写法，避免把「无命中」的退出码 1 误判成「不支持」）；
+  `find / -maxdepth 0 …` 只 stat 根目录，不产生遍历与写入。
+- **缓存按连接 generation 绑定**：`ConnectionPool.generation(alias)`（只读，`invalidate` 时自增）给结果打戳，
+  主机配置变化即失效；空闲拨号回收**不**让缓存失效（远端还是同一台机器，避免每次空闲后重复探测）。
+  并发调用共享同一次探测；探测失败/报告不可解析时返回 `unknown` 且**不缓存**，
+  连接与调用方都不会因此失败，下次调用重新探测。
+- 调用方中止只停止自己的等待，不会取消别人共享的探测（探测本身永不 reject）。
+- 新增 `tests/ssh/remote-capabilities.test.ts`（16 例：GNU/BSD/BusyBox/Windows 分类、
+  「厂商看着像 GNU 但参数探测说不行」、重复/超长值、命令无遍历且无写操作、
+  同代复用、并发共享、超时/exec 失败降级且不缓存、探测期间换代丢弃旧结果、
+  取消隔离与 `forget`/`dispose`）；`tests/ssh/connection-pool.test.ts` 增加 generation 契约用例。
+- 探测命令已在真实 GNU/Linux（`sh -n` 语法检查 + 实际执行）上验证输出可解析。
+  说明：P1-C 之后 `realpath`/`base64` 已不再是依赖，因此探测**不包含**这两个字段（无消费者不探测）；
+  BSD/BusyBox 主机缺 `-printf`/`-Z` 时不做逐厂商 shell 模板，而是直接走 SFTP 兜底（见 P1-D）。
+
 ### 修复
 
 - **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。
