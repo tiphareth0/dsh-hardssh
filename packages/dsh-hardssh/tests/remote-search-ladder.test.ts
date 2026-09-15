@@ -17,6 +17,9 @@ const GNU: RemoteCapabilities = {
   mktemp: true,
 }
 
+/** GNU host that also has ripgrep. */
+const WITH_RG: RemoteCapabilities = { ...GNU, rg: { available: true, version: 'ripgrep 13.0.0' } }
+
 /** Build a service whose capability probe answers with `capabilities`. */
 function service(fake: FakeEngine, capabilities?: RemoteCapabilities | (() => never)): RemoteSearchService {
   const report = capabilities ?? fake.capabilitiesResult
@@ -30,7 +33,7 @@ function service(fake: FakeEngine, capabilities?: RemoteCapabilities | (() => ne
 const wrapped = (body: string, code: number, err = ''): string => `${body}\0DSH_SEARCH_STATUS:${code}\0${err}`
 
 describe('search ladder — ripgrep rung', () => {
-  const withRg = { ...GNU, rg: { available: true, version: 'ripgrep 13.0.0' } }
+  const withRg = WITH_RG
 
   it('uses rg --vimgrep for a fixed-string grep and drops the column field', async () => {
     const fake = new FakeEngine()
@@ -119,6 +122,14 @@ describe('search ladder — SFTP fallback', () => {
     const fake = seeded()
     fake.capabilitiesResult = { ...GNU, mktemp: false }
     const result = await service(fake).glob(target, '**/*.ts')
+    expect(result.backend).toBe('sftp')
+    expect(fake.commands).toEqual([])
+  })
+
+  it('does not take the rg rung when mktemp is missing either', async () => {
+    const fake = seeded()
+    fake.capabilitiesResult = { ...WITH_RG, mktemp: false }
+    const result = await service(fake).grep(target, 'needle')
     expect(result.backend).toBe('sftp')
     expect(fake.commands).toEqual([])
   })

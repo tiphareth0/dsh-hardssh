@@ -354,7 +354,9 @@ export class RemoteSearchService {
     if (pattern.includes('\0')) return { lines: [], truncated: false, backend: 'sftp' }
     const capabilities = await this.probe(target.alias, signal)
 
-    if (capabilities.rg.available) {
+    // The rg rung also rides the status-preserving wrapper, so it needs mktemp
+    // just like the POSIX templates; without it the ladder falls to SFTP.
+    if (capabilities.rg.available && capabilities.mktemp) {
       const producer =
         'rg --vimgrep --no-heading --color never --no-ignore --hidden'
         + ` --glob ${shellQuote('!.git')} --glob ${shellQuote('!node_modules')}`
