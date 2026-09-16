@@ -19,27 +19,49 @@ const PROJECT_ROW_SELECTOR = '[class*="projectRow"]'
 const TITLE_SELECTOR = '[class*="title"]'
 
 /** Render a small remote badge element. The cloud icon marks "remote";
- *  connected servers render in DeepSeek blue, disconnected stay gray. The
- *  tooltip shows the REMOTE directory plus the server, e.g.
- *  `/data/app (prod-01)`. */
-export function makeBadge(alias: string, remoteRoot: string, connected: boolean): HTMLElement {
+ *  connected servers render in DeepSeek blue, disconnected stay gray; a
+ *  connecting server rotates a small spinner instead. The tooltip shows the
+ *  REMOTE directory plus the server, e.g. `/data/app (prod-01)`. */
+export function makeBadge(
+  alias: string,
+  remoteRoot: string,
+  state: 'connected' | 'disconnected' | 'connecting',
+): HTMLElement {
   const badge = document.createElement('span')
-  badge.dataset.sshBadge = connected ? 'connected' : 'disconnected'
+  badge.dataset.sshBadge = state
   badge.title = `${remoteRoot}（${alias}）`
   badge.setAttribute(
     'style',
-    connected
+    state === 'connected'
       ? 'display:inline-flex;align-items:center;gap:3px;margin-left:6px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:16px;color:#1476E6;border:1px solid #1476E6;border-radius:999px;padding:0 6px;background:#D4E0F7;flex:none'
       : 'display:inline-flex;align-items:center;gap:3px;margin-left:6px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;line-height:16px;color:var(--dsw-alias-label-tertiary,rgba(128,128,128,.75));border:1px solid var(--dsw-alias-line-secondary,rgba(128,128,128,.28));border-radius:999px;padding:0 6px;background:var(--dsw-alias-interactive-bg-hover,rgba(128,128,128,.10));flex:none',
   )
   const icon = document.createElement('span')
   icon.setAttribute('style', 'display:inline-flex;flex:none;line-height:1')
-  icon.innerHTML = '<svg viewBox="0 0 1024 1024" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M743.936 758.499556h-273.066667c-17.066667 0-34.133333-17.066667-34.133333-34.133334s17.066667-34.133333 34.133333-34.133333h273.066667c28.444444 0 153.6-5.688889 153.6-130.844445 0-142.222222-153.6-164.977778-159.288889-164.977777-17.066667 0-28.444444-11.377778-28.444444-22.755556-22.755556-85.333333-108.088889-142.222222-193.422223-130.844444-136.533333 0-176.355556 79.644444-199.111111 164.977777-5.688889 5.688889-22.755556 17.066667-39.822222 17.066667 0 0-153.6 5.688889-153.6 142.222222 0 119.466667 130.844444 125.155556 153.6 125.155556 17.066667 0 34.133333 17.066667 34.133333 34.133333s-17.066667 34.133333-34.133333 34.133334c-113.777778 0-227.555556-62.577778-227.555555-193.422223 0-142.222222 119.466667-204.8 199.111111-210.488889 22.755556-68.266667 79.644444-193.422222 261.688889-193.422222 113.777778-11.377778 216.177778 56.888889 256 164.977778 79.644444 17.066667 199.111111 79.644444 199.111111 233.244444 5.688889 136.533333-108.088889 199.111111-221.866667 199.111112z"/><path d="M573.269333 866.588444c-11.377778 0-17.066667-5.688889-22.755555-11.377777l-108.088889-108.088889c-5.688889-5.688889-11.377778-17.066667-11.377778-22.755556s5.688889-17.066667 11.377778-22.755555l108.088889-108.088889c11.377778-11.377778 34.133333-11.377778 51.2 0 11.377778 11.377778 11.377778 34.133333 0 51.2l-79.644445 79.644444 79.644445 79.644445c11.377778 11.377778 11.377778 34.133333 0 51.2-5.688889 5.688889-17.066667 11.377778-28.444445 11.377777z"/></svg>'
+  if (state === 'connecting') {
+    // CSS border spinner that rotates until the connect probe settles.
+    icon.innerHTML =
+      '<svg viewBox="0 0 24 24" width="11" height="11" fill="none" aria-hidden="true" style="animation:dsh-hardssh-spin 0.9s linear infinite">'
+      + '<circle cx="12" cy="12" r="9" stroke="currentColor" stroke-opacity="0.25" stroke-width="3"></circle>'
+      + '<path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="3" stroke-linecap="round"></path>'
+      + '</svg>'
+  } else {
+    icon.innerHTML = '<svg viewBox="0 0 1024 1024" width="11" height="11" fill="currentColor" aria-hidden="true"><path d="M743.936 758.499556h-273.066667c-17.066667 0-34.133333-17.066667-34.133333-34.133334s17.066667-34.133333 34.133333-34.133333h273.066667c28.444444 0 153.6-5.688889 153.6-130.844445 0-142.222222-153.6-164.977778-159.288889-164.977777-17.066667 0-28.444444-11.377778-28.444444-22.755556-22.755556-85.333333-108.088889-142.222222-193.422223-130.844444-136.533333 0-176.355556 79.644444-199.111111 164.977777-5.688889 5.688889-22.755556 17.066667-39.822222 17.066667 0 0-153.6 5.688889-153.6 142.222222 0 119.466667 130.844444 125.155556 153.6 125.155556 17.066667 0 34.133333 17.066667 34.133333 34.133333s-17.066667 34.133333-34.133333 34.133334c-113.777778 0-227.555556-62.577778-227.555555-193.422223 0-142.222222 119.466667-204.8 199.111111-210.488889 22.755556-68.266667 79.644444-193.422222 261.688889-193.422222 113.777778-11.377778 216.177778 56.888889 256 164.977778 79.644444 17.066667 199.111111 79.644444 199.111111 233.244444 5.688889 136.533333-108.088889 199.111111-221.866667 199.111112z"/><path d="M573.269333 866.588444c-11.377778 0-17.066667-5.688889-22.755555-11.377777l-108.088889-108.088889c-5.688889-5.688889-11.377778-17.066667-11.377778-22.755556s5.688889-17.066667 11.377778-22.755555l108.088889-108.088889c11.377778-11.377778 34.133333-11.377778 51.2 0 11.377778 11.377778 11.377778 34.133333 0 51.2l-79.644445 79.644444 79.644445 79.644445c11.377778 11.377778 11.377778 34.133333 0 51.2-5.688889 5.688889-17.066667 11.377778-28.444445 11.377777z"/></svg>'
+  }
   const label = document.createElement('span')
   label.textContent = alias
   label.setAttribute('style', 'font-weight:400')
   badge.append(icon, label)
   return badge
+}
+
+/** Inject the spinner keyframe once per document (idempotent). */
+function ensureSpinnerStyle(): void {
+  if (document.getElementById('dsh-hardssh-spinner-style') !== null) return
+  const style = document.createElement('style')
+  style.id = 'dsh-hardssh-spinner-style'
+  style.textContent = '@keyframes dsh-hardssh-spin { to { transform: rotate(360deg); } }'
+  document.head.append(style)
 }
 
 /**
@@ -50,19 +72,23 @@ export function makeBadge(alias: string, remoteRoot: string, connected: boolean)
  * session/workspace changes).
  * @param workspaces - the SSH workspace records (id/title/alias/remoteRoot).
  * @param connected - aliases with a live pooled connection (badge coloring).
+ * @param connecting - aliases currently probing/connecting (spinner badge).
  * @returns disposer.
  */
 export function mountWorkspaceBadges(
   workspaces: Array<{ id: string; title: string; alias: string; remoteRoot: string }>,
   connected?: ReadonlySet<string>,
+  connecting?: ReadonlySet<string>,
 ): () => void {
   const byTitle = new Map<string, { alias: string; remoteRoot: string }>()
   for (const workspace of workspaces) byTitle.set(workspace.title, workspace)
+  ensureSpinnerStyle()
 
   /** Decorate one project row: ALWAYS keep the row tooltip = the REMOTE
    *  directory (server), never the local anchor path the shell would show;
-   *  mount the badge once (idempotent via the guard). Re-runs on every scan,
-   *  so a shell re-render that resets <title> gets corrected. */
+   *  mount/replace the badge with the row's live connection state
+   *  (connected / connecting / disconnected). Re-runs on every scan,
+   *  so a shell re-render that resets <title> or drops the badge heals. */
   const decorate = (row: HTMLElement): void => {
     const titleEl = row.querySelector<HTMLElement>(TITLE_SELECTOR)
     if (titleEl === null || titleEl === undefined) return
@@ -71,9 +97,19 @@ export function mountWorkspaceBadges(
     if (target === undefined) return
     const desiredTitle = `${target.remoteRoot}（${target.alias}）`
     if (row.title !== desiredTitle) row.title = desiredTitle
-    if (row.querySelector('[data-ssh-badge]') !== null) return
-    const isConnected = connected?.has(target.alias) ?? false
-    titleEl.appendChild(makeBadge(target.alias, target.remoteRoot, isConnected))
+    const state = connecting?.has(target.alias) === true
+      ? 'connecting'
+      : connected?.has(target.alias) === true ? 'connected' : 'disconnected'
+    const existing = row.querySelector<HTMLElement>('[data-ssh-badge]')
+    if (existing !== null) {
+      // Update the existing badge in place so a connect-state flip (spinner ⇄
+      // cloud) is visible without remounting the whole row.
+      if (existing.dataset.sshBadge !== state) {
+        existing.replaceWith(makeBadge(target.alias, target.remoteRoot, state))
+      }
+      return
+    }
+    titleEl.appendChild(makeBadge(target.alias, target.remoteRoot, state))
   }
 
   /** Scan the sidebar column for project rows and decorate each. */

@@ -25,8 +25,9 @@ import { setLanguage, tt } from './text.ts'
 import { registerWorkspacePanel } from './workspace-panel-entry.tsx'
 import { migrateLegacySessionMemory } from './migrate.ts'
 import { DirectoryFlow } from './directory-flow.tsx'
-import { connectHost } from './connect-host.ts'
+import { connectHost, subscribeConnectState } from './connect-host.ts'
 import { mountWorkspaceBadges } from './workspace-badges.ts'
+import { mountWorkspaceFilesPathRemap } from './workspace-files-path.ts'
 import { makeAnchorAliasResolver, mountSessionConnectGate, type SessionGateList } from './session-connect-gate.ts'
 import { mountSshOperations } from './ssh/apply.ts'
 import { createSessionSshTargetSource } from './ssh/session-target.ts'
@@ -166,7 +167,9 @@ export function apply(ctx: ClientContext): void {
     // row-decoration slot, so this stays the documented DOM extension it always
     // was (MutationObserver self-heal), unlike the session list below.
     let badgesDispose: (() => void) | undefined
+    let filesPathDispose: (() => void) | undefined
     let connectedAliases: ReadonlySet<string> = new Set<string>()
+    let connectingAliases: ReadonlySet<string> = new Set<string>()
     const refreshBadges = (): void => {
       try {
         const workspaces = manager.getSnapshot().workspaces
@@ -176,15 +179,34 @@ export function apply(ctx: ClientContext): void {
           title: workspace.title,
           alias: workspace.alias,
           remoteRoot: workspace.remoteRoot,
-        })), connectedAliases)
+        })), connectedAliases, connectingAliases)
+        // The native file panel's address (anchor) is rewritten to the remote
+        // root by the same workspace state (P1/UX-1).
+        filesPathDispose?.()
+        filesPathDispose = mountWorkspaceFilesPathRemap(workspaces.map((workspace) => ({
+          anchorPath: workspace.anchorPath,
+          remoteRoot: workspace.remoteRoot,
+        })))
       } catch (error) {
         console.warn('[dsh-hardssh] badge refresh failed:', error)
       }
     }
-    disposers.push(() => { badgesDispose?.() })
+    disposers.push(() => { badgesDispose?.(); filesPathDispose?.() })
     // Same-source sync: no independent workspace fetch — the manager emits on
     // its 3s poll and on create/remove/rename.
     disposers.push(manager.subscribe(() => { refreshBadges() }))
+
+    // Connecting-state feed: while `connectHost` probes/prompts an alias the
+    // sidebar badge shows the spinner; on settle (success or failure) it flips
+    // back. Wrong-password / rejected connections re-open the password dialog
+    // with the SSH reason inside connectHost itself.
+    disposers.push(subscribeConnectState((alias, state) => {
+      const next = new Set(connectingAliases)
+      if (state === 'connecting') next.add(alias)
+      else next.delete(alias)
+      connectingAliases = next
+      refreshBadges()
+    }))
 
     // Connection-state poll: badge colors AND the gate's pass cache both key off
     // "which servers have a live pooled transport right now".

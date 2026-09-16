@@ -39,6 +39,22 @@ let hostsCache: Map<string, string> | null = null
 /** At most one visible non-interactive failure dialog per alias. */
 const failureDialogs = new Map<string, () => void>()
 
+/** Connection attempt lifecycle observer (drives the sidebar connecting badge). */
+export type ConnectStateListener = (alias: string, state: 'connecting' | 'settled') => void
+const stateListeners = new Set<ConnectStateListener>()
+
+/** Subscribe to per-alias connect lifecycle; returns the disposer. */
+export function subscribeConnectState(listener: ConnectStateListener): () => void {
+  stateListeners.add(listener)
+  return () => { stateListeners.delete(listener) }
+}
+
+function emitConnectState(alias: string, state: 'connecting' | 'settled'): void {
+  for (const listener of [...stateListeners]) {
+    try { listener(alias, state) } catch (error) { console.warn('[dsh-hardssh] connect-state listener failed:', error) }
+  }
+}
+
 async function hostsUser(api: SshApi, alias: string): Promise<string | undefined> {
   if (hostsCache === null) {
     try {
@@ -137,9 +153,13 @@ function promptSecret(api: SshApi, alias: string, secret: 'password' | 'passphra
 /**
  * Probe + prompt until connected. Resolves true when the alias may proceed;
  * false when the user cancelled or the failure is not interactive. When a
- * credential was already supplied and the retry still fails (wrong password,
- * unreachable host, network drop, …), the password dialog re-opens WITH the
- * failure reason shown, VSCode style — no silent "stuck" states.
+ * credential was already supplied and the retry still fails (WRONG PASSWORD,
+ * auth denied, unreachable host, network drop, …), the password dialog
+ * re-opens WITH the concrete SSH reason shown, VSCode style — no silent
+ * "stuck" states, no bare failure dialog for a fixable credential error.
+ *
+ * Emits `connecting` while the probe round-trips (the sidebar badge renders a
+ * loading indicator) and `settled` once the attempt ends, failed or not.
  *
  * @param api - the SSH API client.
  * @param alias - the host alias to gate.
@@ -150,6 +170,7 @@ export function connectHost(api: SshApi, alias: string): Promise<boolean> {
   const inFlight = pending.get(alias)
   if (inFlight !== undefined) return inFlight
 
+  emitConnectState(alias, 'connecting')
   const attempt = (async (): Promise<boolean> => {
     let secretKind: 'password' | 'passphrase' | undefined
     let lastFailure: string | null = null
@@ -161,14 +182,27 @@ export function connectHost(api: SshApi, alias: string): Promise<boolean> {
           return true
         }
         if (result.code === 'NEEDS_PASSWORD' && (result.secret === 'password' || result.secret === 'passphrase')) {
+          const hadSecret = secretKind !== undefined
           secretKind = result.secret
-          if (await promptSecret(api, alias, result.secret, lastFailure ?? undefined)) {
+          // First prompt has no stale reason; every RE-prompt shows what the
+          // previous attempt reported (a rejected credential loops back here).
+          if (await promptSecret(api, alias, result.secret, hadSecret && lastFailure !== null ? lastFailure : undefined)) {
             lastFailure = null
             continue
           }
           return false
         }
         lastFailure = result.error ?? 'connection failed'
+        if (secretKind !== undefined) {
+          // A credential was already entered but the server rejected it
+          // (wrong password / auth denied) — re-open the password dialog with
+          // the concrete reason instead of a bare failure.
+          if (await promptSecret(api, alias, secretKind, lastFailure)) {
+            lastFailure = null
+            continue
+          }
+          return false
+        }
         return reportConnectionFailure(alias, lastFailure)
       } catch (cause) {
         if (cause instanceof SshApiError && (cause.code === 'HOST_KEY_UNKNOWN' || cause.code === 'HOST_KEY_MISMATCH')) {
@@ -194,6 +228,9 @@ export function connectHost(api: SshApi, alias: string): Promise<boolean> {
   })()
 
   pending.set(alias, attempt)
-  void attempt.finally(() => { pending.delete(alias) })
+  void attempt.finally(() => {
+    pending.delete(alias)
+    emitConnectState(alias, 'settled')
+  })
   return attempt
 }
