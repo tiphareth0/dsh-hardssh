@@ -51,6 +51,9 @@ be confined by the client's kernel. The plugin states that boundary instead of h
 
 ## 4. Static-scan findings: expected, and why
 
+The per-item list — every site the scanner matches, what it is, and who can reach it — is in
+[SECURITY-SCAN-FINDINGS.md](./SECURITY-SCAN-FINDINGS.md). Summary:
+
 | Scanner finding | What the code actually is |
 |---|---|
 | `Shell command execution` — `src/base/capability.ts:53`, `src/ssh/capabilities/service.ts:174` | **Interface declarations** (`WorkspaceProcessRuntime.exec`, `RemoteCapabilityDeps.exec`). No implementation, no shell, no `child_process`. The rule matches the method name. |
