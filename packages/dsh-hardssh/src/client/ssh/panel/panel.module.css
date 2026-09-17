@@ -654,6 +654,33 @@
   opacity: 0.5;
 }
 
+.textarea {
+  padding: 7px 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 72px;
+  box-sizing: border-box;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--dsw-alias-label-primary, #0f1115);
+  background: var(--dsw-alias-bg-layer-1, #fff);
+  border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.14));
+  border-radius: 8px;
+  outline: none;
+  font-family: inherit;
+  resize: vertical;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.textarea:focus {
+  border-color: var(--dsw-alias-brand-primary-new-colorprimary-new-color, #4176e6);
+  box-shadow: 0 0 0 2px rgba(65, 118, 230, 0.15);
+}
+
+.textarea::placeholder {
+  color: var(--dsw-alias-label-tertiary, #81858c);
+}
+
 .formRow {
   display: grid;
   grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);

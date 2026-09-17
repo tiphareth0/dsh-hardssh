@@ -34,6 +34,10 @@ interface FormState {
   environment: string
   tags: string
   location: string
+  /** Per-line regex rules for the command guard (one per line; #/blank ignored). */
+  commandPolicy: string
+  /** Operator hint shown when a rule blocks a command. */
+  policyHint: string
 }
 
 /** Split a comma-separated input into a trimmed, non-empty string list. */
@@ -57,6 +61,8 @@ function blankOf(editing: SshHostSummary | null | undefined): FormState {
     environment: editing?.environment ?? '',
     tags: (editing?.tags ?? []).join(', '),
     location: editing?.location ?? '',
+    commandPolicy: (editing?.commandPolicy?.deny ?? []).join('\n'),
+    policyHint: editing?.commandPolicy?.hint ?? '',
   }
 }
 
@@ -113,6 +119,16 @@ export function HostFormDialog({ api, editing, onClose, onSaved }: HostFormDialo
       environment: form.environment.trim() === '' ? undefined : form.environment.trim(),
       tags: splitList(form.tags),
       location: form.location.trim() === '' ? undefined : form.location.trim(),
+      // Command guard: the form is the truth. Every non-blank line is a regex;
+      // a fully-empty form saves an empty policy, which clears any previous
+      // guard (store.update overwrites the field when present).
+      commandPolicy: {
+        deny: form.commandPolicy
+          .split('\n')
+          .map(line => line.trim())
+          .filter(line => line !== ''),
+        ...(form.policyHint.trim() === '' ? {} : { hint: form.policyHint.trim() }),
+      },
     }
     setSaving(true)
     setError(null)
@@ -216,11 +232,28 @@ export function HostFormDialog({ api, editing, onClose, onSaved }: HostFormDialo
           <input className={css.input} value={form.tags} onChange={event => { set('tags', event.target.value) }} />
           <span className={css.hint}>{tt('form.tagsHint')}</span>
         </label>
+        <label className={css.field}>
+          <span className={css.fieldLabel}>{tt('form.commandPolicy')}</span>
+          <textarea
+            className={css.textarea}
+            rows={5}
+            spellCheck={false}
+            value={form.commandPolicy}
+            data-test="host-command-policy"
+            onChange={event => { set('commandPolicy', event.target.value) }}
+          />
+          <span className={css.hint}>{tt('form.commandPolicyHint')}</span>
+        </label>
+        <label className={css.field}>
+          <span className={css.fieldLabel}>{tt('form.policyHint')}</span>
+          <input className={css.input} value={form.policyHint} data-test="host-policy-hint" onChange={event => { set('policyHint', event.target.value) }} />
+          <span className={css.hint}>{tt('form.policyHintHint')}</span>
+        </label>
         {error !== null && <p className={css.formError}>{tt('common.error', { error })}</p>}
         </div>
         <div className={css.modalFooter}>
           <button type="button" className={css.modalGhost} disabled={saving} onClick={onClose}>{tt('form.cancel')}</button>
-          <button type="button" className={css.modalPrimary} disabled={saving} onClick={() => { void save() }}>{tt('form.save')}</button>
+          <button type="button" className={css.modalPrimary} disabled={saving} data-test="host-form-save" onClick={() => { void save() }}>{tt('form.save')}</button>
         </div>
       </div>
     </div>
