@@ -155,12 +155,25 @@ export class SshFileSystem extends FileSystem {
 
   /** Root-confinement gate for the workspace capability: reject any canonical
    *  path that escapes `confineRoot` (including via an in-root symlink whose
-   *  realpath lands outside). Mirrors the local provider's fail-closed rule. */
-  private confine(path: string): string {
+   *  realpath lands outside). Mirrors the local provider's fail-closed rule.
+   *
+   *  `code` is what the caller sees, and it differs by CALL SITE:
+   *  - the LEXICAL check on a caller-supplied path answers `FS_NOT_FOUND`:
+   *    "outside this workspace" is an absence, and the harness walks UP from the
+   *    session cwd probing `<dir>/.git`, where only FS_NOT_FOUND means "keep
+   *    walking" — any other code aborts the whole run. (Same reasoning as
+   *    `refuseUnownedAnchorPath` in fs.ts, which was changed for exactly this
+   *    walk.) Without it, a bound session on Linux/macOS aborted as soon as the
+   *    walk stepped above the client's `~/.dsh`, because those ancestors are
+   *    POSIX-absolute and therefore looked like server paths.
+   *  - the CANONICAL check stays `FS_IO_ERROR`: a symlink that resolves out of
+   *    the root is a refusal, not an absence.
+   *  The message is identical either way, so the reason stays self-explanatory. */
+  private confine(path: string, code: 'FS_IO_ERROR' | 'FS_NOT_FOUND' = 'FS_IO_ERROR'): string {
     if (this.confineRoot === undefined) return path
     const root = this.confineRoot.endsWith('/') ? this.confineRoot : `${this.confineRoot}/`
     if (path !== this.confineRoot && !path.startsWith(root)) {
-      throw new Error(`workspace.ssh-outside-root: '${path}' is outside '${this.confineRoot}'`)
+      throw new FsError(`workspace.ssh-outside-root: '${path}' is outside '${this.confineRoot}'`, code)
     }
     return path
   }
@@ -196,7 +209,7 @@ export class SshFileSystem extends FileSystem {
       // (and so the answer does not depend on whether it exists remotely). The
       // confinement check below still runs on the CANONICAL target, which is
       // what catches a symlink that resolves out of the root.
-      this.confine(displayPath)
+      this.confine(displayPath, 'FS_NOT_FOUND')
       const targetKey = await this.canonicalPath(displayPath, opts?.signal)
       assertNotAborted(opts?.signal, 'resolve')
       // Root confinement is checked on the CANONICAL target so a symlink that

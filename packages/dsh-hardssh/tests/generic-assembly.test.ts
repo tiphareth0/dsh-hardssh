@@ -26,7 +26,7 @@ import { createLocalWorkspaceProvider, RootedLocalFileSystem, RootedLocalSubproc
 import { WFS_NAMESPACE_MARKER, SwitchFileSystem } from '../src/switch/switch-fs.ts'
 import { SwitchSubprocessRuntime } from '../src/switch/switch-subprocess.ts'
 import { anchorWorldFor, genericFsWorldFor, genericFsWorldForNamespace } from '../src/fs.ts'
-import { genericSubprocessFor } from '../src/subprocess.ts'
+import { genericRemoteCwdFor, genericSubprocessFor } from '../src/subprocess.ts'
 import { GenericWorkspaceStore } from '../src/backend.ts'
 import { bootstrapGenericWorkspaceCore } from '../src/index.ts'
 import { FakeEngine, asSshEngine } from './providers/fake-ssh-engine.ts'
@@ -294,6 +294,11 @@ describe('generic fs/subprocess seams (fake engine)', () => {
     const genericSub = new SwitchSubprocessRuntime(new Context(), {
       local: localSub,
       worldFor: (cwd) => genericSubprocessFor(generic.core, cwd, [dir]),
+      // Wired exactly like src/subprocess.ts apply(): a remote runtime must get
+      // the workspace's remote root, not this machine's anchor (see the seam's
+      // `remoteCwd` contract). Without it the seam is only correct on Windows,
+      // where the anchor is not a POSIX path.
+      remoteCwd: (cwd) => (cwd === undefined ? undefined : genericRemoteCwdFor(generic.core, cwd)),
     })
 
     const spec = (cwd: string) => ({ argv: ['bash', '-lc', 'echo hi'], cwd, stdio: { stdin: 'pipe', stdout: 'pipe', stderr: 'pipe' }, graceMs: 60_000 })

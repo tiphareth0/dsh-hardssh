@@ -56,10 +56,11 @@ export function genericSubprocessFor(
 
 /** Rewrite a client-side anchor cwd into the workspace's remote root.
  *
- *  The same ledger answer `worldFor` routes on, so the runtime and the cwd it
- *  receives can never come from different workspaces. A cwd that is already a
- *  remote path (or is not under any anchor) is returned unchanged. */
-function remoteCwdFor(core: WorkspaceCore, cwd: string): string {
+ *  The same ledger answer `genericSubprocessFor` routes on, so the runtime and
+ *  the cwd it receives can never come from different workspaces. A cwd that is
+ *  already a remote path (or is not under any anchor) is returned unchanged.
+ *  Exported so the assembly fixtures wire the seam exactly like this row does. */
+export function genericRemoteCwdFor(core: WorkspaceCore, cwd: string): string {
   const connection = core.router.fromAnchor(cwd)
   if (connection === undefined) return cwd
   const record = genericRecordFor(core, connection.workspaceId)
@@ -140,7 +141,7 @@ export function apply(ctx: Context): void {
     remoteCwd: (cwd) => {
       const ws = workspaceCore()
       if (cwd === undefined || ws === undefined || !ws.isReady()) return cwd
-      return remoteCwdFor(ws, cwd)
+      return genericRemoteCwdFor(ws, cwd)
     },
   })
 }
