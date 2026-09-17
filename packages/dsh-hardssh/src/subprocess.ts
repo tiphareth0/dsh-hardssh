@@ -16,6 +16,7 @@ import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local'
 import type { SubprocessRuntime } from '@deepseek-ai/dsh-subprocess'
 import { anchorRoot, isPathUnderAnchor } from './ledger.ts'
 import { SwitchSubprocessRuntime } from './switch/switch-subprocess.ts'
+import { translateAnchorPath } from './switch/anchor-path.ts'
 import type { WorkspaceCore } from './runtime/workspace-core.ts'
 import type { WorkspaceRecord } from './base/model.ts'
 import { bindHardsshHealthFeature } from './runtime/health.ts'
@@ -51,6 +52,19 @@ export function genericSubprocessFor(
   const runtime = connection.get('workspace.process') as SubprocessRuntime | undefined
   if (runtime === undefined) throw new Error(`subprocess-workspace: workspace '${record.id}' provides no workspace.process capability`)
   return runtime
+}
+
+/** Rewrite a client-side anchor cwd into the workspace's remote root.
+ *
+ *  The same ledger answer `worldFor` routes on, so the runtime and the cwd it
+ *  receives can never come from different workspaces. A cwd that is already a
+ *  remote path (or is not under any anchor) is returned unchanged. */
+function remoteCwdFor(core: WorkspaceCore, cwd: string): string {
+  const connection = core.router.fromAnchor(cwd)
+  if (connection === undefined) return cwd
+  const record = genericRecordFor(core, connection.workspaceId)
+  if (record === undefined || record.anchor === undefined) return cwd
+  return translateAnchorPath(record.anchor.path, record.location.root, cwd)
 }
 
 /** Mount the generic switching subprocess facade. */
@@ -118,6 +132,15 @@ export function apply(ctx: Context): void {
         throw new Error(`subprocess-ssh: '${cwd}' is inside the workspace anchor root but no registered workspace owns it (fail closed)`)
       }
       return undefined
+    },
+    // The runtime above is chosen by cwd; the cwd it RECEIVES must be the
+    // server's, not the client anchor that selected it (a POSIX backend reads
+    // an absolute anchor as a server path, so the remote command would cd into
+    // a directory that does not exist on the host).
+    remoteCwd: (cwd) => {
+      const ws = workspaceCore()
+      if (cwd === undefined || ws === undefined || !ws.isReady()) return cwd
+      return remoteCwdFor(ws, cwd)
     },
   })
 }

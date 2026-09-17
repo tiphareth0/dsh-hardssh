@@ -30,6 +30,7 @@ import type {
 } from '@deepseek-ai/dsh-fs'
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { Context } from '@deepseek-ai/cordis'
+import { translateAnchorPath } from './anchor-path.ts'
 
 /** Key namespace: 'ssh:<recordId>:' (legacy) or 'wfs://<id>/' (current)
  *  for remote/workspace-bound targets. Both decode; new keys emit wfs://. */
@@ -232,7 +233,7 @@ export class SwitchFileSystem extends FileSystem {
     // remote backend resolves it cleanly instead of glueing a Windows path
     // onto /data/….
     const effectivePath = world.anchorPath !== undefined && world.remoteRoot !== undefined
-      ? this.translateAnchorPath(world.anchorPath, world.remoteRoot, path)
+      ? translateAnchorPath(world.anchorPath, world.remoteRoot, path)
       : path
     // Host-infrastructure roots are considered only after anchor translation;
     // otherwise a valid remote anchor nested under ~/.dsh routes locally.
@@ -244,36 +245,34 @@ export class SwitchFileSystem extends FileSystem {
       const raw = await this.local.resolve(path, opts)
       return { targetKey: String(raw.targetKey) as FsTarget['targetKey'], displayPath: raw.displayPath }
     }
-    const raw = await world.backend.resolve(effectivePath, opts)
+    const raw = await world.backend.resolve(effectivePath, this.remoteOpts(world, opts))
     return {
       targetKey: this.encode(String(raw.targetKey), world.namespace) as FsTarget['targetKey'],
       displayPath: raw.displayPath,
     }
   }
 
-  /** Rewrite `<anchor>/<rest>` to `<remoteRoot>/<rest>` when `path` is the
-   *  anchor or under it; otherwise return `path` unchanged (remote absolute
-   *  paths, relative paths, and foreign local paths all pass through). */
-  private translateAnchorPath(anchor: string, remoteRoot: string, path: string): string {
-    const norm = (value: string): string => value.replace(/[\\/]+$/, '')
-    const a = norm(anchor)
-    const isWin = a.includes('\\')
-    const normPath = (value: string): string => {
-      let out = norm(value)
-      if (isWin) out = out.replace(/\//g, '\\')
-      return out
-    }
-    const p = normPath(path)
-    const aa = isWin ? a.toLowerCase() : a
-    const pp = isWin ? p.toLowerCase() : p
-    if (pp === aa) return remoteRoot
-    if (pp.startsWith(`${aa}\\`) || pp.startsWith(`${aa}/`)) {
-      // Preserve the original case for the tail (the anchor prefix removed);
-      // normalize the tail to POSIX separators (the remote side is POSIX).
-      const tail = p.slice(a.length).replace(/^[\\/]+/, '').replace(/\\/g, '/')
-      return tail === '' ? remoteRoot : `${remoteRoot.replace(/\/+$/, '')}/${tail}`
-    }
-    return path
+  /** The cwd a REMOTE backend must see for one world.
+   *
+   *  A bound session's cwd IS the workspace's local anchor directory, which
+   *  exists only on this machine. Remote cwds (a real server path chosen by the
+   *  model) and the local fallback pass through untouched — so this only ever
+   *  rewrites the anchor, never a remote path that merely looks local.
+   *
+   *  Why it matters: a POSIX backend cannot tell the two apart. On Windows the
+   *  anchor (`C:\…`) is not POSIX-absolute and the backend fell back to its
+   *  remote root; on Linux/macOS the anchor IS absolute, so it was used as the
+   *  server cwd — a relative path then resolved to `<client anchor>/app.txt`
+   *  and failed root confinement (`workspace.ssh-outside-root`), and a spawn
+   *  `cd`-ed into a directory that does not exist on the host. */
+  private remoteOpts(
+    world: WorkspaceWorld,
+    opts?: { cwd?: string; signal?: AbortSignal },
+  ): { cwd?: string; signal?: AbortSignal } | undefined {
+    const cwd = opts?.cwd
+    if (cwd === undefined || world.anchorPath === undefined || world.remoteRoot === undefined) return opts
+    const translated = translateAnchorPath(world.anchorPath, world.remoteRoot, cwd)
+    return translated === cwd ? opts : { ...opts, cwd: translated }
   }
 
   override processPath(target: FsTarget): string {
@@ -315,13 +314,13 @@ export class SwitchFileSystem extends FileSystem {
   override async lstat(path: string, opts?: { cwd?: string }, signal?: AbortSignal): Promise<FsPathInfo | undefined> {
     const world = this.worldForPath(path, opts?.cwd)
     const effectivePath = world.anchorPath !== undefined && world.remoteRoot !== undefined
-      ? this.translateAnchorPath(world.anchorPath, world.remoteRoot, path)
+      ? translateAnchorPath(world.anchorPath, world.remoteRoot, path)
       : path
     if (world.namespace !== '' && !belongsToRemoteWorld(effectivePath, this.deps)) {
       this.assertNotDenied(path, '')
       return this.local.lstat(path, opts, signal)
     }
-    return world.backend.lstat(effectivePath, opts, signal)
+    return world.backend.lstat(effectivePath, this.remoteOpts(world, opts), signal)
   }
 
   override async readText(target: FsTarget, signal?: AbortSignal): Promise<string> {

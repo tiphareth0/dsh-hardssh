@@ -38,6 +38,13 @@ export interface SwitchSubprocessDeps {
    *  executables (drive/backslash paths, `*.exe/*.cmd/*.bat/*.ps1`) are
    *  detected automatically as client binaries. */
   clientToolNames?: ReadonlyArray<string>
+  /** Rewrite the spawn cwd for a REMOTE runtime: a bound session's cwd is the
+   *  workspace's LOCAL anchor directory, which exists only on this machine.
+   *  Leaving it in place was harmless while the anchor was a Windows path (the
+   *  remote side ignored it), but on Linux/macOS the anchor is POSIX-absolute
+   *  and was taken for a server path — the remote command `cd`-ed into a
+   *  directory that does not exist on the host. Absent = no rewriting. */
+  remoteCwd?(cwd: string | undefined): string | undefined
 }
 
 const DEFAULT_CLIENT_TOOL_NAMES = ['pwsh', 'powershell', 'cmd'] as const
@@ -88,19 +95,34 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
    *  Locality comes from the routing answer (`undefined`), never from an
    *  identity comparison against `deps.local`: that comparison silently failed
    *  once and refused local ripgrep launches for every session. */
-  private effectiveRuntime(spec: { cwd?: string; argv?: readonly string[] }): SubprocessRuntime {
+  private route<S extends { cwd?: string; argv?: readonly string[] }>(
+    spec: S,
+  ): { runtime: SubprocessRuntime; spec: S } {
     const runtime = this.runtimeFor(spec.cwd)
-    if (runtime === undefined) return this.deps.local
+    if (runtime === undefined) return { runtime: this.deps.local, spec }
     const names = this.deps.clientToolNames ?? DEFAULT_CLIENT_TOOL_NAMES
     const exe = spec.argv !== undefined && spec.argv.length > 0 ? spec.argv[0] : ''
     if (isClientSearchHelperPath(exe)) {
       // Only a runtime that SAYS it serves these spawns may receive one; any
       // other provider keeps the explicit refusal (a client path must never be
       // sent to a host that cannot answer it).
-      if ((runtime as { handlesClientSearchSpawns?: boolean }).handlesClientSearchSpawns === true) return runtime
+      if ((runtime as { handlesClientSearchSpawns?: boolean }).handlesClientSearchSpawns === true) {
+        return { runtime, spec: this.remoteSpec(spec) }
+      }
       throw searchBridgeRefusal(exe)
     }
-    return isClientNativeExecutable(exe, names) ? this.deps.local : runtime
+    // A client binary runs HERE, where the client anchor really exists.
+    if (isClientNativeExecutable(exe, names)) return { runtime: this.deps.local, spec }
+    return { runtime, spec: this.remoteSpec(spec) }
+  }
+
+  /** The spec a REMOTE runtime must see: its cwd is rewritten from the client
+   *  anchor to the workspace's remote root (see `SwitchSubprocessDeps.remoteCwd`). */
+  private remoteSpec<S extends { cwd?: string }>(spec: S): S {
+    const cwd = spec.cwd
+    if (cwd === undefined || this.deps.remoteCwd === undefined) return spec
+    const translated = this.deps.remoteCwd(cwd)
+    return translated === undefined || translated === cwd ? spec : { ...spec, cwd: translated }
   }
 
   /** @inheritdoc */
@@ -114,12 +136,14 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
 
   /** @inheritdoc */
   spawn(spec: SubprocessSpawnSpec): SubprocessHandle {
-    return this.effectiveRuntime(spec).spawn(spec)
+    const routed = this.route(spec)
+    return routed.runtime.spawn(routed.spec)
   }
 
   /** @inheritdoc */
   spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
-    return this.effectiveRuntime(spec).spawnTerminal(spec)
+    const routed = this.route(spec)
+    return routed.runtime.spawnTerminal(routed.spec)
   }
 }
 
