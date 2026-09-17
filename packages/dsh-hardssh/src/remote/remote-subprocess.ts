@@ -25,6 +25,7 @@ import { quoteShellArg } from './environment.ts'
 import { SshSubprocessHandle } from './remote-process.ts'
 import { SshTerminalHandle, spawnSshTerminal } from './remote-terminal.ts'
 import { WorkspaceSearchSpawner } from './search-bridge.ts'
+import { checkCommand } from '../ssh/command-policy.ts'
 
 /**
  * Enforce the seam's documented grace bound (positive, finite, one Node timer).
@@ -76,7 +77,10 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
       engine,
       getState,
       spillDir: this.spillDir,
-      forward: spec => this.spawnPlain(spec),
+      // The search bridge is OPT-IN for its own forwards: the tool-layer guard
+      // already vetted the glob/grep call, and a search PATTERN containing
+      // e.g. `python` must not trip a host's command policy.
+      forward: spec => this.spawnPlain(spec, { skipCommandPolicy: true }),
     })
     ctx.effect(() => async () => {
       // The effect's own body would duplicate close(); delegating keeps one
@@ -187,7 +191,7 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
   }
 
   /** The unmodified remote spawn path (also the bridge's forwarding target). */
-  private spawnPlain(spec: SubprocessSpawnSpec): SubprocessHandle {
+  private spawnPlain(spec: SubprocessSpawnSpec, opts: { skipCommandPolicy?: boolean } = {}): SubprocessHandle {
     if (this.closePromise !== undefined) throw new Error('subprocess-ssh: service is disposing')
     const program = spec.argv[0]
     if (program === undefined || program.length === 0) {
@@ -197,6 +201,16 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     if (spec.signal?.aborted === true) {
       throw new Error(`aborted before spawn: ${String(spec.signal.reason)}`)
     }
+    // Command guard (seam layer): the host's configured `commandPolicy` applies
+    // to every remote spawn — from the model's bash tool AND from any plugin
+    // that calls ctx.subprocess directly (defense in depth alongside the
+    // tool-layer guard). Opt-in only: no policy = no interception. Our own
+    // search-bridge forwards pass `skipCommandPolicy` (the tool layer already
+    // vetted them and a search pattern is not a command).
+    if (opts.skipCommandPolicy !== true) {
+      const denial = this.commandPolicyDenial(spec)
+      if (denial !== undefined) throw new Error(denial)
+    }
     const handle = new SshSubprocessHandle(this.engine, this.getState, spec, this.spillDir)
     this.live.add(handle)
     const release = async (): Promise<void> => {
@@ -205,6 +219,24 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     }
     void handle.done.then(release, release).catch(() => {})
     return handle
+  }
+
+  /** The bound host's configured command policy denial for one spawn, if any. */
+  private commandPolicyDenial(spec: SubprocessSpawnSpec): string | undefined {
+    const state = this.getState()
+    if (state.mode !== 'remote' || state.alias === undefined) return undefined
+    // Fail-soft like every other optional engine method (see redactBytes): a
+    // host store without a `find` (engine doubles in tests) has no policy to
+    // enforce.
+    const policy = typeof this.engine.find !== 'function' ? undefined : this.engine.find(state.alias)?.commandPolicy
+    if (policy === undefined) return undefined
+    const argv = spec.argv ?? []
+    const program = argv[0] ?? ''
+    const base = program.split(/[\\/]/).pop() ?? program
+    // Check both the executable itself and the full command line: an argv
+    // spawn of `/usr/bin/python3 -u x.py` is caught by the program name,
+    // and a shell-ish wrapper is caught by the joined line.
+    return checkCommand(state.alias, base, policy) ?? checkCommand(state.alias, argv.join(' '), policy)
   }
 
   /** @inheritdoc */

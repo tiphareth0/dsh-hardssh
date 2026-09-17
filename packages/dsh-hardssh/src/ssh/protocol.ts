@@ -7,6 +7,16 @@
 /** Authentication flavors a host entry may carry. */
 export type SshAuthKind = 'key' | 'password'
 
+/** Per-host command guard policy: regex deny rules + operator hint.
+ *  Shared with the guard engine (`src/ssh/command-policy.ts`). */
+export interface SshCommandPolicy {
+  /** One JS regular expression per entry, matched case-insensitively against
+   *  a command line. Blank entries and lines starting with `#` are ignored. */
+  deny: string[]
+  /** Operator message appended to every refusal (how to run it properly). */
+  hint?: string
+}
+
 /** One stored host entry (the ~/.dsh/dsh-ssh.json store shape). */
 export interface SshHostEntry {
   /** Stable, user-chosen identifier used by every operation. */
@@ -39,6 +49,11 @@ export interface SshHostEntry {
   tags: string[]
   /** Physical location note. */
   location?: string
+  /**
+   * Per-host command guard: regex `deny` entries (matched against command
+   * lines) plus an operator `hint`. Absent/empty = NO interception (default).
+   */
+  commandPolicy?: SshCommandPolicy
   createdAt: number
   updatedAt: number
 }
@@ -57,6 +72,8 @@ export interface SshHostSummary {
   environment?: string
   tags: string[]
   location?: string
+  /** Per-host command guard policy (see SshHostEntry). */
+  commandPolicy?: SshCommandPolicy
   createdAt: number
   updatedAt: number
 }
@@ -160,6 +177,8 @@ export interface HostPayload {
   environment?: string
   tags?: string[]
   location?: string
+  /** Per-host command guard policy (create/update payload). */
+  commandPolicy?: SshCommandPolicy
 }
 
 /** Import outcome from ~/.ssh/config. */

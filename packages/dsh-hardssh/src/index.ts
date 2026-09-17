@@ -44,6 +44,7 @@ import { SshEngine } from './ssh/engine.ts'
 import { mountSshCapability, SSH_SETTINGS_NAMESPACE } from './ssh/plugin.ts'
 import { HostStore } from './ssh/store.ts'
 import { SecureHostStore } from './ssh/store.ts'
+import { checkCommand, commandGuardTargets } from './ssh/command-policy.ts'
 import { KnownHostsStore } from './ssh/known-hosts.ts'
 import { Vault } from './ssh/vault.ts'
 import { mountWorkspaceCore, genericLedgerPath, type WorkspaceCore } from './runtime/workspace-core.ts'
@@ -467,6 +468,28 @@ export function apply(ctx: Context, config?: Config): void {
   // `dsh-ssh` settings namespace toggles it). The host-delete reference guard
   // reads the same record source as the workspace surfaces.
   mountSshCapability(ctx, { store: secureHosts, engine, knownHosts, vault, ledger: workspaces, health })
+
+  // Per-host command guard (tool layer). Default is NO interception: only hosts
+  // that explicitly carry a `commandPolicy` are gated. Covers ssh_exec /
+  // ssh_cluster / bash — every remote-command channel the model can drive.
+  // The seam layer (SshSubprocessRuntime) applies the same policy to spawns
+  // from any consumer; the tool layer gives the operator the readable reason.
+  const guardDispose = ctx.tools.guard((execution) => {
+    const args = execution.arguments as Readonly<Record<string, unknown>> | undefined
+    const targets = commandGuardTargets(execution.name, args, execution.agent?.session?.header?.cwd, {
+      allAliases: () => engine.list().map(host => host.alias),
+      aliasForCwd: (cwd) => (cwd === undefined || cwd === '' ? undefined : workspaces.findByAnchorSync(cwd)?.alias),
+    })
+    if (targets === undefined) return undefined
+    for (const { alias, command } of targets) {
+      const policy = engine.find(alias)?.commandPolicy
+      if (policy === undefined) continue
+      const denial = checkCommand(alias, command, policy)
+      if (denial !== undefined) return denial
+    }
+    return undefined
+  })
+  ctx.effect(() => () => { guardDispose() }, 'dsh-hardssh: command-guard')
 
   // C-04: secretStorage is a construction-time decision (vault + store above).
   // The dsh-ssh settings namespace exposes the same key for the settings UI,

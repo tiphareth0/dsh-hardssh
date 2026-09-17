@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from '
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { HostPayload, ImportResult, SshAuthKind, SshHostEntry, SshHostSummary } from './protocol.ts'
+import { validateCommandPolicy } from './command-policy.ts'
 
 /** File format version. */
 const FORMAT_VERSION = 1
@@ -159,6 +160,10 @@ export function validateHostPayload(
   if (p.tags !== undefined && (!Array.isArray(p.tags) || p.tags.some(x => typeof x !== 'string'))) {
     return 'tags must be an array of strings'
   }
+  if (p.commandPolicy !== undefined) {
+    const policyError = validateCommandPolicy(p.commandPolicy)
+    if (policyError !== undefined) return policyError
+  }
   return undefined
 }
 
@@ -250,6 +255,7 @@ export class HostStore {
       ...(entry.environment !== undefined ? { environment: entry.environment } : {}),
       tags: [...entry.tags],
       ...(entry.location !== undefined ? { location: entry.location } : {}),
+      ...(entry.commandPolicy !== undefined ? { commandPolicy: entry.commandPolicy } : {}),
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt,
     }
@@ -287,6 +293,7 @@ export class HostStore {
       environment: payload.environment?.trim() || undefined,
       tags: [...(payload.tags ?? [])].map(tag => tag.trim()).filter(tag => tag !== ''),
       location: payload.location?.trim() || undefined,
+      ...(payload.commandPolicy !== undefined ? { commandPolicy: payload.commandPolicy } : {}),
       createdAt: now,
       updatedAt: now,
     }
@@ -347,6 +354,7 @@ export class HostStore {
     if (patch.environment !== undefined) entry.environment = patch.environment.trim() || undefined
     if (patch.tags !== undefined) entry.tags = [...patch.tags].map(tag => tag.trim()).filter(tag => tag !== '')
     if (patch.location !== undefined) entry.location = patch.location.trim() || undefined
+    if (patch.commandPolicy !== undefined) entry.commandPolicy = patch.commandPolicy
     entry.updatedAt = Date.now()
     this.save(file)
     return entry

@@ -317,3 +317,44 @@ describe('unified payload validation (P1-21)', () => {
     expect(after.host).toBe('192.168.1.10')
   })
 })
+
+describe('commandPolicy (per-host command guard)', () => {
+  const policy = {
+    deny: ['(^|[;&|(])\\s*(?:\\S*/)?(python|Rscript)(\\s|$)'],
+    hint: '用 srun/sbatch 提交到计算节点',
+  }
+
+  it('defaults to NO interception when the field is absent', () => {
+    const store = makeStore()
+    const entry = store.create(basePayload)
+    expect(entry.commandPolicy).toBeUndefined()
+    expect(store.find('web-01')!.commandPolicy).toBeUndefined()
+    expect(store.summarize(entry).commandPolicy).toBeUndefined()
+  })
+
+  it('round-trips commandPolicy through create and summarize', () => {
+    const store = makeStore()
+    const entry = store.create({ ...basePayload, commandPolicy: policy })
+    expect(entry.commandPolicy).toEqual(policy)
+    expect(store.find('web-01')!.commandPolicy).toEqual(policy)
+    expect(store.summarize(entry).commandPolicy).toEqual(policy)
+  })
+
+  it('round-trips commandPolicy through update', () => {
+    const store = makeStore()
+    store.create(basePayload)
+    store.update('web-01', { commandPolicy: policy })
+    expect(store.find('web-01')!.commandPolicy).toEqual(policy)
+    // An explicit empty policy clears the guard.
+    store.update('web-01', { commandPolicy: { deny: [] } })
+    expect(store.find('web-01')!.commandPolicy).toEqual({ deny: [] })
+  })
+
+  it('rejects an invalid policy on create and update', () => {
+    const store = makeStore()
+    expect(() => store.create({ ...basePayload, commandPolicy: { deny: ['unclosed('] } })).toThrow(/not a valid regular expression/)
+    expect(() => store.create({ ...basePayload, commandPolicy: { deny: [1] } })).toThrow(/array of regex strings/)
+    store.create(basePayload)
+    expect(() => store.update('web-01', { commandPolicy: { deny: ['unclosed('] } })).toThrow(/not a valid regular expression/)
+  })
+})

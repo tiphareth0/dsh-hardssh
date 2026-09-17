@@ -144,3 +144,47 @@ export function refusalMessage(alias: string, pattern: string, hint: string | un
 export function checkCommand(alias: string, command: string, policy: SshCommandPolicy | undefined): string | undefined {
   return CompiledCommandPolicy.compile(policy).check(alias, command)
 }
+
+/** How the tool-layer guard resolves the (alias, command) pairs of one call. */
+export interface CommandGuardLookup {
+  /** Every configured alias (for `ssh_cluster` without an explicit list). */
+  allAliases(): readonly string[]
+  /** Alias owning a session cwd (a bound SSH workspace), for `bash`. */
+  aliasForCwd(cwd: string | undefined): string | undefined
+}
+
+/**
+ * Map one tool execution to the (alias, command) pairs the guard must check,
+ * or `undefined` when the call cannot carry a remote command.
+ *
+ * Covers the three remote-command channels:
+ *  - `ssh_exec`    → the explicitly named alias + its command;
+ *  - `ssh_cluster` → the explicit alias list, or EVERY host when absent;
+ *  - `bash`        → the alias bound to the calling session's cwd.
+ * Every other tool is not a remote-command channel and returns `undefined`.
+ */
+export function commandGuardTargets(
+  toolName: string,
+  args: Readonly<Record<string, unknown>> | undefined,
+  cwd: string | undefined,
+  lookup: CommandGuardLookup,
+): Array<{ alias: string; command: string }> | undefined {
+  const command = typeof args?.command === 'string' ? args.command : undefined
+  if (command === undefined) return undefined
+  if (toolName === 'ssh_exec') {
+    const alias = args?.alias
+    return typeof alias === 'string' && alias !== '' ? [{ alias, command }] : undefined
+  }
+  if (toolName === 'ssh_cluster') {
+    const explicit = args?.aliases
+    const aliases = Array.isArray(explicit)
+      ? (explicit as unknown[]).filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+      : [...lookup.allAliases()]
+    return aliases.map(alias => ({ alias, command }))
+  }
+  if (toolName === 'bash') {
+    const alias = lookup.aliasForCwd(cwd)
+    return alias === undefined ? undefined : [{ alias, command }]
+  }
+  return undefined
+}

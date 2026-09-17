@@ -11,6 +11,7 @@ import {
   CompiledCommandPolicy,
   LOGIN_NODE_PRESET,
   checkCommand,
+  commandGuardTargets,
   refusalMessage,
   validateCommandPolicy,
 } from '../../src/ssh/command-policy.ts'
@@ -91,5 +92,37 @@ describe('command policy matching', () => {
     // spawn of python is refused the same way a shell line is.
     expect(policy.check('login-node', '/usr/bin/python3 -u train.py')).toBeDefined()
     expect(policy.check('login-node', 'srun python train.py')).toBeUndefined()
+  })
+})
+
+describe('commandGuardTargets (tool-layer mapping)', () => {
+  const lookup = {
+    allAliases: () => ['a', 'b'],
+    aliasForCwd: (cwd: string | undefined) => (cwd === '/anchor/ws-1' ? 'a' : undefined),
+  }
+
+  it('maps ssh_exec to its named alias', () => {
+    expect(commandGuardTargets('ssh_exec', { alias: 'a', command: 'python x' }, undefined, lookup))
+      .toEqual([{ alias: 'a', command: 'python x' }])
+    // A missing/empty alias is not a guardable target.
+    expect(commandGuardTargets('ssh_exec', { command: 'x' }, undefined, lookup)).toBeUndefined()
+  })
+
+  it('maps ssh_cluster to its explicit list or every host', () => {
+    expect(commandGuardTargets('ssh_cluster', { aliases: ['a'], command: 'Rscript x' }, undefined, lookup))
+      .toEqual([{ alias: 'a', command: 'Rscript x' }])
+    expect(commandGuardTargets('ssh_cluster', { command: 'Rscript x' }, undefined, lookup))
+      .toEqual([{ alias: 'a', command: 'Rscript x' }, { alias: 'b', command: 'Rscript x' }])
+  })
+
+  it('maps bash to the session-bound alias', () => {
+    expect(commandGuardTargets('bash', { command: 'python x' }, '/anchor/ws-1', lookup))
+      .toEqual([{ alias: 'a', command: 'python x' }])
+    expect(commandGuardTargets('bash', { command: 'python x' }, '/local', lookup)).toBeUndefined()
+  })
+
+  it('does not treat other tools as command channels', () => {
+    expect(commandGuardTargets('ssh_upload', { command: 'x' }, undefined, lookup)).toBeUndefined()
+    expect(commandGuardTargets('ssh_exec', { alias: 'a' }, undefined, lookup)).toBeUndefined()
   })
 })
