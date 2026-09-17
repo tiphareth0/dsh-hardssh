@@ -95,4 +95,21 @@ describe('HostFormDialog commandPolicy', () => {
     const patch = updateHost.mock.calls[0]![1] as HostPayload
     expect(patch.commandPolicy).toEqual({ deny: [] })
   })
+
+  it('round-trips denyCommands/allowCommands name lists', async () => {
+    const updateHost = vi.fn(() => Promise.resolve(host()))
+    render(host({ commandPolicy: { deny: [], denyCommands: ['python', 'R'], allowCommands: ['sbatch'], hint: '' } }), { updateHost, createHost: vi.fn() })
+    expect(document.querySelector<HTMLTextAreaElement>('[data-test="host-deny-commands"]')!.value).toBe('python\nR')
+    expect(document.querySelector<HTMLTextAreaElement>('[data-test="host-allow-commands"]')!.value).toBe('sbatch')
+    setControl(document.querySelector<HTMLTextAreaElement>('[data-test="host-deny-commands"]')!, 'python\n\nRscript')
+    setControl(document.querySelector<HTMLTextAreaElement>('[data-test="host-allow-commands"]')!, 'sbatch\nsrun')
+    clickSave()
+    await flush()
+    const patch = updateHost.mock.calls[0]![1] as HostPayload
+    expect(patch.commandPolicy).toEqual({
+      deny: [],
+      denyCommands: ['python', 'Rscript'],
+      allowCommands: ['sbatch', 'srun'],
+    })
+  })
 })

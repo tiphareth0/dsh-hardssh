@@ -12,6 +12,7 @@ import {
   LOGIN_NODE_PRESET,
   checkCommand,
   commandGuardTargets,
+  commandName,
   refusalMessage,
   validateCommandPolicy,
 } from '../../src/ssh/command-policy.ts'
@@ -36,7 +37,12 @@ describe('command policy validation', () => {
     expect(validateCommandPolicy({ deny: ['python('] })).toMatch(/not a valid regular expression/)
     expect(validateCommandPolicy({ deny: ['x'.repeat(600)] })).toMatch(/at most 512/)
     expect(validateCommandPolicy({ deny: [], hint: 42 })).toMatch(/hint must be a string/)
-    expect(validateCommandPolicy({ deny: Array.from({ length: 65 }, () => 'a') })).toMatch(/at most 64/)
+    expect(validateCommandPolicy({ deny: [], denyCommands: 'python' })).toMatch(/array of command names/)
+    expect(validateCommandPolicy({ deny: [], denyCommands: ['python/py', 'a b'] })).toMatch(/plain command name/)
+    expect(validateCommandPolicy({ deny: [], denyCommands: ['python'] })).toBeUndefined()
+    expect(validateCommandPolicy({ deny: [], allowCommands: ['sbatch'] })).toBeUndefined()
+    expect(validateCommandPolicy({ deny: [], allowCommands: ['# comment'] })).toMatch(/plain command name/)
+    expect(validateCommandPolicy({ deny: [], denyCommands: Array.from({ length: 129 }, () => 'a') })).toMatch(/at most 128/)
   })
 })
 
@@ -124,5 +130,49 @@ describe('commandGuardTargets (tool-layer mapping)', () => {
   it('does not treat other tools as command channels', () => {
     expect(commandGuardTargets('ssh_upload', { command: 'x' }, undefined, lookup)).toBeUndefined()
     expect(commandGuardTargets('ssh_exec', { alias: 'a' }, undefined, lookup)).toBeUndefined()
+  })
+})
+
+describe('commandName (unwrap: bash -c / sudo / env / paths)', () => {
+  it('derives the effective command name', () => {
+    expect(commandName('python --version')).toBe('python')
+    expect(commandName('/usr/bin/python3 -c 1')).toBe('python3')
+    expect(commandName('FOO=bar python x.py')).toBe('python')
+    expect(commandName('sudo -u alice python x.py')).toBe('python')
+    expect(commandName('nohup Rscript a.R')).toBe('Rscript')
+    expect(commandName('cd /tmp')).toBe('cd')
+  })
+
+  it('unwraps bash -c / sh -c quoting', () => {
+    expect(commandName(`bash -c 'python x.py'`)).toBe('python')
+    expect(commandName('sh -c "Rscript a.R"')).toBe('Rscript')
+    expect(commandName(`bash -c "echo hi | grep x"`)).toBe('echo')
+  })
+
+  it('rejects on a denied command name that regexes miss', () => {
+    const policy = CompiledCommandPolicy.compile({
+      deny: [],
+      denyCommands: ['python', 'python3', 'Rscript'],
+    })
+    expect(policy.check('h', `bash -c 'python x.py'`)).toMatch(/禁止命令 "python"/)
+    expect(policy.check('h', 'sudo -u m python3 -c 1')).toMatch(/禁止命令 "python3"/)
+    expect(policy.check('h', 'nohup Rscript a.R')).toMatch(/禁止命令 "Rscript"/)
+    // Allowed exception wins.
+    const allow = CompiledCommandPolicy.compile({
+      deny: [],
+      denyCommands: ['python'],
+      allowCommands: ['python'],
+    })
+    expect(allow.check('h', 'python x.py')).toBeUndefined()
+    // Merely mentioning the word is not executing it.
+    expect(policy.check('h', 'grep -rn python .')).toBeUndefined()
+    expect(policy.check('h', 'echo python')).toBeUndefined()
+    // srun/sbatch are not unwrapped (they submit to compute nodes) and not denied.
+    expect(policy.check('h', 'srun -p gpu python train.py')).toBeUndefined()
+  })
+
+  it('isEmpty considers both mechanisms', () => {
+    expect(CompiledCommandPolicy.compile({ deny: [] }).isEmpty).toBe(true)
+    expect(CompiledCommandPolicy.compile({ deny: [], denyCommands: ['python'] }).isEmpty).toBe(false)
   })
 })

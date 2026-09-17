@@ -13,6 +13,11 @@ export interface SshCommandPolicy {
   /** One JS regular expression per entry, matched case-insensitively against
    *  a command line. Blank entries and lines starting with `#` are ignored. */
   deny: string[]
+  /** Command basenames denied after unwrap (`bash -c python …`/`sudo python …`
+   *  are resolved to the effective name first). `#`-lines and blanks ignored. */
+  denyCommands?: string[]
+  /** Basenames that override a `denyCommands` entry (specific exceptions). */
+  allowCommands?: string[]
   /** Operator message appended to every refusal (how to run it properly). */
   hint?: string
 }

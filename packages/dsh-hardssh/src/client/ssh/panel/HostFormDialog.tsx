@@ -36,6 +36,10 @@ interface FormState {
   location: string
   /** Per-line regex rules for the command guard (one per line; #/blank ignored). */
   commandPolicy: string
+  /** Command names denied after unwrap (one per line; `bash -c python …`/`sudo …`). */
+  denyCommands: string
+  /** Command names that override a denyCommands entry (one per line). */
+  allowCommands: string
   /** Operator hint shown when a rule blocks a command. */
   policyHint: string
 }
@@ -62,6 +66,8 @@ function blankOf(editing: SshHostSummary | null | undefined): FormState {
     tags: (editing?.tags ?? []).join(', '),
     location: editing?.location ?? '',
     commandPolicy: (editing?.commandPolicy?.deny ?? []).join('\n'),
+    denyCommands: (editing?.commandPolicy?.denyCommands ?? []).join('\n'),
+    allowCommands: (editing?.commandPolicy?.allowCommands ?? []).join('\n'),
     policyHint: editing?.commandPolicy?.hint ?? '',
   }
 }
@@ -119,7 +125,8 @@ export function HostFormDialog({ api, editing, onClose, onSaved }: HostFormDialo
       environment: form.environment.trim() === '' ? undefined : form.environment.trim(),
       tags: splitList(form.tags),
       location: form.location.trim() === '' ? undefined : form.location.trim(),
-      // Command guard: the form is the truth. Every non-blank line is a regex;
+      // Command guard: the form is the truth. `deny` lines are regexes,
+      // `denyCommands`/`allowCommands` are basenames (unwrapped before match);
       // a fully-empty form saves an empty policy, which clears any previous
       // guard (store.update overwrites the field when present).
       commandPolicy: {
@@ -127,6 +134,18 @@ export function HostFormDialog({ api, editing, onClose, onSaved }: HostFormDialo
           .split('\n')
           .map(line => line.trim())
           .filter(line => line !== ''),
+        ...(form.denyCommands.trim() === '' ? {} : {
+          denyCommands: form.denyCommands
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line !== ''),
+        }),
+        ...(form.allowCommands.trim() === '' ? {} : {
+          allowCommands: form.allowCommands
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line !== ''),
+        }),
         ...(form.policyHint.trim() === '' ? {} : { hint: form.policyHint.trim() }),
       },
     }
@@ -243,6 +262,30 @@ export function HostFormDialog({ api, editing, onClose, onSaved }: HostFormDialo
             onChange={event => { set('commandPolicy', event.target.value) }}
           />
           <span className={css.hint}>{tt('form.commandPolicyHint')}</span>
+        </label>
+        <label className={css.field}>
+          <span className={css.fieldLabel}>{tt('form.denyCommands')}</span>
+          <textarea
+            className={css.textarea}
+            rows={4}
+            spellCheck={false}
+            value={form.denyCommands}
+            data-test="host-deny-commands"
+            onChange={event => { set('denyCommands', event.target.value) }}
+          />
+          <span className={css.hint}>{tt('form.denyCommandsHint')}</span>
+        </label>
+        <label className={css.field}>
+          <span className={css.fieldLabel}>{tt('form.allowCommands')}</span>
+          <textarea
+            className={css.textarea}
+            rows={2}
+            spellCheck={false}
+            value={form.allowCommands}
+            data-test="host-allow-commands"
+            onChange={event => { set('allowCommands', event.target.value) }}
+          />
+          <span className={css.hint}>{tt('form.allowCommandsHint')}</span>
         </label>
         <label className={css.field}>
           <span className={css.fieldLabel}>{tt('form.policyHint')}</span>
