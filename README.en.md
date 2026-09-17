@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.5-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.6--alpha-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -160,13 +160,17 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm (current version **`0.2.5`**, shipping the required `cordis.patch.yml`
-and built artifacts) — one command:
+Published on npm. The stable release is **`0.2.5`** (installable as
+`add @tiphareth/dsh-hardssh`); this checkout is **`0.2.6-alpha`**, a pre-release, so
+name the version explicitly:
 
 ```sh
+# the pre-release in this checkout
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
+# or stay on the stable release
 dsh plugin --profile web add @tiphareth/dsh-hardssh
-# or via npx when `dsh` is not on PATH
-npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
+# via npx when `dsh` is not on PATH
+npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
 ```
 
 For development / local iteration, install from the source checkout or a local tarball:
@@ -177,7 +181,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.5.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.6-alpha.tgz
 ```
 
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and
@@ -193,7 +197,7 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | Plugin | Verified DSH | Node | Remote hosts |
 |---|---|---|---|
-| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6` (production verified on `0.1.5-rc.1`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
+| `0.2.5`+ (currently `0.2.6-alpha`) | `>=0.1.5-rc.1 <0.1.6` (production verified on `0.1.5-rc.1`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
 
 > The earlier `0.1.5-alpha.1` is **not** supported: `dsh-client-ui-slots@0.1.5-alpha.1` declares no `main` slot, so the workspace panel has nowhere to mount (the matrix fails typecheck). See `compat/README.md`.
 

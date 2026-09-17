@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.5-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.6--alpha-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -102,12 +102,15 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm（当前版本 **`0.2.5`**，含插件所需的 `cordis.patch.yml` 与构建产物），一行安装：
+已发布到 npm。正式版是 **`0.2.5`**（可直接 `add @tiphareth/dsh-hardssh`）；本仓库当前版本 **`0.2.6-alpha`** 是预发布版，安装时显式指定版本：
 
 ```sh
+# 预发布版（本仓库当前版本）
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
+# 或仍装正式版
 dsh plugin --profile web add @tiphareth/dsh-hardssh
-# 或 npx 形式（dsh 不在 PATH 时）
-npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh
+# npx 形式（dsh 不在 PATH 时）
+npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
 ```
 
 开发/迭代用本机源码或本地 tarball：
@@ -118,7 +121,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.5.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.6-alpha.tgz
 ```
 
 手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
@@ -133,7 +136,7 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | 插件版本 | 已验证 DSH | Node | 远端主机 |
 |---|---|---|---|
-| `0.2.5`+ | `>=0.1.5-rc.1 <0.1.6`（生产环境实测 `0.1.5-rc.1`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
+| `0.2.5`+（当前 `0.2.6-alpha`） | `>=0.1.5-rc.1 <0.1.6`（生产环境实测 `0.1.5-rc.1`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
 
 > 更早的 `0.1.5-alpha.1` **不支持**：`dsh-client-ui-slots@0.1.5-alpha.1` 没有 `main` 槽位，工作区面板无处挂载（矩阵实测 typecheck 直接失败）。见 `compat/README.md`。
 

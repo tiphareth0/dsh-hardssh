@@ -2,6 +2,36 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.2.6-alpha — 2026-09-17
+
+### 跨平台修复：Linux / macOS 客户端的绑定会话
+
+绑定 SSH 工作区后，会话 cwd 就是**本机**的锚点目录。此前两个远端后端判断「这是不是服务器路径」时只看「像不像 POSIX 绝对路径」，而这个判断只在 Windows 上侥幸成立：
+
+- **fs**：`SshFileSystem.resolveRemoteCwd` 直接采用 POSIX 绝对 cwd，于是相对路径被解析成 `<锚点>/app.txt`，撞上根收敛并报 `workspace.ssh-outside-root`；
+- **subprocess**：`resolveRemoteCwd` 用 `startsWith('/')` 做同源判断，`cd -- '<锚点>'` 被发到服务器——而该目录在服务器上并不存在。
+
+Windows 客户端的锚点是 `C:\…`，两个判断都不成立、于是回落到远端根，长期掩盖了问题；Linux/macOS 下锚点本身就是绝对 POSIX 路径，**SSH 工作区实际上是坏的**（文件操作全部报 outside-root，命令 cd 到不存在的目录）。修法是把锚点↔远端根的映射放在唯一知道它的那一层：
+
+- 新增 `src/switch/anchor-path.ts`（`translateAnchorPath` 单一实现），fs 与 subprocess 两个门面共用，从此两边的映射不可能各说各话；
+- `switch-fs.ts` 在 `resolve` / `lstat` 转发远端后端时改写 `opts.cwd`；本地分支与真正的远端 cwd 原样透传；
+- `switch-subprocess.ts` 新增 `remoteCwd`，仅在路由到远端 runtime 时改写 `spec.cwd`；客户端二进制（`pwsh` / `cmd`、走回代答档的 `rg`）仍使用本机锚点——它们在本机运行；
+- `src/subprocess.ts` 导出 `genericRemoteCwdFor`，部署行与组装夹具共用同一条 ledger 答案；
+- 新增 `tests/switch-anchor-cwd.test.ts`：用 **POSIX 形状的锚点**在 Windows 上复现 Linux 行为（修复前 2 条失败），覆盖 cwd 路由与「项目根遍历不得中断」。
+
+### 修复：项目根遍历不再被中断
+
+`dsh-agent-instructions` 从会话 cwd 向上逐级探测 `<dir>/.git`，只有 `FS_NOT_FOUND` 才算「继续往上」，任何其它错误都会终止整个 run。锚点之上的本机祖先目录（如 `/tmp`、`/`）在绑定会话里按设计路由到远端、落在 workspace root 之外；Linux/macOS 下它们是绝对 POSIX 路径，于是抛 `FS_IO_ERROR` 直接结束运行（Windows 下不是绝对路径，又一次掩盖）。现在 `resolve` 的**词法**越界检查回答 `FS_NOT_FOUND`（消息原文不变，仍写明 `is outside '<root>'`），符号链接穿越的**规范**检查仍保持 `FS_IO_ERROR`——那是拒绝，不是缺席。
+
+### 兼容矩阵首次在 CI 上跑通
+
+`.github/workflows/compat.yml` 此前从未在 GitHub 上执行过（工作流随本批提交首次推送）。**首次运行即在 Linux runner 上抓出了上面两处跨平台缺陷**；修复后 Node 22.19.0 与 Node 24 两条腿全绿，`Test complete suite`（含 vault 用例）、`Build`、`Verify publish shape` 也第一次被真实执行。
+
+### 文档与隐私
+
+- 双语 README 与包内 README（npm 页面所用）同步到本版：新增「主机命令守卫」「原生工具在绑定会话里的行为」，补齐客户端体验修复（远端地址显示、连接中指示、认证被拒重弹），并纠正包内 README 里「`glob` / `grep` 会被显式拒绝」的过时说明（0.2.5 起已由搜索桥接管）。
+- 仓库内示例、测试夹具以及两条提交信息中的真实内网信息（主机别名、内网地址、账号名与 home 路径）全部替换为文档保留值（`login-node` / `192.0.2.10` / `alice` / `/data/home/alice`）；未发布的本地提交已重写历史，公开仓库的推送范围经检索确认零命中。
+
 ## v0.2.5 — 2026-09-15
 
 ### 兼容性与稳健性（P0）
