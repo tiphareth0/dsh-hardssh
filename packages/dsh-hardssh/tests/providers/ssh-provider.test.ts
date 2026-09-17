@@ -82,6 +82,35 @@ describe('SSH provider (cordis ctx) serves the real production classes', () => {
     await connection.close()
   })
 
+  it('overwrites an existing file on a server that allows replacing rename', async () => {
+    const fake = new FakeEngine()
+    fake.seedFile('/srv/app/hello.txt', 'first')
+    const { connection } = await openSshConnection(fake, new Context())
+    const fs = connection.get('workspace.fs') as unknown as SshFileSystem
+    await fs.writeText(await fs.resolve('hello.txt'), 'second')
+    expect(await fs.readText(await fs.resolve('hello.txt'))).toBe('second')
+    expect(fake.files.get('/srv/app/hello.txt')?.content).toBe('second')
+    await connection.close()
+  })
+
+  it('overwrites an existing file even when the SFTP server refuses overwriting rename (OpenSSH >= 7.9)', async () => {
+    // Regression: editing an existing remote file published the staging file
+    // with a plain SSH_FXP_RENAME, which modern OpenSSH refuses when the target
+    // exists. writeAtomic now falls back to a POSIX `mv -f` after trying the
+    // sftp rename (which itself prefers the posix-rename@openssh.com extension).
+    const fake = new FakeEngine()
+    fake.refuseOverwriteRename = true
+    fake.seedFile('/srv/app/hello.txt', 'first')
+    const { connection } = await openSshConnection(fake, new Context())
+    const fs = connection.get('workspace.fs') as unknown as SshFileSystem
+    await fs.writeText(await fs.resolve('hello.txt'), 'second')
+    expect(await fs.readText(await fs.resolve('hello.txt'))).toBe('second')
+    expect(fake.files.get('/srv/app/hello.txt')?.content).toBe('second')
+    // No `.dsh-<uuid>.tmp` staging residue.
+    expect([...fake.files.keys()].filter(path => path.includes('.dsh-') && path.endsWith('.tmp'))).toEqual([])
+    await connection.close()
+  })
+
   it('does not publish when staging chmod fails and attempts cleanup', async () => {
     const fake = new FakeEngine()
     const originalExec = fake.exec.bind(fake)

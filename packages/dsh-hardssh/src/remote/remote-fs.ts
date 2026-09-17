@@ -608,7 +608,7 @@ export class SshFileSystem extends FileSystem {
         if (publication.stdout.trim() !== 'created') throw new Error('guarded create returned an invalid publication result')
         published = true
       } else {
-        await this.engine.rename(alias, temporary, targetPath, signal)
+        await this.publishOverwrite(alias, temporary, targetPath, signal)
         published = true
       }
       // Publication is the commit point. Cancellation after it must not report
@@ -643,6 +643,27 @@ export class SshFileSystem extends FileSystem {
   private async removeStaging(directory: string): Promise<void> {
     const { alias } = this.current()
     await this.engine.rm(alias, directory, true)
+  }
+
+  /** Publish the staged content over an existing target.
+   *
+   *  `SftpService.rename` prefers the posix-rename@openssh.com extension
+   *  (atomic overwrite) and falls back to the standard SSH_FXP_RENAME. A
+   *  server that refuses to replace an existing target on BOTH paths (a few
+   *  non-OpenSSH implementations) would still fail, so the POSIX shell
+   *  `mv -f` — a same-directory rename(2), i.e. an atomic overwrite — is the
+   *  last resort, consistent with the existing `chmod` / `ln -T` shell
+   *  workarounds on this publish path. */
+  private async publishOverwrite(alias: string, temporary: string, targetPath: string, signal?: AbortSignal): Promise<void> {
+    try {
+      await this.engine.rename(alias, temporary, targetPath, signal)
+    } catch (sftpError: unknown) {
+      const moved = await this.engine.exec(alias, `mv -f -- ${quoteShellArg(temporary)} ${quoteShellArg(targetPath)}`, { timeoutMs: 10_000, signal })
+      if (!moved.success || moved.exitCode !== 0) {
+        const detail = moved.stderr || `mv -f failed with exit code ${moved.exitCode}`
+        throw new FsError(`cannot overwrite "${targetPath}": ${detail}`, 'FS_IO_ERROR', { cause: sftpError })
+      }
+    }
   }
 
   /** Normalize an engine stat/ls shape into the RemoteStats the helpers expect. */

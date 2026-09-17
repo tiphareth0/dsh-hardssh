@@ -38,6 +38,14 @@ export interface FakeFsEntry {
   content: string
 }
 
+/** The inverse of the plugin's shellQuote (single quotes, `'\''` for embedded). */
+function unquoteShellArg(value: string): string {
+  if (value.length >= 2 && value[0] === "'" && value[value.length - 1] === "'") {
+    return value.slice(1, -1).replace(/'\\''/g, "'")
+  }
+  return value
+}
+
 /** A controllable streaming exec channel recorded by the fake engine. */
 export class FakeExecSession implements ExecSession {
   onData: ((data: Buffer) => void) | undefined
@@ -153,6 +161,14 @@ export class FakeEngine {
    */
   onUnknownCommand?: (alias: string, command: string) => string
 
+  /**
+   * Simulate a modern OpenSSH sftp-server (>= 7.9): rename() refuses to
+   * replace an existing target (SSH_FXP_RENAME failure), so the caller must
+   * use the posix-rename extension or an `mv -f` fallback. Default off, so
+   * the rest of the suite keeps the historically lenient behavior.
+   */
+  refuseOverwriteRename = false
+
   constructor() {
     // The workspace root always exists (like a real configured remote root).
     this.files.set('/srv/app', { type: 'dir', content: '' })
@@ -206,6 +222,20 @@ export class FakeEngine {
     // `chmod <mode> -- '<path>'`: staging-file mode fix in writeAtomic.
     const chmod = /^chmod \d+ -- (.+)$/.exec(command)
     if (chmod !== null) {
+      return this.ok()
+    }
+    // `mv -f -- '<from>' '<to>'`: writeAtomic's last-resort atomic overwrite
+    // publication when the SFTP server refuses overwriting rename.
+    const mv = /^mv -f -- (.+) (.+)$/.exec(command)
+    if (mv !== null) {
+      const from = unquoteShellArg(mv[1]!)
+      const to = unquoteShellArg(mv[2]!)
+      if (!this.files.has(canonicalPosix(from))) {
+        return { success: false, exitCode: 1, timedOut: false, stdout: '', stderr: `mv: cannot stat '${from}': No such file or directory`, durationMs: 0 }
+      }
+      const entry = this.files.get(canonicalPosix(from))!
+      this.files.delete(canonicalPosix(from))
+      this.files.set(canonicalPosix(to), entry)
       return this.ok()
     }
     return this.ok(this.onUnknownCommand?.(_alias, command) ?? '')
@@ -355,6 +385,13 @@ export class FakeEngine {
     const to = canonicalPosix(toPath)
     const entry = this.files.get(from)
     if (entry === undefined) throw this.notFound(fromPath)
+    // Simulate modern OpenSSH sftp-server: a plain SSH_FXP_RENAME must not
+    // replace an existing target (this is exactly what broke write-overwrite).
+    if (this.refuseOverwriteRename && this.files.has(to)) {
+      const error = new Error(`Failure: destination already exists: ${toPath}`)
+      ;(error as Error & { code: string }).code = 'FAILURE'
+      throw error
+    }
     this.files.delete(from)
     this.files.set(to, entry)
     // Renaming a directory moves every descendant.

@@ -4,6 +4,23 @@
 
 ## v0.2.6-alpha — 2026-09-17
 
+### 修复：覆盖已存在远端文件的原子写在 OpenSSH ≥ 7.9 上失败
+
+`writeAtomic`（`writeText` / `editText` 的共用发布路径）对已存在文件的覆盖发布走 `engine.rename`
+→ `sftp.rename`，发送的是标准 `SSH_FXP_RENAME`。OpenSSH ≥ 7.9 的 sftp-server **拒绝用该包覆盖已存在
+的目标**（只有 `posix-rename@openssh.com` 扩展才允许原子覆盖），于是编辑一个已存在的远端文件会在
+发布点直接报错——旧版（如 CentOS 7 的 OpenSSH 7.4）会覆盖，掩盖了问题。上传覆盖目标文件同理受影响。
+
+- `SftpService.rename` 现在**优先发送 `posix-rename@openssh.com` 扩展**（ssh2 的 `ext_openssh_rename`，
+  即 POSIX `rename(3)`，可原子覆盖），不可用时兜底回标准包；ssh2 在不支持该扩展的服务器上会**同步抛错**，
+  因此同步/异步失败都应回退标准包（有单测）；
+- `writeAtomic` 的覆盖发布再加**最后一道保险**：标准包与扩展都失败的服务器（个别非 OpenSSH 实现），
+  回退到 POSIX `mv -f --`（同目录 `rename(2)`，仍为原子覆盖），与既有的 `chmod` / `ln -T` 壳命令
+  工作区一致；
+- 测试：新增 `tests/ssh/sftp-rename.test.ts`（扩展优先 / 同步抛错回退 / 异步失败回退 / 双失败报错），
+  并给 `FakeEngine` 加了 `refuseOverwriteRename`（模拟 OpenSSH ≥ 7.9 拒绝覆盖）与 `mv -f` 处理器，
+  在真实 `SshFileSystem` 上覆盖验证覆盖写成功、内容更新、无暂存残留。
+
 ### 跨平台修复：Linux / macOS 客户端的绑定会话
 
 绑定 SSH 工作区后，会话 cwd 就是**本机**的锚点目录。此前两个远端后端判断「这是不是服务器路径」时只看「像不像 POSIX 绝对路径」，而这个判断只在 Windows 上侥幸成立：

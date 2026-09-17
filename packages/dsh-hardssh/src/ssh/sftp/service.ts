@@ -699,12 +699,36 @@ async rm(alias: string, remotePath: string, recursive = false, signal?: AbortSig
   }, { signal })
 }
 
-/** Rename / move a remote path (mv semantics, same filesystem). */
+/** Rename / move a remote path (mv semantics, same filesystem).
+ *
+ *  Prefers the `posix-rename@openssh.com` extension (ssh2 ships it as
+ *  `ext_openssh_rename`): it performs POSIX rename(3) and atomically REPLACES
+ *  an existing target. A plain SSH_FXP_RENAME is refused by OpenSSH >= 7.9
+ *  when the target already exists, which made overwriting an existing remote
+ *  file (writeText/editText, and the partial-upload → final move) fail at the
+ *  publish point on every modern OpenSSH host. Servers without the extension
+ *  get the standard packet, which is correct for fresh targets and for
+ *  overwrite on older servers. */
 async rename(alias: string, fromPath: string, toPath: string, signal?: AbortSignal): Promise<void> {
   return this.access.withClient(alias, async (client) => {
     const sftp = await this.sftpFor(client)
     await this.withSftpTimeout(sftp, new Promise<void>((resolve, reject) => {
-      sftp.rename(fromPath, toPath, (error) => error !== undefined ? reject(error) : resolve())
+      const finish: (error?: Error | null) => void = (error) => (error !== undefined && error !== null ? reject(error) : resolve())
+      try {
+        sftp.ext_openssh_rename(fromPath, toPath, (extensionError) => {
+          if (extensionError === undefined || extensionError === null) {
+            resolve()
+            return
+          }
+          // Async failure (e.g. the server advertises the extension but refuses
+          // this request): fall back to the standard packet.
+          sftp.rename(fromPath, toPath, finish)
+        })
+      } catch {
+        // ssh2 throws synchronously when the server does not advertise the
+        // posix-rename@openssh.com extension — fall back to the standard packet.
+        sftp.rename(fromPath, toPath, finish)
+      }
     }), this.sftpOpts.sftpOperationTimeoutMs, `remote rename timed out after ${this.sftpOpts.sftpOperationTimeoutMs}ms: ${fromPath} -> ${toPath}`)
   }, { signal })
 }

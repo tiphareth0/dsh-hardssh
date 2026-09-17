@@ -645,6 +645,35 @@ describe.skipIf(process.platform === 'win32' || !existsSync('/usr/sbin/sshd'))('
       sshd.stop()
     }
   })
+
+  it('rename overwrites an existing target (posix-rename extension; OpenSSH refuses plain SSH_FXP_RENAME overwrite)', async () => {
+    // Regression found against a real OpenSSH 9.2 sshd: editing an existing
+    // remote file published its staging file with a plain SSH_FXP_RENAME,
+    // which modern OpenSSH refuses when the target exists. SftpService.rename
+    // must use the posix-rename@openssh.com extension for the overwrite.
+    const sshd = await TestSshd.start()
+    try {
+      store.create({
+        alias: 'sftp-overwrite',
+        host: '127.0.0.1',
+        port: sshd.port,
+        user: process.env.USER ?? 'root',
+        auth: { kind: 'key', keyPath: sshd.clientKey },
+      })
+      const base = join(sshd.root, 'overwrite')
+      await engine.mkdir('sftp-overwrite', base)
+      const target = join(base, 'app.txt')
+      await engine.writeFile('sftp-overwrite', target, Buffer.from('first', 'utf8'))
+      const staging = join(base, 'staging.tmp')
+      await engine.writeFile('sftp-overwrite', staging, Buffer.from('second', 'utf8'))
+      // A real OpenSSH sftp-server would reject a plain SSH_FXP_RENAME over an
+      // existing target; with the posix-rename extension this must succeed.
+      await engine.rename('sftp-overwrite', staging, target)
+      expect((await engine.readFile('sftp-overwrite', target)).content.toString('utf8')).toBe('second')
+    } finally {
+      sshd.stop()
+    }
+  })
 })
 
 
