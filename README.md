@@ -84,14 +84,18 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 - 密码 / 密钥口令默认**不落盘**（`secretStorage: none`），首次连接输入一次、**在该连接存活期内复用**（连接池空闲回收后需重新输入）；
 - 需要无人值守时可显式启用 `vault`（AES-256-GCM + scrypt）加密存储；
+- 点「连接」后工作区徽章显示**连接中**指示；密码错误 / 认证拒绝 / 断联会**立即重开密码框并显示具体 SSH 原因**（不是笼统的失败提示）；
 - 主机密钥 TOFU：首次连接弹指纹确认，密钥变更立即告警；
-- 远端路径强收敛：provider 负责 root 约束，相对路径禁止 `..`，符号链接逃逸 fail closed。
+- 远端路径强收敛：provider 负责 root 约束，相对路径禁止 `..`，符号链接逃逸 fail closed；
+- **可选的每主机命令守卫**：给某台主机配一组「禁止命令」，agent 尝试执行时会被拦下并给出你写的提示（例如「登录节点禁止计算，请用 srun/sbatch 提交」）。默认**不拦截**任何主机，详见下文「[主机命令守卫](#主机命令守卫可选)」。
 
 ## 特性
 
 - **SSH 工作区**：任意 `user@host` 的目录即可成为工作区。绑定的会话透明远端路由；侧边栏工作区带服务器标识（已连接 / 未连接，悬停显示远端目录）。
 - **SSH 运维（跟随会话）**：Web 终端（xterm + WebSocket PTY）、SFTP 上传下载、本地端口转发（访问内网数据库/服务）、当前服务器的远端命令。
 - **主机管理**：左侧「SSH 工作区」面板按服务器分组列出全部主机与工作区，带已连接 / 未连接徽章，支持增删改查与 `~/.ssh/config` 导入。
+- **命令守卫（按主机可选）**：每台主机可配置「禁止命令」（正则 + 命令名，自动解包 `bash -c` / `sudo` / 绝对路径），agent 在 `ssh_exec` / `ssh_cluster` / `bash` 里尝试执行时被拦下并显示你写的提示；也可在编辑服务器的对话框里直接填。默认不拦截。
+- **远端地址显示**：SSH 工作区的「工作区文件」面板、侧边栏工作区行的悬停提示都显示**远端真实路径**（本地锚点目录只是路由占位，不暴露给用户）。
 - **Agent 工具**：`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`，以及远端工作区工具 `remote_status` / `remote_ls` / `remote_search`（远端检索：正则语法、显式预算，以及宿主机没有可用正则引擎时的明确报错；`glob` / `grep` 已能直接查远端，见上文）。
 - **多主机**：任意数量主机（`host` / `port` / `user` + 私钥、密码或 `SSH_AUTH_SOCK` agent），密码免提交、连接时输入；跨主机并发命令用 `ssh_cluster`。
 - **不修改官方内核**：只作为普通插件挂载（目录流、左侧全局入口行、右侧栏 Tab），`dsh-workspace` 内核原样工作。
@@ -165,9 +169,70 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
     secretStorage: none   # 或 vault
 ```
 
+## 主机命令守卫（可选）
+
+**用途**：某些服务器不允许直接跑重活（典型是 Slurm 集群的**登录节点**：只能提交作业，不能就地计算）。给这台主机配一组「禁止命令」后，agent/工具尝试执行会被**拦下并显示你写的提示**，把它引导到正确的提交方式。
+
+**默认不拦截**：没配 `commandPolicy` 的主机行为完全不变。
+
+### 在哪里配
+
+两种等价方式（都写入 `~/.dsh/dsh-ssh.json` 的该主机条目）：
+
+1. **GUI**：左侧「SSH 工作区」→ 该主机行的 ⚙（编辑服务器）→ 三个输入框：
+   - 「禁止命令（每行一个正则）」
+   - 「禁止命令名称（每行一个，自动解包）」
+   - 「豁免命令名称（可选）」+「提示信息（可选）」
+   保存即生效（**表单即真值**：清空即移除该主机的拦截）。
+2. **直接编辑配置**：
+
+```jsonc
+{
+  "alias": "login-node",
+  "host": "192.0.2.10",
+  "user": "alice",
+  "auth": { "kind": "password", "secretRef": "…" },
+  "commandPolicy": {
+    "deny": [
+      "(^|[;&|(])\\s*(?:/?[^ /]+/){0,3}(python[0-9.]*|ipython|Rscript|R|make|gcc|g\\+\\+)(\\s|$)"
+    ],
+    "denyCommands": ["python", "python3", "Rscript", "R", "matlab", "julia", "make", "cmake", "gcc", "g++"],
+    "allowCommands": [],
+    "hint": "本服务器为 slurm 集群的登录节点，不可进行运算；请用 srun/sbatch 提交到计算节点。"
+  }
+}
+```
+
+### 两种规则怎么选
+
+| 字段 | 判定方式 | 能抓到的典型形态 |
+|---|---|---|
+| `deny`（正则） | 对**整条命令文本**匹配（命令位置锚定） | `python x.py`、`cd /a && python x.py`、`/usr/bin/python3 …` |
+| `denyCommands`（命令名） | 先**解包**再比对名字：跳过前置 `FOO=bar`、剥掉包装词（`sudo` / `env` / `time` / `nohup` / `bash -c "…"` 等）、去路径取 basename | `bash -c 'python x.py'`、`sudo -u me python3 …`、`nohup /usr/bin/python3 x.py` |
+| `allowCommands` | 上述名字的**例外**（豁免优先） | 某个你允许偶发内联运行的命令名 |
+
+两者可同时用；`srun -p gpu python train.py`、`sbatch run.sh`、`squeue` 这类提交/查询命令**不会被误伤**（`srun`/`sbatch` 不在禁止名单里，且正则锚定命令位置）。
+
+### 拦截发生在哪
+
+- **工具层**：`ssh_exec` / `ssh_cluster` / `bash`——按主机别名或会话所在工作区定位该主机策略；
+- **seam 层**：任何经 `ctx.subprocess` 的远端 spawn（含第三方插件直连）对 `argv[0]` 与整行各查一次。
+
+命中时报错形如：
+
+```text
+dsh-hardssh: 已阻止在 login-node 上执行该命令（命中该主机的禁止规则 /…/ 或 禁止命令 "python"）。
+本服务器为 slurm 集群的登录节点，不可进行运算；请用 srun/sbatch 提交到计算节点。
+```
+
+### 诚实边界
+
+这是**护栏（guardrail），不是沙箱**：`$(…)`、base64 解出再跑、脚本内部稍后调用计算命令，都能绕过。它的价值是**防止误用 + 把 agent 引导到提交路径**；真正的硬约束应放在服务器侧（Slurm 分区限额、`pam_slurm_adopt`、PATH 里的 shim）。
+另外 `bash` 本身不建议放进 `denyCommands`：它会被当作**包装词**剥壳（这正是能抓到 `bash -c python` 的原因），把它列为禁止名会连 `bash` 工具自身的每个 spawn 一起拦掉。
+
 ## 数据位置
 
-- 主机配置：`~/.dsh/dsh-ssh.json`
+- 主机配置：`~/.dsh/dsh-ssh.json`（含每主机的 `commandPolicy` 命令守卫，见上文）
 - 通用工作区台账：`~/.dsh/workspaces/index.v1.json`
 - 工作区锚点目录：`~/.dsh/workspaces/anchors`
 - 主机密钥信任：`~/.dsh/ssh-known-hosts.json`
@@ -205,6 +270,8 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 **操作台里为什么不能选服务器** —— 设计如此：操作台强制跟随当前会话所在的服务器，避免在同一面板里误操作到别的主机。要换服务器请切换会话。
 
 **密码存哪里** —— 默认不落盘；启用 `secretStorage: vault` 后加密存储于 `~/.dsh/ssh-secrets/dsh-ssh-vault.json`。该目录**就在 `~/.dsh` 里**（`~/.dsh` 是 fs seam 声明的本地根），因此靠的是**显式拒绝**而非位置：`deniedRoots` 在 `resolve` / `lstat` 以及所有按 target 派发的读写路径上都会拒绝访问它，旧路径 `~/.dsh/dsh-ssh-vault.json` 同样被拒绝。诚实地说：以同一用户身份在本机运行的命令（例如客户端 `pwsh`）仍能读到这个文件——真正的保护是**它是加密的**，且环境变量自动解锁默认关闭，需要 `vaultAutoUnlock: env` 显式开启，所以拿到的只是离线的 scrypt 目标而不是可用凭据。
+
+**怎么禁止 agent 在某台服务器上跑计算命令（例如登录节点）** —— 给该主机配 `commandPolicy`：GUI 里点该主机的 ⚙（编辑服务器），填「禁止命令名称」和「提示信息」，保存即生效；或直接编辑 `~/.dsh/dsh-ssh.json`。默认不拦截。详见「[主机命令守卫](#主机命令守卫可选)」——注意它是护栏而非沙箱。
 
 **怎么让别的插件支持 SSH 工作区** —— 大多数插件零改动（走 seam）。少数需要改接口的，让 agent 读 [packages/dsh-hardssh/SKILLS.md](./packages/dsh-hardssh/SKILLS.md) 按手册适配。
 

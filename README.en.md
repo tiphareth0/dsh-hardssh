@@ -119,8 +119,15 @@ workspace**; there is no host dropdown:
   **off by default** (`vaultAutoUnlock: env` opts in), so a stolen file is an
   offline scrypt target rather than a usable credential;
 - host-key TOFU: fingerprint confirm on first connect, immediate warning on change;
+- clicking **Connect** shows a **connecting indicator** on the workspace badge; a wrong
+  password / rejected auth / dropped connection **immediately re-opens the password
+  dialog with the concrete SSH reason** (not a generic failure);
 - strict remote path confinement: the provider owns root confinement, `..` is
-  rejected in relative paths, symlink escapes fail closed.
+  rejected in relative paths, symlink escapes fail closed;
+- **optional per-host command guard**: configure a set of "forbidden commands" for one
+  host and the agent's attempt is refused with your own message (e.g. "this is a login
+  node — submit with srun/sbatch"). **Nothing is intercepted by default**; see
+  [Command guard](#command-guard-optional) below.
 
 ## Features
 
@@ -135,8 +142,16 @@ workspace**; there is no host dropdown:
   `~/.ssh/config` import.
 - **Agent tools** — `ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` /
   `ssh_tunnel` / `ssh_cluster`, plus the remote workspace tools `remote_status` /
-  `remote_ls` / `remote_search` (remote search, standing in for `glob` / `grep`,
-  which cannot work inside an SSH session).
+  `remote_ls` / `remote_search`. `glob` / `grep` work remotely too (see the
+  workspace-search bridge above); `remote_search` stays the tool for regex syntax,
+  explicit budgets, and hosts without a usable regex engine.
+- **Command guard (optional, per host)** — give one host a set of forbidden commands
+  (regex lines and/or command names that are auto-unwrapped across `bash -c` / `sudo` /
+  absolute paths); the agent's `ssh_exec` / `ssh_cluster` / `bash` attempt is refused
+  with your own message. Editable right in the host dialog. Off by default.
+- **Remote address display** — the "workspace files" panel and the sidebar row tooltip
+  show the **real remote path** (the local anchor directory is only a routing
+  placeholder and is never exposed to the user).
 - **Multi-host** — any number of hosts (`host` / `port` / `user` + key, password, or
   `SSH_AUTH_SOCK` agent); passwords are optional at creation. Cross-host fan-out via
   `ssh_cluster`.
@@ -222,9 +237,82 @@ Example (`cordis.patch.yml`):
     secretStorage: none   # or vault
 ```
 
+## Command guard (optional)
+
+**Why**: some hosts must not run heavy work inline — the classic case is a Slurm
+cluster's **login node**, where you may only submit jobs. Configure a set of
+"forbidden commands" for that host and the agent's attempt is **refused with your own
+message**, steering it to the correct submission path.
+
+**Off by default**: a host without a `commandPolicy` behaves exactly as before.
+
+### Where to configure it
+
+Both write the same field into that host's entry in `~/.dsh/dsh-ssh.json`:
+
+1. **GUI** — left sidebar "SSH workspaces" → the host row's ⚙ (edit server) → three
+   inputs: "Forbidden commands (one regex per line)", "Forbidden command names (one
+   per line, auto-unwrapped)", "Allowed command names (optional)" and "Message shown
+   on block (optional)". Saving applies immediately (**the form is the truth**:
+   clearing it removes the guard).
+2. **Edit the config directly**:
+
+```jsonc
+{
+  "alias": "login-node",
+  "host": "192.0.2.10",
+  "user": "alice",
+  "auth": { "kind": "password", "secretRef": "…" },
+  "commandPolicy": {
+    "deny": [
+      "(^|[;&|(])\\s*(?:/?[^ /]+/){0,3}(python[0-9.]*|ipython|Rscript|R|make|gcc|g\\+\\+)(\\s|$)"
+    ],
+    "denyCommands": ["python", "python3", "Rscript", "R", "matlab", "julia", "make", "cmake", "gcc", "g++"],
+    "allowCommands": [],
+    "hint": "This is a Slurm login node; submit work with srun/sbatch instead."
+  }
+}
+```
+
+### Which rule kind to use
+
+| Field | How it matches | Typical forms it catches |
+|---|---|---|
+| `deny` (regex) | the **whole command text** (anchored at command positions) | `python x.py`, `cd /a && python x.py`, `/usr/bin/python3 …` |
+| `denyCommands` (names) | **unwrapped** first: leading `FOO=bar` skipped, wrapper words peeled (`sudo` / `env` / `time` / `nohup` / `bash -c "…"`), path prefix stripped to basename | `bash -c 'python x.py'`, `sudo -u me python3 …`, `nohup /usr/bin/python3 x.py` |
+| `allowCommands` | exceptions to the names above (allow wins) | a name you do allow to run inline occasionally |
+
+They can be combined. Submission/query commands (`srun -p gpu python train.py`,
+`sbatch run.sh`, `squeue`) are **not** caught, because `srun`/`sbatch` are not in the
+denied names and the regex is anchored at command positions.
+
+### Where the refusal happens
+
+- **Tool layer**: `ssh_exec` / `ssh_cluster` / `bash` — resolved to the host by alias
+  or by the session's bound workspace;
+- **Seam layer**: every remote spawn through `ctx.subprocess` (including third-party
+  plugins spawning directly) checks `argv[0]` and the joined command line.
+
+The refusal text looks like:
+
+```text
+dsh-hardssh: 已阻止在 login-node 上执行该命令（命中该主机的禁止规则 /…/ 或 禁止命令 "python"）。
+This is a Slurm login node; submit work with srun/sbatch instead.
+```
+
+### Honest boundary
+
+This is a **guardrail, not a sandbox**: `$(…)`, base64, or a script that calls the
+compute command later all evade it. Its value is preventing accidents and pointing the
+agent at the submission path; hard enforcement belongs on the server (Slurm partition
+limits, `pam_slurm_adopt`, a PATH shim). Also, `bash` itself should not go into
+`denyCommands`: it is treated as a **wrapper** (which is exactly what makes
+`bash -c python` catchable), so listing it would also block every spawn of the `bash`
+tool itself.
+
 ## Data locations
 
-- Host config: `~/.dsh/dsh-ssh.json`
+- Host config: `~/.dsh/dsh-ssh.json` (including each host's `commandPolicy` guard, see above)
 - Generic workspace ledger: `~/.dsh/workspaces/index.v1.json`
 - Workspace anchors: `~/.dsh/workspaces/anchors`
 - Host-key trust: `~/.dsh/ssh-known-hosts.json`
@@ -281,6 +369,12 @@ encrypted in `~/.dsh/ssh-secrets/dsh-ssh-vault.json`. The fs seam refuses that
 directory (and the pre-relocation path) wherever it is addressed, but a local command
 running as the same user can still read the file — the real protection is the
 encryption plus auto-unlock being off unless `vaultAutoUnlock: env` is set.
+
+**How do I stop the agent from running compute commands on one server (e.g. a login node)?**
+— give that host a `commandPolicy`: click the host row's ⚙ (edit server) in the GUI and
+fill in the forbidden command names plus your message; or edit `~/.dsh/dsh-ssh.json`
+directly. Nothing is intercepted by default. See
+[Command guard](#command-guard-optional) — and note it is a guardrail, not a sandbox.
 
 **How do I make another plugin work with SSH workspaces?** — most plugins need zero
 changes (they go through the seams). For the rare one that needs interface swaps, point

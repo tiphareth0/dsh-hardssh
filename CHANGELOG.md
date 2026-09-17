@@ -140,6 +140,29 @@
   比原生 rg 的 250 行 / 20MB 更紧；`--sort=modified` 的文件名排序只在转发档保留；
   宿主机既无 rg 也无 GNU grep 时，正则内容检索明确报错（不会把正则当字面量搜）。
 
+### 每主机命令守卫（可选，默认不拦截）
+
+面向「登录节点禁止直接计算」这类主机策略：**默认什么都不拦**，只有显式给某台主机配了 `commandPolicy` 才生效。
+
+- **配置在主机条目里**（`~/.dsh/dsh-ssh.json` 的单台主机对象，也可在「新建/编辑服务器」对话框里填）：
+  - `deny`：每行一个**正则**，对整条命令文本做匹配（命令位置锚定，因此 `srun -p gpu python x.py` 这类提交命令不会被误伤）；
+  - `denyCommands`：**命令名**清单（`python` / `Rscript` / `make` …），匹配前会先「解包」——跳过前置 `FOO=bar` 赋值、剥掉包装词（`sudo` / `env` / `time` / `nohup` / `bash -c "…"` 等及其带值参数）、去掉路径前缀取 basename。**这正是纯正则看不见的包装形式**（`bash -c 'python x.py'`、`sudo python3 …`、`/usr/bin/python3 …`）；
+  - `allowCommands`：`denyCommands` 的**例外**（豁免优先于禁止）；
+  - `hint`：命中时附在报错里的可操作提示（例如「请用 srun/sbatch 提交到计算节点」）。
+- **两层执行，语义一致**：工具层 `ctx.tools.guard()` 覆盖 `ssh_exec` / `ssh_cluster` / `bash`（按会话 cwd 或显式 alias 定位主机）；seam 层在 `SshSubprocessRuntime.spawn()` 对 `argv[0]` basename 与拼接后的整行各查一次，覆盖任何经 `ctx.subprocess` 直连的插件。搜索桥自身的转发显式豁免（工具层已把关，且搜索 pattern 不是命令）。
+- **拒绝文案可读**：`dsh-hardssh: 已阻止在 <alias> 上执行该命令（命中该主机的禁止规则 /<re>/ 或 禁止命令 "<name>"）。` + 该主机的 `hint`。
+- **配置校验**：非法正则、非空校验、长度与条数上限都在写入时报可读错误；`deny`/`denyCommands` 由 `denyReason`/`CompiledCommandPolicy` 统一编译，`isEmpty` 两个机制都判空。
+- 提供 `LOGIN_NODE_PRESET`（登录节点预设：python 族 / R / matlab / julia / perl + `pip|conda install` 正则 + Slurm 提示），可直接复制进主机策略。
+- **诚实边界**：这是**护栏而非沙箱**——`$(…)`、base64、脚本内部再调用计算命令等都能绕过；真正的硬约束要在服务器侧（Slurm 限额、`pam_slurm_adopt`、PATH shim）。`bash` 本身**不放进** `denyCommands`：它被当作包装词剥壳（这正是能抓 `bash -c python` 的原因），若把它列为禁止命令名，seam 层会连 bash 工具自身的 spawn 一起拦掉。用例：`tests/ssh/command-policy.test.ts`、`tests/ssh/store.test.ts`、`tests/client/host-form-dialog.test.tsx`。
+
+### 客户端体验修复
+
+- **工作区文件面板显示远端地址**：原生 `dsh-client-ui-sidebar-files` 把面板根锚在 session header cwd（SSH 工作区即本地 anchor），内容经 fs seam 已是远端、但地址/面包屑/悬停仍是 anchor。新增 `src/client/workspace-files-path.ts`（纯函数 `remapAnchorToRemote` + MutationObserver 自愈），把面板 header 的 `title` 与可见文本重写为远端根；打开资源仍走 session 锚点 → seam 解析远端，路由不变。
+- **连接中指示**：`connectHost` 新增 `subscribeConnectState`，连接期间左侧 SSH 工作区徽章渲染旋转指示器（`@keyframes dsh-hardssh-spin`），状态翻转原地替换。
+- **密码错误/认证拒绝立即重弹并给出原因**：凭据已输入后服务器仍拒绝时，重新打开密码对话框并携带具体 SSH 错误（此前会落到非交互失败对话框）；首次弹窗不带陈旧原因，仅重试时携带。用例：`tests/client/connect-host.test.tsx`。
+- **堵死「空 HOME」**：`serializeEnvironment` 不再允许显式 `undefined` 删除登录关键变量（HOME/USER/LOGNAME/SHELL/PATH/PWD/TERM/LANG/TZ）——Windows 调用方展开自身环境时 HOME 恰为 `undefined`，会把远端扫描到的 HOME 抹掉，导致 `~/.ssh` 退化成 `/.ssh`；`readScrubbedRemoteEnvironment` 在 dump 无 HOME 时用 `getent passwd "$(id -un)"` 兜底一次（同 TTL 缓存）。
+- **搜索失败不再退化成不透明错误**：搜索桥在 spawn 之后的任何失败改为以 `exitCode=2` settle 并把原因写进 stderr（中止由调用方报 `SEARCH_ABORTED`），原生 `grep` 的报错因此能显示例如 `grep: Unmatched (`，而不是笼统的 `ripgrep provider failure`。
+
 ### 修复
 
 - **点击「添加工作区」→「本地工作区…」没有任何反应**（控制台：`Uncaught TypeError: ctx.workspaces.pickDirectory is not a function`）。0.1.5 内核把本机目录选择器服务从 `workspaces` 改名到 **`uiWorkspace`**（`dsh-client-ui-workspace` 中 `super(ctx, 'uiWorkspace')`，构造函数 `new UiWorkspaceService(ctx, ctx.remote.directoryPicker, …)`），插件仍在调用旧名，于是调用在点击处理器里**同步抛错**：浏览器吞掉异常，流程卡在等待状态又没有任何内容 → 用户只看到一个**空的白色窄条**。
