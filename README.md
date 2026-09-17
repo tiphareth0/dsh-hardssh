@@ -284,6 +284,8 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 默认策略下密码不写入磁盘（仅在会话内存中存在）；主机密钥采用 TOFU 首次信任。
 如需无人值守自动化访问密码主机，再显式启用 `vault` 模式并妥善保管主密码。
 
+完整的信任边界、能力清单与静态扫描逐条说明见 [SECURITY.md](./SECURITY.md)。
+
 ## License
 
 BSD-3-Clause

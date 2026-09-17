@@ -112,7 +112,7 @@ describe('import from ssh config', () => {
     '    HostName 10.0.0.1',
     '    User deploy',
     '    Port 2222',
-    '    IdentityFile ~/.ssh/id_ed25519',
+    '    IdentityFile ~/keys/project-key',
     '    ProxyJump bastion',
     '    # description: prod web',
     '    # environment: production',
@@ -121,7 +121,7 @@ describe('import from ssh config', () => {
     'Host dev-db',
     '    HostName 10.0.0.2',
     '    User root',
-    '    IdentityFile ~/.ssh/dev_key',
+    '    IdentityFile ~/keys/dev-key',
     '',
     'Host *.cluster',
     '    HostName 10.0.0.99',
@@ -165,7 +165,7 @@ describe('import from ssh config', () => {
       'Host lower-host',
       '    Hostname 10.9.9.9',
       '    User root',
-      '    IdentityFile ~/.ssh/id_ed25519',
+      '    IdentityFile ~/keys/project-key',
     ].join('\n'))
     const result = store.importFromSshConfig()
     expect(result.added).toBe(1)

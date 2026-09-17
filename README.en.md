@@ -391,6 +391,9 @@ Only add machines you trust. By default nothing is written to disk; host keys us
 first-trust TOFU. Enable `vault` mode explicitly (and guard the master password) only
 when unattended access to password hosts is required.
 
+The full trust boundaries, capability inventory, and a per-finding answer to static scanners
+live in [SECURITY.md](./SECURITY.md).
+
 ## License
 
 BSD-3-Clause

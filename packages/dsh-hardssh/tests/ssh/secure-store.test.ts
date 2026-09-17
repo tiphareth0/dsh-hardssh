@@ -81,10 +81,10 @@ describe('SecureHostStore (none mode — VSCode Remote-SSH style)', () => {
       host: 'h',
       port: 22,
       user: 'u',
-      auth: { kind: 'key', keyPath: '/home/u/.ssh/id_ed25519', passphrase: 'pp-secret' },
+      auth: { kind: 'key', keyPath: '/home/u/keys/project-key', passphrase: 'pp-secret' },
     })
     const raw = readFileSync(path, 'utf8')
-    expect(raw).toContain('id_ed25519')      // keyPath is a non-secret, kept
+    expect(raw).toContain('project-key')     // keyPath is a non-secret, kept
     expect(raw).not.toContain('pp-secret')   // passphrase never persisted
   })
 
@@ -187,7 +187,7 @@ describe('SecureHostStore (vault mode — encrypted at rest)', () => {
   it('never reinterprets an old password secret as a key passphrase', async () => {
     const { store, vault } = await makeVaultStore()
     const entry = await store.create(passwordPayload)
-    await store.update('web-01', { auth: { kind: 'key', keyPath: '/home/u/.ssh/id_ed25519' } })
+    await store.update('web-01', { auth: { kind: 'key', keyPath: '/home/u/keys/project-key' } })
     expect(store.find('web-01')!.auth.secretRef).toBeUndefined()
     expect(vault.status().entries).toBe(0)
     await expect(vault.reveal(entry.auth.secretRef!)).rejects.toMatchObject({ code: 'VAULT_MISSING' })

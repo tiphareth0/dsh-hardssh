@@ -114,3 +114,5 @@ pnpm --filter dsh-hardssh build       # 产出 lib/（构建前先清空，避�
 - 客户端路径不会被当成服务器路径：绑定会话的 cwd 是本机锚点目录，两个 seam 在派发前把它映射到工作区远端根（`src/switch/anchor-path.ts`）；根之外的**词法**越界按 `FS_NOT_FOUND` 作答，使 `dsh-agent-instructions` 从会话 cwd 向上找项目根的探测能继续走，而符号链接逃逸仍按 `FS_IO_ERROR` fail closed。
 - SSH 模式下本机沙箱不对远程执行生效（远程进程无法被本地内核沙箱约束）：门面的 `sandboxMode` 委托本地后端的真实模式（`write` / `edit` 的沙箱升级入口据此注册），而远端世界的升级策略在门面处**显式丢弃**。
 - 凭据默认不落盘；`secretStorage: vault` 时以 AES-256-GCM + scrypt 加密存储于 `~/.dsh/ssh-secrets/dsh-ssh-vault.json`（被 fs seam 拒绝访问），且 `DSH_CREDENTIAL_PASSWORD` 自动解锁默认关闭（需 `vaultAutoUnlock: env`）。会话密码按**连接存活期**复用，连接池回收即失效。
+
+完整的信任边界、能力清单，以及静态扫描命中项（`exec` 方法名、`child_process`、私钥路径字面量等）的逐条说明见仓库根目录的 [SECURITY.md](https://github.com/tiphareth0/dsh-hardssh/blob/master/SECURITY.md)。
