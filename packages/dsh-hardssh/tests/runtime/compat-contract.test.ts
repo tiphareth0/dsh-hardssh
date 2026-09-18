@@ -57,13 +57,15 @@ describe('runtime compatibility contract', () => {
     expect(TESTED_DSH_RANGE.startsWith('>=0.1.5-rc.1')).toBe(true)
     for (const [name, range] of Object.entries(packageJson.peerDependencies)) {
       if (name.startsWith('@deepseek-ai/') && range.includes('0.1.5')) {
-        expect(range, `${name} must not claim the disproved alpha.1 line`).not.toContain('alpha.1')
+        // Only the disproved 0.1.5-alpha.* line is forbidden; the 0.1.6 line
+        // legitimately names 0.1.6-alpha.1 in its range.
+        expect(range, `${name} must not claim the disproved 0.1.5-alpha line`).not.toMatch(/0\.1\.5-alpha/)
       }
     }
   })
 
   it('publishes bounded compatibility claims, never an unbounded wildcard', () => {
-    expect(TESTED_DSH_RANGE).toBe('>=0.1.5-rc.1 <0.1.6')
+    expect(TESTED_DSH_RANGE).toBe('>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1')
     expect(TESTED_NODE_RANGE).toContain('22.19')
     for (const [name, range] of Object.entries(packageJson.peerDependencies)) {
       if (name.startsWith('@deepseek-ai/')) expect(range, `${name} must be bounded`).not.toBe('*')

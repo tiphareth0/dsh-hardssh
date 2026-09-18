@@ -17,11 +17,15 @@ jobs:
       fail-fast: false
       matrix:
         node: ['22.19.0', '24']
-        # Only sets that pass (see compat/README.md). 0.1.5-alpha.1 was tried and
-        # failed: dsh-client-ui-slots@0.1.5-alpha.1 declares no `main` slot, so
-        # the center panel has nowhere to mount. It is kept as
-        # compat/verified-incompatible-*.json rather than as a matrix leg.
-        dsh: ['dsh-0.1.5-rc.1']
+        # Only sets that pass (see compat/README.md). Every leg runs typecheck +
+        # the default suite; `test:all` runs once on node 24 for the baseline.
+        # 0.1.5-alpha.* was tried and failed: dsh-client-ui-slots@0.1.5-alpha.1
+        # declares no `main` slot, so the center panel has nowhere to mount; it
+        # stays as compat/verified-incompatible-*.json rather than a matrix leg.
+        # The 0.1.6-alpha sets pin every component to that line except
+        # dsh-code-runtime (which does not publish a 0.1.6 line) — see
+        # compat/dsh-0.1.6-*.json.
+        dsh: ['dsh-0.1.5-rc.1', 'dsh-0.1.5-rc.2', 'dsh-0.1.6-alpha.1', 'dsh-0.1.6-alpha.2']
 
     steps:
       - uses: actions/checkout@v4

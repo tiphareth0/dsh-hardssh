@@ -4,6 +4,14 @@
 
 ## v0.2.6-alpha — 2026-09-17
 
+### 兼容性：适配 0.1.6 线（0.1.6-alpha.1 / 0.1.6-alpha.2）
+
+- **peer 范围**从 `>=0.1.5-rc.1 <0.1.6` 扩为 **`>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`**。加 `|| >=0.1.6-alpha.1` 这臂是因为 semver 的预发布匹配规则：候选预发布版只有在某比较符与其 major.minor.patch 相同且带预发布时才会被匹配，裸的 `>=0.1.5-rc.1 <0.1.7` 会悄悄把 `0.1.6-alpha.x` 排除掉（用 `npx semver` 实测确认包含/排除集合）。
+- **矩阵新增三条线**：`0.1.5-rc.2`、`0.1.6-alpha.1`、`0.1.6-alpha.2`，加上基线 `0.1.5-rc.1`。三条新线均用 `scripts/compat/apply-set.mjs` + `pnpm install` 实证 **typecheck / 全量测试 / build 通过，源码零改动**（0.1.6 线没有破坏插件用到的运行时契约与抽象面）。
+- `0.1.6-alpha.*` 集内**按包存在性回退**：逐组件核对 npm 后，只有 `@deepseek-ai/dsh-code-runtime` 未发布 0.1.6 线，该集内降到 `0.1.5-rc.2`；其余组件锁定在该线。
+- **`0.1.5-alpha.*` 保持不支持**（`dsh-client-ui-slots@0.1.5-alpha.1` 缺 `main` 槽位，需降级 shim 才可救；成本高于收益，仍记录为 verified-incompatible）。
+- CI 矩阵四线 × Node 22.19/24 全量跑（typecheck + 默认套件；`test:all` 仍只在基线腿跑一次）。
+
 ### 修复：覆盖已存在远端文件的原子写在 OpenSSH ≥ 7.9 上失败
 
 `writeAtomic`（`writeText` / `editText` 的共用发布路径）对已存在文件的覆盖发布走 `engine.rename`

@@ -136,7 +136,7 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | 插件版本 | 已验证 DSH | Node | 远端主机 |
 |---|---|---|---|
-| `0.2.5`+（当前 `0.2.6-alpha`） | `>=0.1.5-rc.1 <0.1.6`（生产环境实测 `0.1.5-rc.1`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
+| `0.2.5`+（当前 `0.2.6-alpha`） | `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`（矩阵实测四条线全绿：`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
 
 > 更早的 `0.1.5-alpha.1` **不支持**：`dsh-client-ui-slots@0.1.5-alpha.1` 没有 `main` 槽位，工作区面板无处挂载（矩阵实测 typecheck 直接失败）。见 `compat/README.md`。
 

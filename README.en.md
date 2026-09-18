@@ -197,7 +197,7 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | Plugin | Verified DSH | Node | Remote hosts |
 |---|---|---|---|
-| `0.2.5`+ (currently `0.2.6-alpha`) | `>=0.1.5-rc.1 <0.1.6` (production verified on `0.1.5-rc.1`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
+| `0.2.5`+ (currently `0.2.6-alpha`) | `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1` (four matrix lines verified green: `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.6-alpha.1`, `0.1.6-alpha.2`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
 
 > The earlier `0.1.5-alpha.1` is **not** supported: `dsh-client-ui-slots@0.1.5-alpha.1` declares no `main` slot, so the workspace panel has nowhere to mount (the matrix fails typecheck). See `compat/README.md`.
 
