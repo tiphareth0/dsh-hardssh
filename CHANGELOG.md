@@ -4,6 +4,14 @@
 
 ## v0.2.6-alpha — 2026-09-17
 
+### 修复：认证被拒后不再卡死，可再次输入密码
+
+场景：首次输错密码 → 引擎把错误密码存入会话凭据表 → 服务器认证被拒 → 重弹带原因的密码框 → 取消。由于连接从未到达 `ready`，连接池里没有记录，错误密码永远不会被清理，**之后每次点击会话都是硬失败**（"All configured authentication methods failed"），再也回不到密码框。
+
+- `connectChain` 的两处 `connectClient` 外包裹 `connectOrForgetRejectedSecret`：当错误是**认证被拒**（ssh2 `all configured authentication methods failed` / `Permission denied`）且该 alias 用的是会话密码时，立即忘掉该会话密码；超时 / 连接拒绝 / 主机密钥等**不会误清**。
+- 效果：被拒凭据即刻丢弃，`withClient` 重试时 `resolveEntryAuth` 重新判定，直接提升为 `NEEDS_PASSWORD`——本次调用就能重弹；取消后下一次点击同样回到密码框。
+- 测试：`isAuthDenied` 判定单测（含负例）+ 内嵌 ssh2 服务器端到端回归（错密码 → 被拒 → 会话密码被清 → 下次探测 `NEEDS_PASSWORD`）。
+
 ### 兼容性：适配 0.1.6 线（0.1.6-alpha.1 / 0.1.6-alpha.2）
 
 - **peer 范围**从 `>=0.1.5-rc.1 <0.1.6` 扩为 **`>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`**。加 `|| >=0.1.6-alpha.1` 这臂是因为 semver 的预发布匹配规则：候选预发布版只有在某比较符与其 major.minor.patch 相同且带预发布时才会被匹配，裸的 `>=0.1.5-rc.1 <0.1.7` 会悄悄把 `0.1.6-alpha.x` 排除掉（用 `npx semver` 实测确认包含/排除集合）。

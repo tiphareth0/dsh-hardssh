@@ -16,6 +16,7 @@ import type { HostPayload } from '../../src/ssh/protocol.ts'
 import { TEST_PASSWORD, TEST_USER, TestSshServer } from './helpers/ssh-server.ts'
 import { KnownHostsStore } from '../../src/ssh/known-hosts.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from '../../src/ssh/known-hosts.ts'
+import { isAuthDenied } from '../../src/ssh/connection/manager.ts'
 import { TestSshd } from './helpers/sshd.ts'
 
 let server: TestSshServer
@@ -317,6 +318,40 @@ describe('needs-password gate (deps.resolveSecrets path)', () => {
       auth: { kind: 'key', keyPath: keyFile },
     } as HostPayload)
     await expect(gateEngine.exec('gate-plain-key', 'echo hello')).rejects.not.toBeInstanceOf(NeedsPasswordError)
+  })
+
+  it('forgets a session password the server rejected, so the next attempt re-prompts', async () => {
+    // Regression: a wrong session password used to stay in the session table
+    // forever — the connect never reached 'ready', so nothing retired it, and
+    // every later probe failed with "All configured authentication methods
+    // failed" with no way back to the password dialog. A rejected credential
+    // must be dropped so the next attempt is NEEDS_PASSWORD again.
+    gateStore.create({
+      alias: 'gate-reject',
+      host: '127.0.0.1',
+      port: server.port,
+      user: TEST_USER,
+      auth: { kind: 'password', password: 'ignored-inline' },
+    } as HostPayload)
+    // A WRONG session password: the embedded server only accepts TEST_PASSWORD,
+    // so this attempt is authentically denied.
+    gateEngine.setSessionPassword('gate-reject', { password: 'wrong-password' })
+    await gateEngine.test('gate-reject').catch(() => undefined)
+    // The rejected credential was dropped by the connect path …
+    expect(gateEngine.getSessionPassword('gate-reject')).toBeUndefined()
+    // … so the next attempt is interactive again, not the same hard failure.
+    await expect(gateEngine.test('gate-reject')).rejects.toBeInstanceOf(NeedsPasswordError)
+  })
+})
+
+describe('isAuthDenied', () => {
+  it('detects credential rejection but never transport / timeout failures', () => {
+    expect(isAuthDenied(new Error('All configured authentication methods failed'))).toBe(true)
+    expect(isAuthDenied(new Error('Permission denied (publickey,password)'))).toBe(true)
+    expect(isAuthDenied('Permission denied (keyboard-interactive)')).toBe(true)
+    expect(isAuthDenied(new Error('connect ETIMEDOUT 10.0.0.5:22'))).toBe(false)
+    expect(isAuthDenied(new Error('connect ECONNREFUSED 127.0.0.1:22'))).toBe(false)
+    expect(isAuthDenied(new Error('Host key verification failed.'))).toBe(false)
   })
 })
 

@@ -365,6 +365,16 @@ function rewriteHostKeyError(raw: Error, outcome: HostKeyOutcome | undefined): E
   return raw
 }
 
+/** An SSH authentication denial: the credential itself was rejected (wrong
+ *  password, unusable key, or the account permits no method). Exported for
+ *  the unit test; everything else (timeout, refusal, reset) must NOT be
+ *  mistaken for a credential problem. */
+export function isAuthDenied(error: unknown): boolean {
+  return /all configured authentication methods failed|permission denied/i.test(
+    error instanceof Error ? error.message : String(error),
+  )
+}
+
 /**
  * Host-side hooks the connection manager needs but must not own. Injected by
  * the facade so every resource keeps exactly one dispose point and the manager
@@ -785,7 +795,31 @@ export class ConnectionManager {
 
     throw lastError instanceof Error ? lastError : new Error(String(lastError))
   }
-  /** Resolve an entry's authentication for one connect: session password
+  /**
+   * Establish one hop/target connection; on an AUTHENTICATION DENIAL while a
+   * session-scoped credential was in play, forget that alias's session
+   * password so the next attempt re-prompts (NEEDS_PASSWORD) instead of
+   * staying stuck in a hard "All configured authentication methods failed".
+   *
+   * A rejected credential is worthless — keeping it makes the GUI's very next
+   * probe fail identically, and since the connect never reached 'ready' there
+   * is no pooled connection whose retirement would clear it. Only auth-denial
+   * qualifies: a timeout or network reset must NOT discard a (possibly correct)
+   * session credential.
+   */
+  private async connectOrForgetRejectedSecret(alias: string, attempt: Promise<Client>): Promise<Client> {
+    try {
+      return await attempt
+    } catch (error) {
+      if (this.sessionPasswords.has(alias) && isAuthDenied(error)) {
+        this.forgetSessionPassword(alias)
+      }
+      throw error
+    }
+  }
+
+  /**
+   * Resolve an entry's authentication for one connect: session password
    *  table first (secretStorage='none'), then deps.resolveSecrets (vault),
    *  then the inline store entry; when a password/passphrase is required but
    *  unavailable, throw NeedsPasswordError for the GUI to prompt. */
@@ -866,16 +900,19 @@ export class ConnectionManager {
       }
       const hopOutcome: { outcome?: HostKeyOutcome | undefined } = {}
       const hopResolved = await this.resolveEntryAuth(hop)
-      const hopClient = await connectClient(
-        buildConnectConfig(hop, this.opts, sock, {
-          hostKeyPolicy: this.hostKeyPolicy,
-          hostKeyAlgorithms: this.opts.hostKeyAlgorithms,
-          authOverride: hopResolved,
-          setOutcome: (value) => { hopOutcome.outcome = value },
-        }),
-        this.opts.connectTimeoutMs,
-        hopOutcome,
-        signal,
+      const hopClient = await this.connectOrForgetRejectedSecret(
+        hopAlias,
+        connectClient(
+          buildConnectConfig(hop, this.opts, sock, {
+            hostKeyPolicy: this.hostKeyPolicy,
+            hostKeyAlgorithms: this.opts.hostKeyAlgorithms,
+            authOverride: hopResolved,
+            setOutcome: (value) => { hopOutcome.outcome = value },
+          }),
+          this.opts.connectTimeoutMs,
+          hopOutcome,
+          signal,
+        ),
       )
       hops.push(hopClient)
       const next = index + 1 < chain.length ? this.store.find(chain[index + 1]) : undefined
@@ -932,16 +969,19 @@ export class ConnectionManager {
       // then vault / inline store). The hostVerifier still runs on the raw
       // server key first, so a secret is never sent to an unverified host.
       const resolvedAuth = await this.resolveEntryAuth(entry)
-      const client = await connectClient(
-        buildConnectConfig(entry, this.opts, sock, {
-          hostKeyPolicy: this.hostKeyPolicy,
-          hostKeyAlgorithms: this.opts.hostKeyAlgorithms,
-          authOverride: resolvedAuth,
-          setOutcome: (value) => { targetOutcome.outcome = value },
-        }),
-        this.opts.connectTimeoutMs,
-        targetOutcome,
-        signal,
+      const client = await this.connectOrForgetRejectedSecret(
+        entry.alias,
+        connectClient(
+          buildConnectConfig(entry, this.opts, sock, {
+            hostKeyPolicy: this.hostKeyPolicy,
+            hostKeyAlgorithms: this.opts.hostKeyAlgorithms,
+            authOverride: resolvedAuth,
+            setOutcome: (value) => { targetOutcome.outcome = value },
+          }),
+          this.opts.connectTimeoutMs,
+          targetOutcome,
+          signal,
+        ),
       )
       return { client, hops }
     } catch (error) {
