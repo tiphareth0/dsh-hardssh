@@ -22,6 +22,11 @@ import { constants as fsConstants, existsSync, realpathSync } from 'node:fs'
 import { access, lstat as fsLstat, mkdir, readFile, readdir, rename, rm, stat as fsStat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { WORKSPACE_PROVIDER_API_VERSION } from '../../base/model.ts'
+import {
+  delegateOrLocalTerminalEnvironment,
+  type SubprocessTerminalEnvironment,
+  type TerminalEnvironmentProbe,
+} from '../../subprocess-environment.ts'
 import type {
   WorkspaceCapabilityMap,
   WorkspaceConnection,
@@ -134,6 +139,19 @@ export class RootedLocalSubprocessRuntime {
   /** The shared runtime already owns executable lookup; no root path is involved. */
   resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
     return this.runtime.resolveExecutable(command, env, signal)
+  }
+
+  /**
+   * Shell-selection facts of this local world (a DSH 0.2.0 seam member).
+   *
+   * Forwarded to the shared local runtime — it inspects the very environment
+   * this provider spawns in — with the local-host derivation as the fallback for
+   * a dsh line whose local runtime predates the method. Without it, any consumer
+   * that treats this capability as a SubprocessRuntime fails at
+   * `terminalEnvironment is not a function`.
+   */
+  terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEnvironment> {
+    return delegateOrLocalTerminalEnvironment(this.runtime as TerminalEnvironmentProbe, signal)
   }
 
   /** LocalSubprocessRuntime.spawn() accepts any cwd, so this method fences it. */

@@ -21,7 +21,8 @@ import type {
 } from '@deepseek-ai/dsh-subprocess'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { WorkspaceState } from '../protocol.ts'
-import { quoteShellArg } from './environment.ts'
+import { quoteShellArg, readScrubbedRemoteEnvironment } from './environment.ts'
+import type { SubprocessTerminalEnvironment } from '../subprocess-environment.ts'
 import { SshSubprocessHandle } from './remote-process.ts'
 import { SshTerminalHandle, spawnSshTerminal } from './remote-terminal.ts'
 import { WorkspaceSearchSpawner } from './search-bridge.ts'
@@ -131,6 +132,32 @@ export class SshSubprocessRuntime extends SubprocessRuntime {
     } finally {
       rmSync(this.spillDir, { recursive: true, force: true })
     }
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * The SSH world is POSIX-only in this plugin, so `platform` is a constant.
+   * The preferred shell is the account's login shell, read through the same
+   * cached remote-environment probe the process and terminal launchers use.
+   * A failed read (host not connected yet, transient exec failure) degrades to
+   * the platform fact alone instead of failing shell discovery: the controller
+   * then falls back to `/bin/sh`, and `resolveExecutable` on this provider is
+   * where a real connection problem surfaces with its own message.
+   */
+  async terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEnvironment> {
+    signal?.throwIfAborted()
+    const alias = this.getState().alias
+    let defaultShell: string | undefined
+    if (alias !== undefined) {
+      try {
+        const shell = (await readScrubbedRemoteEnvironment(this.engine, alias)).get('SHELL')
+        if (shell !== undefined && shell !== '') defaultShell = shell
+      } catch {
+        defaultShell = undefined
+      }
+    }
+    return defaultShell === undefined ? { platform: 'posix' } : { platform: 'posix', defaultShell }
   }
 
   /** @inheritdoc */

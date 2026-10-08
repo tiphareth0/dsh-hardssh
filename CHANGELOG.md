@@ -13,6 +13,14 @@
 - **启动注册的时序修复**。注册表由**后激活**的行提供，在原 `apply()` 里直接查会拿到 `undefined`（实测：冷启动注册 0 个）。改为 `ctx.inject(['workspace'])` / `ctx.inject(['workspaceRegistry'])`，谁存在谁触发（一次性）。在 dsh 0.2.0-rc.2 上实测：启动即把全部 7 个工作区写入官方注册表，失败 0。
 - **客户端会话跟随适配 0.2.0**。0.2.0 删除了客户端会话列表状态里的 `current`（客户端会话改为多实例），而 SSH 操作台与连接闸门正是靠它判断「用户打开了哪个会话」——旧代码在 0.2.0 上**永远认为没有会话被打开**：点 SSH 工作区会话不弹登录框、操作台解析不到目标，且全程无报错。现在按官方语义推导：列表行上的 `retainedBy.mainView`（与 `dsh-client-ui-session` 的 `isMain()` 一致），并保留旧 `current` 回退，一份实现同时兼容 0.1.x 与 0.2.0。另加**形状守卫**：若列表形状两者都不是，打印一次明确警告——把这类静默故障变成可见。
 
+### 修复：侧边栏终端在 0.2.0 上不可用
+
+- **`SubprocessRuntime.terminalEnvironment()` 缺失**。0.2.0 把这个方法加进了子进程 seam 的抽象面（现在的抽象成员是 `resolveExecutable` / `terminalEnvironment` / `spawn` / `spawnTerminal`），而 `dsh-api-terminal-controller` 无条件 `await subprocess.terminalEnvironment(signal)` 来挑选默认 shell，再用**同一个 provider** 的 `resolveExecutable` 验证它。我们三个实现者都写在 0.1.x 线上（那时还没有这个成员），于是 0.2.0 上侧边栏终端直接失败：
+  `终端错误：subprocess.terminalEnvironment is not a function`。
+  现在 4 个成员齐全：`SwitchSubprocessRuntime` 委托本地 runtime（**必须与它本地的 `resolveExecutable` 同属一个世界**，否则控制器选出的 shell 会在本地验证失败）；`SshSubprocessRuntime` 报 `platform: 'posix'` 并从已缓存的远端 `env -0` 探针取 `SHELL`（读取失败或无 alias 时降级为只报平台，控制器退回 `/bin/sh`，真正的连接问题留给随后的 spawn）；本地 provider 的 `RootedLocalSubprocessRuntime`（作为 `workspace.process` capability 对外）同样补齐并转发。
+  类型与本地推导放在 `src/subprocess-environment.ts`——不 import `@deepseek-ai/dsh-subprocess` 的类型，因为本插件仍构建在 0.1.x 线上（那时该类型不存在）；运行期是版本容错的：内部本地 runtime 实现了该方法就委托，没有就按官方 local provider 的同款公式在本地合成（Windows → `ComSpec`，POSIX → `$SHELL` 或 passwd 条目，空串视为缺席）。
+  **行为边界**：DSH 自带的侧边栏终端是**本机**终端（该 seam 的两个入口都没有 cwd 上下文，无法按会话路由；Windows 上的 shell 还命中「客户端原生二进制在本机运行」的既有规则）。远端 shell 仍由本插件的 SSH 操作台（右侧栏，xterm over SSH）提供。
+
 ### 内部清理
 
 - 抽出 `src/utf8.ts`：两份有界输出收集器（引擎 exec 捕获的**头部**截断、远端子进程投影的**尾部**滑动窗口）共用同一份 UTF-8 序列边界算法；顺带修掉尾部窗口在字节预算边界裁剪时会切出半个字符（窗口开头解码成 U+FFFD）的隐患——只在「本次 push 确实丢弃了头部字节」时对齐，避免误伤跨 chunk 的合法字符。
@@ -20,7 +28,7 @@
 
 ### 测试
 
-新增 21 条：客户端会话推导 8 条（0.1.x 形状 / 0.2.0 形状 / 无会话 / `ids` 顺序 / `ids` 外行 / 忽略其它来源 / 缺 `byId` / 形状守卫正反例）、工作区注册表适配 4 条、UTF-8 边界与尾部窗口 9 条。全量 **69 个测试文件 / 651 通过 / 4 跳过**。
+新增 33 条：客户端会话推导 8 条（0.1.x 形状 / 0.2.0 形状 / 无会话 / `ids` 顺序 / `ids` 外行 / 忽略其它来源 / 缺 `byId` / 形状守卫正反例）、工作区注册表适配 4 条、UTF-8 边界与尾部窗口 9 条、终端环境探针 12 条（本地推导与空串处理 / abort、委托与回退、门面委托与回退、远端 posix+`SHELL` / 读取失败降级 / 无 alias 不探测）。全量 **70 个测试文件 / 663 通过 / 4 跳过**。
 
 ## v0.2.6-alpha — 2026-09-17
 

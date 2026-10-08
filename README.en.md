@@ -394,6 +394,16 @@ generation's registration). **Do not use the in-app enable switch**: quit the ap
 completely → install (see "Install → Desktop (Electron) dsh") → start it. The cold-boot
 path is the working one; one restart also clears the half-applied state.
 
+**In an SSH-workspace session, does the sidebar terminal open locally or on the server?**
+— **Locally.** The built-in sidebar terminal picks and verifies its shell through the
+`ctx.subprocess` seam's `terminalEnvironment()` / `resolveExecutable()`, and neither call
+carries the session's cwd, so a plugin cannot tell which server the session is bound to;
+on Windows the shell also matches the "client-native binaries run here" routing rule. Use
+this plugin's **SSH console** for a remote shell (right sidebar → SSH → Terminal: an xterm
+over SSH that follows the current session's server). On 0.2.0 a missing member of that
+seam made the sidebar terminal fail with a terminal error; **fixed in `0.2.7`** (usable,
+still a local terminal).
+
 **Prompted to enter a password / "credential required"** — passwords are never saved
 by default: connect and remote browse ask once per session; a process restart asks
 again.

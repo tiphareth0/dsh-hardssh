@@ -18,6 +18,11 @@ import type {
 } from '@deepseek-ai/dsh-subprocess'
 import type { Context } from '@deepseek-ai/cordis'
 import { isClientSearchHelperPath, searchBridgeRefusal } from '../remote/search-bridge.ts'
+import {
+  delegateOrLocalTerminalEnvironment,
+  type SubprocessTerminalEnvironment,
+  type TerminalEnvironmentProbe,
+} from '../subprocess-environment.ts'
 
 /** Route one spawn cwd to a runtime. */
 export interface SwitchSubprocessDeps {
@@ -132,6 +137,21 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
     // hosts are resolved inside the remote command anyway). Local-only
     // resolution keeps `command -v` semantics on this machine.
     return this.deps.local.resolveExecutable(command, env, signal)
+  }
+
+  /**
+   * @inheritdoc
+   *
+   * The terminal controller picks a default shell from this answer and then
+   * verifies it with `resolveExecutable` **on this same provider** — which
+   * resolves locally (above). Answering a remote shell here would therefore be
+   * verified against this machine and fail, so the local world is the only
+   * self-consistent answer. A shell that turns out to be a client binary
+   * (`pwsh`, `cmd`, …) is then spawned locally by `route()` as usual, while a
+   * POSIX shell name in a bound session routes to the workspace runtime.
+   */
+  terminalEnvironment(signal?: AbortSignal): Promise<SubprocessTerminalEnvironment> {
+    return delegateOrLocalTerminalEnvironment(this.deps.local as TerminalEnvironmentProbe, signal)
   }
 
   /** @inheritdoc */
