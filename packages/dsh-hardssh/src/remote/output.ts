@@ -1,6 +1,13 @@
 /**
  * Bounded host-side projection of one remote output stream with a local
- * spill file. Ported from UynajGI/dsh-ssh (MIT) — verbatim semantics.
+ * spill file. Ported from UynajGI/dsh-ssh (MIT) — verbatim semantics, plus the
+ * UTF-8 window alignment noted on `push`.
+ *
+ * Not a duplicate of `src/ssh/exec/output.ts`: that collector keeps a bounded
+ * HEAD and decodes as bytes arrive (engine exec capture), while this one keeps a
+ * bounded TAIL window over the whole stream and answers incremental reads
+ * (`SubprocessOutputReader`). They share only the sequence-boundary arithmetic
+ * in `src/utf8.ts`.
  */
 
 import { randomBytes } from 'node:crypto'
@@ -8,9 +15,34 @@ import { closeSync, mkdtempSync, openSync, unlinkSync, writeSync } from 'node:fs
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CollectedOutput, SubprocessOutputRead, SubprocessOutputReader } from '@deepseek-ai/dsh-subprocess'
+import { utf8CeilStart } from '../utf8.ts'
 
 let spillCounter = 0
 let defaultSpillDir: string | undefined
+
+/**
+ * Drop the partial character the byte-budget trim left at the window start.
+ * @param chunks - the retained chunk list, trimmed in place.
+ * @returns how many leading bytes were dropped.
+ */
+function alignWindowStart(chunks: Buffer[]): number {
+  let dropped = 0
+  while (chunks.length > 0) {
+    const head = chunks[0] as Buffer
+    const aligned = utf8CeilStart(head, 0)
+    if (aligned === 0) break
+    if (aligned >= head.length) {
+      // The whole chunk is continuation bytes: its lead was already dropped.
+      chunks.shift()
+      dropped += head.length
+      continue
+    }
+    chunks[0] = head.subarray(aligned)
+    dropped += aligned
+    break
+  }
+  return dropped
+}
 
 /** Private (0700) per-process spill directory under the OS tmpdir, created lazily. */
 function privateSpillDir(): string {
@@ -51,6 +83,7 @@ export class SshOutputCollector implements SubprocessOutputReader {
     if (!this.spillDisabled && (overflows || this.spillFd !== undefined)) this.spillAll(buffer)
     this.chunks.push(buffer)
     this.retained += buffer.length
+    let trimmed = false
     while (this.retained > this.maxBytes) {
       const head = this.chunks[0] as Buffer
       const excess = this.retained - this.maxBytes
@@ -62,7 +95,13 @@ export class SshOutputCollector implements SubprocessOutputReader {
         this.retained -= excess
       }
       this.dropped = true
+      trimmed = true
     }
+    // The budget cuts at a byte boundary, so the window may now open on the
+    // continuation bytes of a character whose lead was just dropped. Align only
+    // when THIS push trimmed: a chunk boundary on its own can legitimately fall
+    // inside a character whose lead is still retained.
+    if (trimmed) this.retained -= alignWindowStart(this.chunks)
   }
 
   /** @inheritdoc */

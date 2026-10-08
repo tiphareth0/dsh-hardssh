@@ -1,13 +1,13 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.6--alpha-4D6BFE)](CHANGELOG.md)
-[![dsh](https://img.shields.io/badge/dsh-0.1.5-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
+[![version](https://img.shields.io/badge/version-0.2.7-4D6BFE)](CHANGELOG.md)
+[![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.0-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
 
 **English** · [中文](./README.md)
 
-**SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).** Compatible with DSH **0.1.5** (tested against kernel `0.1.5-rc.1`).
+**SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).** Supports DSH **0.1.5 – 0.2.0**, **including the official Desktop (Electron) app**.
 
 Turn any directory on a server into an **SSH workspace**: once bound, file I/O and
 command execution in that session run **transparently on the remote host** — you and
@@ -160,32 +160,65 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm. The stable release is **`0.2.5`** (installable as
-`add @tiphareth/dsh-hardssh`); this checkout is **`0.2.6-alpha`**, a pre-release, so
-name the version explicitly:
+The package is on npm, but **the newest npm version is the pre-release `0.2.6-alpha`**
+(the stable release is still `0.2.5`). This checkout is **`0.2.7`**, which adds dsh 0.2.0
+and Desktop support, and is **not published to npm yet** — install it from source:
 
 ```sh
-# the pre-release in this checkout
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-# or stay on the stable release
-dsh plugin --profile web add @tiphareth/dsh-hardssh
-# via npx when `dsh` is not on PATH
-npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-```
-
-For development / local iteration, install from the source checkout or a local tarball:
-
-```sh
-# source link (rebuild lib/ after edits and restart dsh web; no re-packing)
+# source link (recommended: rebuild lib/ after edits and restart dsh; no re-packing)
 dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.6-alpha.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.7.tgz
+
+# what npm can give you today (0.2.6-alpha pre-release / 0.2.5 stable); without the
+# 0.2.0 and Desktop support added in 0.2.7
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
+dsh plugin --profile web add @tiphareth/dsh-hardssh
 ```
 
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and
-to `dsh.profile.bundles`, then restart `dsh web`.
+to `dsh.profile.bundles`, then restart `dsh`.
+
+### Desktop (Electron) dsh
+
+The official Desktop app **loads this plugin fine** (verified on 0.2.0-rc.2: plugin
+activation, the `/api/dsh-ssh/*` and `/api/dsh-hardssh/*` routes, and workspace
+registration into the official `ctx.workspace` all work). Its profile has two special
+rules, so the install path differs:
+
+1. **An ordinary CLI cannot manage the Desktop's `desktop` profile** — the command is
+   rejected outright:
+   ```
+   error: profile "desktop" is managed exclusively by the Electron application
+   ```
+   That guard is a hardcoded name check. What *is* allowed to manage it is the **CLI
+   carrier shipped with the Desktop app** (it runs with `manageDesktopProfile: true`
+   and its own bundled Node/pnpm). Two ways to use it:
+   - menu bar → "Manage dsh command" to put it on PATH, then plain
+     `dsh plugin --profile desktop …`;
+   - or call the app's copy directly:
+     `<install dir>\resources\runtime\cli\bin\dsh.cmd plugin --profile desktop add link:<repo>/packages/dsh-hardssh`.
+
+2. **Do not "enable" the plugin while the app is running.** The Desktop plugin manager
+   enables in-process by hot-reloading the profile, and DSH currently has a known reload
+   defect (the superseded generation is never disposed, so a process-global registry
+   still holds the previous generation's registration). It fails with
+   `session-controller … file-upload: Agent resolver is already registered`, rolls the
+   install back, and every later session reports
+   `active Service "sessionController" is unavailable`.
+   **Do this instead: quit the app completely → install (edit `package.json`
+   `dependencies` + `dsh.profile.bundles` and run `pnpm install` inside the profile, or
+   use the bundled CLI command above) → start the app.** Applying the bundle patch at
+   boot is the working path. Once the name is in `dsh.profile.bundles`, toggling it from
+   inside the app takes the "restart required" branch and no longer triggers the defect.
+
+> Known boundary: the Desktop's bundled dsh is the core version baked into the app
+> (currently `0.2.0-rc.2`). The declared peer range puts no upper bound on 0.2.x, so
+> later 0.2.x builds load as well.
+
+npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
@@ -197,7 +230,10 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | Plugin | Verified DSH | Node | Remote hosts |
 |---|---|---|---|
-| `0.2.5`+ (currently `0.2.6-alpha`) | `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1` (four matrix lines verified green: `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.6-alpha.1`, `0.1.6-alpha.2`; CI runs the same suite on Node 22.19/24) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
+| `0.2.7` (current) | **`0.2.0-rc.2` (verified on the Desktop/Electron app)** + `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1` (four 0.1.x matrix lines green: `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.6-alpha.1`, `0.1.6-alpha.2`) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
+| `0.2.5` – `0.2.6-alpha` | `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1` (the same four lines) | same | same |
+
+> About the 0.2.0 line: the host half (plugin activation, routes, workspace registration into the official `ctx.workspace`) was verified on the **Desktop app running dsh 0.2.0-rc.2**, and the client session-follow was ported to the 0.2.0 session API (`retainedBy.mainView`). The four 0.1.x lines are covered by the `compat/dsh-*.json` sets and the CI matrix; **a 0.2.0 compat set is not in the matrix yet** (see the rules in `compat/README.md`).
 
 > The earlier `0.1.5-alpha.1` is **not** supported: `dsh-client-ui-slots@0.1.5-alpha.1` declares no `main` slot, so the workspace panel has nowhere to mount (the matrix fails typecheck). See `compat/README.md`.
 
@@ -339,6 +375,24 @@ Pack & deploy: `pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dis
 then `pnpm add file:...` into the profile and restart `dsh web`.
 
 ## FAQ
+
+**On the Desktop app, clicking an SSH-workspace session never asks me to log in** — dsh
+0.2.0 removed `current` from the client session list (client sessions became
+multi-instance), so older builds of this plugin concluded "no session is open" forever
+on 0.2.0: no password prompt, and the right-sidebar console could not resolve its
+target either, with no error anywhere. **Fixed in `0.2.7`** (it now reads
+`retainedBy.mainView` off the list row, the same rule the official
+`dsh-client-ui-session` uses). On `0.2.5` / `0.2.6-alpha`, upgrade to `0.2.7`; as a
+stop-gap, use "Add workspace" → SSH → browse the remote directory — that path prompts
+for the password itself and hands the credential to the engine.
+
+**The Desktop app reports a failed plugin "enable", then new sessions say
+`sessionController is unavailable`** — the Desktop plugin manager enables by
+hot-reloading the profile in-process, and dsh currently has a known reload defect (the
+superseded generation is never disposed, so a process-global registry keeps the previous
+generation's registration). **Do not use the in-app enable switch**: quit the app
+completely → install (see "Install → Desktop (Electron) dsh") → start it. The cold-boot
+path is the working one; one restart also clears the half-applied state.
 
 **Prompted to enter a password / "credential required"** — passwords are never saved
 by default: connect and remote browse ask once per session; a process restart asks

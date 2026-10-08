@@ -49,3 +49,13 @@ complexity for a pre-rc line. The supported range starts at `0.1.5-rc.1`.
 
 Re-checking a set (or bumping the range) is a deliberate, evidence-backed
 change: run the matrix locally before widening anything.
+
+### Why there is no `0.2.0` set yet
+
+The 0.2.0 line is supported and exercised in production — the official Desktop app runs
+`0.2.0-rc.2`, where the host half (activation, the `/api/dsh-*` routes, registration into
+the official `ctx.workspace`) was verified and the client session-follow was ported to the
+new session API — but a `dsh-0.2.0-rc.2.json` set is **not** in the matrix yet: the browser
+half still takes its `ClientContext` type from `@deepseek-ai/dsh-client-runtime`, a package
+0.2.0 removed. Adding the set therefore requires dropping that type-only import first. The
+peer entry for it is already gone, so runtime installation on 0.2.0 is unaffected.

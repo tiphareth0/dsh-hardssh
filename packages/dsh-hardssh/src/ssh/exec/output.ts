@@ -6,11 +6,15 @@
  * multi-byte characters split across chunks turned into U+FFFD and the
  * budget was never truly enforced. This collector counts raw input bytes,
  * decodes across chunk boundaries with StringDecoder, and truncates on a
- * complete UTF-8 sequence boundary.
+ * complete UTF-8 sequence boundary (`utf8FloorCut`, shared with the
+ * tail-window collector in `src/remote/output.ts` — that one keeps a SUFFIX and
+ * uses the mirror-image `utf8CeilStart`; the two are deliberately separate
+ * policies, not duplicates).
  * @module dsh-ssh/exec/output
  */
 
 import { StringDecoder } from 'node:string_decoder'
+import { utf8FloorCut } from '../../utf8.ts'
 
 /** Marker appended when the captured output hits the byte budget. */
 export const TRUNCATION_MARKER = '\n[output truncated]'
@@ -44,12 +48,8 @@ export class BoundedUtf8Output {
       return
     }
     // Budget exhausted mid-chunk: keep the longest prefix that ends on a
-    // complete UTF-8 sequence, then stop accepting input. Back off from a
-    // continuation byte (0b10xxxxxx) to the sequence lead, and drop the
-    // lead itself when its continuations were cut away.
-    let cut = remaining
-    while (cut > 0 && (chunk[cut] & 0xc0) === 0x80) cut -= 1
-    if (cut > 0 && (chunk[cut - 1] & 0xc0) === 0xc0) cut -= 1
+    // complete UTF-8 sequence, then stop accepting input.
+    const cut = utf8FloorCut(chunk, remaining)
     const kept = chunk.subarray(0, cut)
     this._bytesAccepted += kept.length
     if (kept.length > 0) this.parts.push(this.decoder.write(kept))

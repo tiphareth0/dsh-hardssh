@@ -2,6 +2,26 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.2.7 — 2026-10-08
+
+### 支持 dsh 0.2.0 与桌面版（Electron）
+
+- **插件不再被 0.2.0 的兼容门禁整个跳过**。`peerDependencies` 里的 `@deepseek-ai/dsh-client-runtime` 在 0.2.0 已被移除（职责转给 `dsh-client-store` / `dsh-client-modules`），是不可满足的 peer；0.2.0 的启动检查因此拒绝加载整个插件：
+  `dsh: skipping profile bundle "@tiphareth/dsh-hardssh": Error: Plugin … is incompatible with dsh 0.2.0-rc.2: peerDependencies {"@deepseek-ai/dsh-client-runtime":">=0.1.1-rc.2 <0.1.2"}`。
+  该依赖是**类型级**的（浏览器半边 18 处 `@deepseek-ai/*` import 全部是 `import type`，构建后不产生任何运行时依赖），所以直接从 peer 中移除；`dsh.client.inject` 里那条旧 id 保留——0.2.0 的加载器对不存在的注入项是**跳过**，而 0.1.x 仍需要它排序。
+- **工作区注册跟随 0.2.0 的服务改名**。官方注册表现在是 `ctx.workspace`（`@deepseek-ai/dsh-workspace`，`super(ctx, 'workspace')`），旧的 `workspaceRegistry` **没有兼容别名**：单名查找会静默 no-op——锚点不会成为真实侧边栏工作区，而且没有任何报错。现在按 `ctx.workspace` 优先、`workspaceRegistry` 回退解析，并兼容官方语义（`resolveByPath` 对未知路径**抛错**、`delete` 对未知 id 返回 `false`），注册前补建托管锚点目录。
+- **启动注册的时序修复**。注册表由**后激活**的行提供，在原 `apply()` 里直接查会拿到 `undefined`（实测：冷启动注册 0 个）。改为 `ctx.inject(['workspace'])` / `ctx.inject(['workspaceRegistry'])`，谁存在谁触发（一次性）。在 dsh 0.2.0-rc.2 上实测：启动即把全部 7 个工作区写入官方注册表，失败 0。
+- **客户端会话跟随适配 0.2.0**。0.2.0 删除了客户端会话列表状态里的 `current`（客户端会话改为多实例），而 SSH 操作台与连接闸门正是靠它判断「用户打开了哪个会话」——旧代码在 0.2.0 上**永远认为没有会话被打开**：点 SSH 工作区会话不弹登录框、操作台解析不到目标，且全程无报错。现在按官方语义推导：列表行上的 `retainedBy.mainView`（与 `dsh-client-ui-session` 的 `isMain()` 一致），并保留旧 `current` 回退，一份实现同时兼容 0.1.x 与 0.2.0。另加**形状守卫**：若列表形状两者都不是，打印一次明确警告——把这类静默故障变成可见。
+
+### 内部清理
+
+- 抽出 `src/utf8.ts`：两份有界输出收集器（引擎 exec 捕获的**头部**截断、远端子进程投影的**尾部**滑动窗口）共用同一份 UTF-8 序列边界算法；顺带修掉尾部窗口在字节预算边界裁剪时会切出半个字符（窗口开头解码成 U+FFFD）的隐患——只在「本次 push 确实丢弃了头部字节」时对齐，避免误伤跨 chunk 的合法字符。
+- 抽出 `src/base/anchor-path.ts`：host 与浏览器共用同一份锚点归一化实现，删除客户端副本（此前因为 `base/ledger.ts` 依赖 `node:fs` 而必须保留两份并靠注释维持同步）。
+
+### 测试
+
+新增 21 条：客户端会话推导 8 条（0.1.x 形状 / 0.2.0 形状 / 无会话 / `ids` 顺序 / `ids` 外行 / 忽略其它来源 / 缺 `byId` / 形状守卫正反例）、工作区注册表适配 4 条、UTF-8 边界与尾部窗口 9 条。全量 **69 个测试文件 / 651 通过 / 4 跳过**。
+
 ## v0.2.6-alpha — 2026-09-17
 
 ### 修复：认证被拒后不再卡死，可再次输入密码

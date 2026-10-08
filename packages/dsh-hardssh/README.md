@@ -1,6 +1,6 @@
 # dsh-hardssh — SSH 远程工作区 + SSH 运维插件
 
-已适配 DSH **0.1.5 / 0.1.6**（兼容矩阵实测 `0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.6-alpha.1`、`0.1.6-alpha.2` 四条线全绿；peer 范围 `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`；本包版本 `0.2.6-alpha`）。客户端 Windows / Linux / macOS 均可用（CI 在 Linux runner 上跑 Node 22.19 与 24 的完整套件；客户端路径、锚点与远端根之间的映射有专门的跨平台回归用例）。在 DSH Web GUI 中提供两块能力（单包单引擎）：
+已适配 DSH **0.1.5 ~ 0.2.0，含官方桌面版（Electron）**（0.1.x 兼容矩阵四条线全绿：`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.6-alpha.1`、`0.1.6-alpha.2`；0.2.0 线已在桌面版 `0.2.0-rc.2` 上实测宿主侧与工作区注册；peer 范围 `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`，对 0.2.x 不设上限；本包版本 `0.2.7`）。客户端 Windows / Linux / macOS 均可用（CI 在 Linux runner 上跑 Node 22.19 与 24 的完整套件；客户端路径、锚点与远端根之间的映射有专门的跨平台回归用例）。在 DSH Web GUI 中提供两块能力（单包单引擎）：
 
 1. **SSH 运维**：右侧栏「SSH」Tab（从右侧栏标签条的「+」或右侧栏引导页入口打开）→ Web 终端（xterm + WebSocket PTY）、文件上传下载、本地端口转发隧道、当前服务器的远端命令；`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster` 六个 Agent 工具；主机配置存 `~/.dsh/dsh-ssh.json`。
 2. **SSH 工作区**：左侧侧栏的全局入口行 → 中央面板管理服务器与工作区（增删改查 / `~/.ssh/config` 导入）；绑定后本地 harness 的 fs/subprocess 经接缝门面透明路由到远程主机执行（read/write/edit/bash 在绑定会话中即远程操作）；`remote_*` 三个 Agent 工具（`remote_ls` / `remote_search` / `remote_status`）用于显式操作远端工作区。
@@ -82,14 +82,21 @@
 ## 安装
 
 ```sh
-# 已发布 npm：正式版 0.2.5；本版本 0.2.6-alpha 为预发布，安装时显式指定
+# npm 现状：最新是预发布 0.2.6-alpha，稳定版仍是 0.2.5（均不含 0.2.0/桌面版适配）
 dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-# 或跟随正式版
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
-# 开发/迭代：源码链接（改码重建 lib/ 后重启即生效）
+# 本包当前版本 0.2.7（含 dsh 0.2.0 与桌面版支持，尚未发布 npm）：用源码/打包安装
 dsh plugin --profile web add link:<repo>/packages/dsh-hardssh
 ```
+
+**桌面版（Electron）dsh**：可以正常加载本插件，但它的 `desktop` profile 由应用独占管理——
+普通 CLI 执行 `dsh plugin --profile desktop …` 会被拒绝
+（`error: profile "desktop" is managed exclusively by the Electron application`）。
+请改用**桌面版自带的 CLI**（菜单栏「Manage dsh command」，或直接调用
+`<安装目录>\resources\runtime\cli\bin\dsh.cmd`），并且**先完全退出应用**再安装、装完再启动：
+不要在应用运行中用「启用」开关（那会走进程内热重载，撞上 DSH 已知的重载缺陷而失败回滚）。
+详见仓库根 `README.md` 的「安装 → 桌面版（Electron）dsh」。
 
 ## 开发
 

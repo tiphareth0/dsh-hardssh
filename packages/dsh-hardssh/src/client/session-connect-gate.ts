@@ -18,6 +18,8 @@
  * @module dsh-hardssh/client/session-connect-gate
  */
 
+import { isPathUnderAnchor, normalizeAnchorPath } from '../base/anchor-path.ts'
+
 /** The narrow slice of `ctx.sessions.list` this gate reads. Structural on
  *  purpose: the shell's `SessionId`/`SessionSummary` types stay out of the
  *  plugin's public surface, and the adapter at the call site does the one
@@ -43,30 +45,16 @@ export interface SessionConnectGateDeps {
   ensureConnected(alias: string): Promise<boolean>
 }
 
-/** Normalize one path for anchor comparison: unified separators, no trailing
- *  separator, and case-folded for Windows-shaped paths (Windows anchors are
- *  case-insensitive; POSIX anchors are not).
- *
- *  Deliberately a SECOND implementation of `base/ledger.ts`'s
- *  `normalizeAnchorPath`: the base module imports `node:fs` for its own
- *  persistence and therefore cannot be pulled into the browser bundle. Keep the
- *  two in step — the host-side duplicates were consolidated for exactly this
- *  reason, and this one is the documented exception. */
-function normalizeAnchor(path: string): string {
-  const unified = path.replace(/\\/gu, '/').replace(/\/+$/u, '')
-  if (/^[a-zA-Z]:\//u.test(unified) || unified.startsWith('//')) return unified.toLowerCase()
-  return unified
-}
-
-/** True when `cwd` is the anchor itself or sits inside it. */
-function isUnderAnchor(anchor: string, cwd: string): boolean {
-  return cwd === anchor || cwd.startsWith(`${anchor}/`)
-}
-
 /**
  * Build the cwd → workspace resolver over a live workspace list. The LONGEST
  * matching anchor wins, so a workspace nested under another one still routes to
  * its own server.
+ *
+ * The path rule itself is shared with the host half (`base/anchor-path.ts`): the
+ * browser used to carry its own copy because `base/ledger.ts` imports `node:fs`,
+ * which no browser bundle can pull in. Extracting the rule into an import-free
+ * module removed that copy — this side now normalizes exactly like the ledger
+ * that decided which anchors exist.
  * @param workspaces - live records carrying an anchor path.
  * @returns resolver returning the owning record, or undefined when unbound.
  */
@@ -75,12 +63,12 @@ export function makeAnchorWorkspaceResolver<T extends { anchorPath: string }>(
 ): (cwd: string | undefined) => T | undefined {
   return (cwd) => {
     if (cwd === undefined || cwd === '') return undefined
-    const target = normalizeAnchor(cwd)
+    const target = normalizeAnchorPath(cwd)
     let best: T | undefined
     let bestLength = -1
     for (const workspace of workspaces()) {
-      const anchor = normalizeAnchor(workspace.anchorPath)
-      if (anchor === '' || !isUnderAnchor(anchor, target)) continue
+      const anchor = normalizeAnchorPath(workspace.anchorPath)
+      if (anchor === '' || !isPathUnderAnchor(anchor, target)) continue
       if (anchor.length > bestLength) {
         bestLength = anchor.length
         best = workspace

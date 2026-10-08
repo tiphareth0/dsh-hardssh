@@ -30,6 +30,7 @@
     "src/client-http.ts",
     "src/protocol.ts",
     "src/ssh/protocol.ts",
+    "src/base/anchor-path.ts",
     "src/client/css-modules.d.ts"
   ]
 }

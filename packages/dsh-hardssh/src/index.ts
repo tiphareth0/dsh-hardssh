@@ -32,6 +32,7 @@ import type {} from '@deepseek-ai/dsh-settings'
 import type {} from '@deepseek-ai/dsh-system-prompt'
 import type {} from '@deepseek-ai/dsh-tools'
 import { existsSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import z from '@deepseek-ai/schemastery'
 import type { HardsshCore } from './core.ts'
@@ -349,6 +350,55 @@ export function remoteGuidance(record: SshWorkspaceRecord): string {
 }
 
 /**
+ * The members of the host workspace registry this plugin uses. Both the 0.2.0
+ * `ctx.workspace` service (`@deepseek-ai/dsh-workspace`) and the pre-0.2.0
+ * `workspaceRegistry` service satisfy it.
+ */
+export interface HostWorkspaceRegistry {
+  /** Resolve one path to its registered workspace; REJECTS for a missing path. */
+  resolveByPath(path: string): Promise<{ id: string } | undefined>
+  /** Register one existing directory; returns the existing record for a repeat call. */
+  create(path: string, title?: string): Promise<{ id: string }>
+  /** Remove the registration only; answers false for an unknown id. */
+  delete(id: string): Promise<boolean>
+}
+
+/**
+ * Resolve the host workspace registry across DSH versions.
+ *
+ * 0.2.0 renamed this service: `@deepseek-ai/dsh-workspace` registers
+ * `super(ctx, 'workspace')` and ships no `workspaceRegistry` alias. A
+ * single-name lookup therefore silently no-ops on 0.2.0 — the anchor never
+ * becomes a real sidebar workspace, and nothing reports it. Newest name first;
+ * the shape check keeps an unrelated same-named service from being mistaken for
+ * the registry.
+ * @param ctx - host plugin context.
+ * @returns the registry, or undefined when this deployment has none.
+ */
+export function hostWorkspaceRegistry(ctx: Context): HostWorkspaceRegistry | undefined {
+  const candidate = (ctx.get('workspace') ?? ctx.get('workspaceRegistry')) as Partial<HostWorkspaceRegistry> | undefined
+  if (candidate === undefined) return undefined
+  if (typeof candidate.create !== 'function' || typeof candidate.resolveByPath !== 'function') return undefined
+  return candidate as HostWorkspaceRegistry
+}
+
+/**
+ * Resolve one path through a registry whose `resolveByPath` rejects (rather than
+ * answering undefined) for a path it does not know. Both readings mean the same
+ * thing here: not registered.
+ * @param registry - the host workspace registry.
+ * @param path - the anchor path to look up.
+ * @returns the registered workspace, or undefined when it is not registered.
+ */
+export async function resolveHostWorkspace(registry: HostWorkspaceRegistry, path: string): Promise<{ id: string } | undefined> {
+  try {
+    return await registry.resolveByPath(path)
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * A-04 startup half: replay host-workspace registration for every stored
  * record once the workspace store is ready, so a process restart (or a create
  * whose registration failed before the compensating rollback existed) cannot
@@ -503,22 +553,28 @@ export function apply(ctx: Context, config?: Config): void {
   if (!resolved.enabled) return
 
   // Host workspace registration hooks (make the anchor a real sidebar
-  // workspace). workspaceRegistry is optional — headless profiles lack it.
+  // workspace). The registry is optional — headless profiles lack it.
   const registerHostWorkspace = async (anchorPath: string, title: string): Promise<void> => {
-    const registry = ctx.get('workspaceRegistry') as { resolveByPath?: (path: string) => Promise<{ id: string } | undefined>; create?: (path: string, title?: string) => Promise<{ id: string }> } | undefined
-    if (registry?.create === undefined) return
-    const existing = registry.resolveByPath !== undefined ? await registry.resolveByPath(anchorPath) : undefined
-    if (existing !== undefined) return
+    const registry = hostWorkspaceRegistry(ctx)
+    if (registry === undefined) return
+    if (await resolveHostWorkspace(registry, anchorPath) !== undefined) return
+    // The 0.2.0 registry canonicalizes the path with fs.realpath and refuses a
+    // directory that does not exist. The normal create path has already made the
+    // managed anchor, but a startup reconcile replays records whose anchor may
+    // have been removed since — restore it instead of failing the registration.
+    await mkdir(anchorPath, { recursive: true })
     await registry.create(anchorPath, title)
   }
   const unregisterHostWorkspace = async (anchorPath: string): Promise<void> => {
-    const registry = ctx.get('workspaceRegistry') as { resolveByPath?: (path: string) => Promise<{ id: string } | undefined>; delete?: (id: string) => Promise<boolean> } | undefined
-    if (registry?.resolveByPath === undefined || registry.delete === undefined) return
-    const existing = await registry.resolveByPath(anchorPath)
-    if (existing !== undefined) {
-      const removed = await registry.delete(existing.id)
-      if (!removed) throw new Error(`host workspace registry refused to delete '${existing.id}'`)
-    }
+    const registry = hostWorkspaceRegistry(ctx)
+    if (registry === undefined) return
+    const existing = await resolveHostWorkspace(registry, anchorPath)
+    if (existing === undefined) return
+    if (await registry.delete(existing.id)) return
+    // `delete` answers false for an unknown id: an already-gone registration is
+    // success, and only a registry that kept the record is a real refusal.
+    if (await resolveHostWorkspace(registry, anchorPath) === undefined) return
+    throw new Error(`host workspace registry refused to delete '${existing.id}'`)
   }
 
   const routes = makeRoutes({
@@ -543,9 +599,28 @@ export function apply(ctx: Context, config?: Config): void {
   // binding with no host workspace. Reconcile once, after the record source is
   // wired (the generic store gates on its boot). The helper never rejects; the
   // catch is belt-and-braces so a future change cannot break plugin load.
-  void reconcileHostWorkspacesOnStartup({ workspaces, registerHostWorkspace }).catch((error: unknown) => {
-    console.warn('[dsh-hardssh] host-workspace startup reconciliation failed:', error instanceof Error ? error.message : String(error))
-  })
+  //
+  // The registry comes from a LATER-activated row (`dsh-web-app` mounts the
+  // 0.2.0 `workspace` service), so a direct lookup here is too early on 0.2.0:
+  // it answers undefined and the reconciliation silently registers nothing
+  // (verified on 0.2.0-rc.2 — the anchors only appeared after an explicit
+  // /reconcile). Cordis resolves that declaratively: inject the name this
+  // deployment uses and run when it appears, so startup and the retry route end
+  // up equivalent. Registration is create-if-missing, so the once-guard is only
+  // about not doing the same work twice.
+  let startupReconciled = false
+  const reconcileStartupOnce = (): void => {
+    if (startupReconciled) return
+    startupReconciled = true
+    void reconcileHostWorkspacesOnStartup({ workspaces, registerHostWorkspace }).catch((error: unknown) => {
+      console.warn('[dsh-hardssh] host-workspace startup reconciliation failed:', error instanceof Error ? error.message : String(error))
+    })
+  }
+  // Both names are injected on purpose: neither deployment provides both, so
+  // exactly one callback fires (the other stays a pending injection, the same
+  // stance as the optional webServer above — headless profiles lack it too).
+  ctx.inject(['workspace'], () => { reconcileStartupOnce() })
+  ctx.inject(['workspaceRegistry'], () => { reconcileStartupOnce() })
 
   // Bound-workspace ops always open the generic logical connection and use its
   // workspace.fs/workspace.search capabilities.

@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto'
 import { realpathSync } from 'node:fs'
 import { copyFile, mkdir, readFile, rename as renameFile, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
+import { isPathUnderAnchor, normalizeAnchorPath } from './anchor-path.ts'
 import type { WorkspaceCreateInput, WorkspaceRecord, WorkspaceUpdate } from './model.ts'
 
 /** One committed ledger snapshot. */
@@ -32,33 +33,10 @@ type LedgerChangeWithoutRevision =
   | { type: 'removed'; record: WorkspaceRecord }
   | { type: 'replaced'; before: WorkspaceRecord[]; records: WorkspaceRecord[] }
 
-/** Normalize an anchor for comparison (Windows case-insensitive; POSIX not). */
-export function normalizeAnchorPath(path: string): string {
-  const windowsStyle = /^[a-zA-Z]:[\\/]/.test(path) || path.includes('\\')
-  if (windowsStyle) {
-    const normalized = path.replace(/\//g, '\\')
-    const rootLength = /^[a-zA-Z]:\\/.test(normalized) ? 3 : 0
-    return trimTrailing(normalized, rootLength).toLowerCase()
-  }
-  const rootLength = path.startsWith('/') ? 1 : 0
-  return trimTrailing(path, rootLength)
-}
-
-/** True when `candidate` equals `anchor` or is one of its descendants (lexical). */
-export function isPathUnderAnchor(anchor: string, candidate: string): boolean {
-  const normAnchor = normalizeAnchorPath(anchor)
-  const normCandidate = normalizeAnchorPath(candidate)
-  if (normCandidate === normAnchor) return true
-  const sep = normAnchor.includes('\\') ? '\\' : '/'
-  const prefix = normAnchor.endsWith(sep) ? normAnchor : `${normAnchor}${sep}`
-  return normCandidate.startsWith(prefix)
-}
-
-function trimTrailing(path: string, minimumLength: number): string {
-  let end = path.length
-  while (end > minimumLength && (path[end - 1] === '/' || path[end - 1] === '\\')) end -= 1
-  return path.slice(0, end)
-}
+/** Normalize an anchor for comparison (Windows case-insensitive; POSIX not).
+ *  Re-exported from `./anchor-path.ts` so the host and browser halves share one
+ *  rule while this module keeps its historical surface. */
+export { isPathUnderAnchor, normalizeAnchorPath }
 
 /** Options for one atomic whole-ledger replacement. */
 export interface LedgerReplaceOptions {

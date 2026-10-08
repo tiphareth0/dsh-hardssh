@@ -19,6 +19,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
 import { SshHostsApi, WorkspaceApi } from './api.ts'
 import { SshApi } from './ssh/api.ts'
+import { currentSessionIdOf, sessionListShapeUnsupported, type SessionListSnapshotLike } from './session-list-current.ts'
 import { NS, dictionaries, type WorkspaceKey } from './locales.ts'
 import { WorkspaceManager } from './state.ts'
 import { setLanguage, tt } from './text.ts'
@@ -85,10 +86,20 @@ export function apply(ctx: ClientContext): void {
   const sshApi = new SshApi()
   const manager = new WorkspaceManager(api)
   const sessionList = ctx.sessions.list
+  let warnedSessionListShape = false
   const sessions: SessionGateList = {
     subscribe: (listener) => sessionList.subscribe(listener),
     phase: () => sessionList.getSnapshot().phase,
-    currentSessionId: () => sessionList.getSnapshot().current,
+    // 0.2.0 removed the list state's single `current`; the displayed Session is
+    // now the row the main view retains. See ./session-list-current.ts.
+    currentSessionId: () => {
+      const snapshot = sessionList.getSnapshot() as unknown as SessionListSnapshotLike
+      if (!warnedSessionListShape && sessionListShapeUnsupported(snapshot)) {
+        warnedSessionListShape = true
+        console.warn('[dsh-hardssh] the client session list matches neither the pre-0.2.0 nor the 0.2.0 shape — the SSH console and its connection prompt cannot follow the open session on this dsh version')
+      }
+      return currentSessionIdOf(snapshot)
+    },
     sessionIds: () => sessionList.getSnapshot().ids,
     sessionCwd: (id) => {
       const byId = sessionList.getSnapshot().byId as unknown as

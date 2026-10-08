@@ -1,13 +1,13 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.6--alpha-4D6BFE)](CHANGELOG.md)
-[![dsh](https://img.shields.io/badge/dsh-0.1.5-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
+[![version](https://img.shields.io/badge/version-0.2.7-4D6BFE)](CHANGELOG.md)
+[![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.0-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
 
 **中文** · [English](./README.en.md)
 
-**【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】** · 已适配 DSH **0.1.5**（实测内核 `0.1.5-rc.1`）
+**【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】** · 已适配 DSH **0.1.5 ~ 0.2.0**，**含官方桌面版（Electron）**
 
 把服务器上的任意目录变成 **SSH 工作区**：绑定后，该会话里的文件读写与命令执行**透明地运行在远端主机**，
 你和 agent 都像在操作本机一样工作——同时提供完整的 SSH 运维面板（终端、传输、隧道、命令）。
@@ -102,30 +102,42 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm。正式版是 **`0.2.5`**（可直接 `add @tiphareth/dsh-hardssh`）；本仓库当前版本 **`0.2.6-alpha`** 是预发布版，安装时显式指定版本：
+已发布到 npm，但**当前最新的 npm 版本是预发布版 `0.2.6-alpha`**（稳定版仍是 `0.2.5`）；本仓库已经到 **`0.2.7`**（含 dsh 0.2.0 / 桌面版支持），**尚未发布到 npm**——请用下面的源码方式安装：
 
 ```sh
-# 预发布版（本仓库当前版本）
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-# 或仍装正式版
-dsh plugin --profile web add @tiphareth/dsh-hardssh
-# npx 形式（dsh 不在 PATH 时）
-npx --yes @deepseek-ai/dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-```
-
-开发/迭代用本机源码或本地 tarball：
-
-```sh
-# 源码链接（改码后重建 lib/ 并重启 dsh web 即生效，无需重新打包）
+# 源码链接（推荐：改码后重建 lib/ 并重启 dsh 即生效，无需重新打包）
 dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.6-alpha.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.7.tgz
+
+# npm 上能装到的（0.2.6-alpha 预发布 / 0.2.5 稳定）；这些版本尚不含 0.2.0 与桌面版适配
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
+dsh plugin --profile web add @tiphareth/dsh-hardssh
 ```
 
 手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
-`dsh.profile.bundles` 列表，重启 `dsh web` 生效。
+`dsh.profile.bundles` 列表，重启 `dsh` 生效。
+
+### 桌面版（Electron）dsh
+
+官方桌面版**可以正常加载本插件**（0.2.0-rc.2 实测：插件激活、`/api/dsh-ssh/*` 与 `/api/dsh-hardssh/*` 路由、工作区注册进官方 `ctx.workspace` 均正常）。但它的 profile 有两条特殊规则，装法与其他版本不同：
+
+1. **普通 CLI 不能管理桌面版的 `desktop` profile**——`dsh plugin --profile desktop …` 会被直接拒绝：
+   ```
+   error: profile "desktop" is managed exclusively by the Electron application
+   ```
+   这是写死的名字判断。真正有权管理它的是**桌面版自带的 CLI**（以 `manageDesktopProfile: true` 运行，并用应用内置的 Node/pnpm）。两种调用方式：
+   - 菜单栏 →「Manage dsh command」把自带命令装到 PATH，然后正常 `dsh plugin --profile desktop …`；
+   - 或直接调用应用里的那份：`<安装目录>\resources\runtime\cli\bin\dsh.cmd plugin --profile desktop add link:<repo>/packages/dsh-hardssh`。
+
+2. **不要在应用运行中"启用"插件**——桌面版插件管理器的启用走**进程内热重载**，而 DSH 当前存在一个已知的重载缺陷（被替换的旧代际没有 dispose，进程级注册表里仍留着上一代的注册），会以
+   `session-controller … file-upload: Agent resolver is already registered` 失败并回滚，表现为「启用失败」、随后新建会话报 `active Service "sessionController" is unavailable`。
+   **正确做法：完全退出桌面版 → 安装（改 `package.json` 的 `dependencies` 与 `dsh.profile.bundles`，在 profile 目录跑 `pnpm install`，或用上面那条自带 CLI 命令）→ 再启动。**冷启动应用补丁是正常的路径。
+   一旦插件名已经在 `dsh.profile.bundles` 里，之后在应用内停用/启用会走「需要重启」分支，不会再触发这个问题。
+
+> 已知边界：桌面版自带 dsh 的版本号即应用内置的核心版本（当前 `0.2.0-rc.2`）；插件声明的 peer 区间不设 0.2.x 上限，因此 0.2.x 的后续版本可直接加载。
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
@@ -136,7 +148,10 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | 插件版本 | 已验证 DSH | Node | 远端主机 |
 |---|---|---|---|
-| `0.2.5`+（当前 `0.2.6-alpha`） | `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`（矩阵实测四条线全绿：`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`；CI 在 Node 22.19/24 上跑同一套件） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
+| `0.2.7`（当前） | **`0.2.0-rc.2`（桌面版 Electron 实测）** + `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1`（0.1.x 矩阵四条线全绿：`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
+| `0.2.5` ~ `0.2.6-alpha` | `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1`（同上四条线） | 同上 | 同上 |
+
+> 0.2.0 线的说明：宿主侧（插件激活、路由、工作区注册进官方 `ctx.workspace`）已在 **桌面版 0.2.0-rc.2** 上实测通过；客户端会话跟随已按 0.2.0 的新会话 API（`retainedBy.mainView`）适配。0.1.x 的四条线由 `compat/dsh-*.json` 兼容集与 CI 矩阵保证；**0.2.0 的兼容集尚未加入矩阵**（见 `compat/README.md` 的约定）。
 
 > 更早的 `0.1.5-alpha.1` **不支持**：`dsh-client-ui-slots@0.1.5-alpha.1` 没有 `main` 槽位，工作区面板无处挂载（矩阵实测 typecheck 直接失败）。见 `compat/README.md`。
 
@@ -257,6 +272,10 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 将 tarball 装入 profile（`pnpm add file:...`）后重启 `dsh web`。
 
 ## FAQ
+
+**在桌面版上点 SSH 工作区的会话，没有弹出登录框** —— 0.2.0 删除了客户端会话列表里的 `current` 字段（客户端会话改为多实例），旧版插件因此在 0.2.0 上永远认为「没有会话被打开」：不弹密码框、右侧操作台也解析不到目标，且不报错。**`0.2.7` 起已适配**（改为按官方语义读列表行上的 `retainedBy.mainView`）。若你装的仍是 `0.2.5` / `0.2.6-alpha`，请升级到 `0.2.7`；临时绕法：左侧「添加工作区」→ SSH → 浏览远端目录，这条路径会正常弹密码框并把凭据放进引擎。
+
+**桌面版里装插件报「启用失败」/ 之后新建会话提示 `sessionController is unavailable`** —— 桌面版插件管理器的「启用」走**进程内热重载**，而 DSH 当前存在已知的重载缺陷（旧代际未 dispose，进程级注册表残留上一代注册）。**不要用应用内的启用开关**：请完全退出应用→安装（见「安装 → 桌面版」）→再启动，冷启动路径正常。重启一次即可清掉半应用状态。
 
 **连接时要求输入密码 / 提示“需要密码”** —— 安全默认不保存密码：首次连接、浏览远端目录时会弹窗输入一次，在该连接存活期内复用；连接池空闲回收（默认 30 分钟）或进程重启后需重新输入。
 
