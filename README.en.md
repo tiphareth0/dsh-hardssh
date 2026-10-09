@@ -411,8 +411,7 @@ the **SSH console** in the right sidebar remains the richer entry point.
 **The local terminal defaults to cmd — how do I get PowerShell 7 or another shell?** —
 Two ways: (1) pick one in the terminal panel's shell selector (the built-in candidates are
 `zsh/bash/fish/pwsh/powershell/cmd`); (2) make it the default by giving the terminal
-controller a config entry in the profile's `cordis.patch.yml` (`path` goes through
-`resolveExecutable`, so PATH lookup is more robust than a hardcoded install path):
+controller a config entry in the profile's `cordis.patch.yml`:
 
 ```yaml
 - id: terminal-controller
@@ -420,6 +419,26 @@ controller a config entry in the profile's `cordis.patch.yml` (`path` goes throu
   config:
     shell: { path: pwsh, name: pwsh, args: ["-NoLogo"] }
 ```
+
+`path` may be a **bare name** (resolved through the subprocess provider's PATH) or an
+**absolute path**, with two traps:
+
+- **A Microsoft Store install of PowerShell 7 needs the absolute path.** It is not on the
+  machine/user PATH, and the App Execution Alias the Store exposes
+  (`%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`) is a **0-byte reparse point** that the
+  provider rejects as "not an executable" — a bare `pwsh` then fails with
+  `terminal error: subprocess-local: command "pwsh" was not found on PATH`. The absolute
+  path looks like
+  `C:\Program Files\WindowsApps\Microsoft.PowerShell_<version>_x64__8wekyb3d8bbwe\pwsh.exe`
+  — note the package directory is **version-stamped, so a Store update invalidates it**.
+- **An MSI install** (`C:\Program Files\PowerShell\7\pwsh.exe`) adds its directory to the
+  machine PATH, so a bare `pwsh` works and survives updates — the recommended long-term
+  choice.
+
+> A counter-intuitive detail: the terminal controller **verifies the shell with
+> `resolveExecutable()` before handing it to the seam**, and that verification always runs
+> locally — so a local shell that cannot be resolved breaks the REMOTE terminal of a bound
+> session too, even though that shell is about to be replaced by the host's own.
 
 **Prompted to enter a password / "credential required"** — passwords are never saved
 by default: connect and remote browse ask once per session; a process restart asks

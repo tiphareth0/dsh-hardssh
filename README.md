@@ -279,7 +279,7 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 
 **在 SSH 工作区会话里打开侧边栏终端，开的是本机还是远端？** —— 跟随会话：**SSH 工作区会话里开的是远端 shell**（该世界的 `$SHELL`，读不到则 `/bin/sh`，cwd 为远端根），本机会话里开的是本机 shell。DSH 的侧边栏终端通过 `ctx.subprocess` seam 挑 shell，而那个入口没有 cwd 上下文，所以在 Windows 上它本来会挑出 `cmd.exe` 这类客户端二进制、再被「客户端原生二进制在本机运行」的规则开到**本地锚点占位目录**里——既暴露内部占位路径，又造成"以为在服务器上"的误判；`0.2.7` 起改为按会话世界替换成该世界的登录 shell。**已知代价**：Shell 选择器仍只能列出本机 shell（`resolveExecutable()` 同样没有 cwd 上下文），因此绑定会话里显式选 `pwsh.exe` 会被映射为远端默认 shell，而不是报错。需要远端运维的完整入口（传输、隧道、目标固定跟随会话）仍推荐右侧栏 **SSH 操作台**。
 
-**本机会话的终端默认是 cmd，想换成 PowerShell 7 / 别的 shell？** —— 两条路：① 在终端面板的 Shell 选择器里临时挑（候选内置 `zsh/bash/fish/pwsh/powershell/cmd`）；② 设成默认——在 profile 的 `cordis.patch.yml` 里给终端控制器加 config（`path` 会被 `resolveExecutable` 走 PATH 解析，比写死安装路径稳）：
+**本机会话的终端默认是 cmd，想换成 PowerShell 7 / 别的 shell？** —— 两条路：① 在终端面板的 Shell 选择器里临时挑（候选内置 `zsh/bash/fish/pwsh/powershell/cmd`）；② 设成默认——在 profile 的 `cordis.patch.yml` 里给终端控制器加 config：
 
 ```yaml
 - id: terminal-controller
@@ -287,6 +287,15 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
   config:
     shell: { path: pwsh, name: pwsh, args: ["-NoLogo"] }
 ```
+
+`path` 可以是**裸名字**（由 subprocess provider 走 PATH 解析）或**绝对路径**，但有两条坑：
+
+- **Microsoft Store 版 PowerShell 7 必须写绝对路径**：它不在机器/用户 PATH 上，而 Store 暴露的 App Execution Alias（`%LOCALAPPDATA%\Microsoft\WindowsApps\pwsh.exe`）是 **0 字节重解析点**，会被 provider 判为「不是可执行文件」；此时写裸 `pwsh` 会直接报
+  `终端错误：subprocess-local: command "pwsh" was not found on PATH`。绝对路径形如
+  `C:\Program Files\WindowsApps\Microsoft.PowerShell_<版本>_x64__8wekyb3d8bbwe\pwsh.exe` —— 注意包目录**带版本号，Store 升级后会失效**。
+- **MSI 安装版**（`C:\Program Files\PowerShell\7\pwsh.exe`）安装器会把目录加进机器 PATH，写裸 `pwsh` 即可且不受升级影响——长期推荐这种装法。
+
+> 顺带一个反直觉点：终端控制器是**先用 `resolveExecutable()` 校验 shell、再交给 seam 路由**的，而这个校验固定在本机进行；所以**本机 shell 解析失败时，绑定会话的远端终端也会一起失败**（即使它最终会换成远端 shell）——报错就是上面那条。
 
 **连接时要求输入密码 / 提示“需要密码”** —— 安全默认不保存密码：首次连接、浏览远端目录时会弹窗输入一次，在该连接存活期内复用；连接池空闲回收（默认 30 分钟）或进程重启后需重新输入。
 
