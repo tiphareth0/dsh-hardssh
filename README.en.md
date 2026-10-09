@@ -408,6 +408,19 @@ still lists only local shells (`resolveExecutable()` has no cwd either), so an e
 failing. For full remote operations (transfers, tunnels, a target pinned to the session)
 the **SSH console** in the right sidebar remains the richer entry point.
 
+**The local terminal defaults to cmd — how do I get PowerShell 7 or another shell?** —
+Two ways: (1) pick one in the terminal panel's shell selector (the built-in candidates are
+`zsh/bash/fish/pwsh/powershell/cmd`); (2) make it the default by giving the terminal
+controller a config entry in the profile's `cordis.patch.yml` (`path` goes through
+`resolveExecutable`, so PATH lookup is more robust than a hardcoded install path):
+
+```yaml
+- id: terminal-controller
+  name: "@deepseek-ai/dsh-api-terminal-controller"
+  config:
+    shell: { path: pwsh, name: pwsh, args: ["-NoLogo"] }
+```
+
 **Prompted to enter a password / "credential required"** — passwords are never saved
 by default: connect and remote browse ask once per session; a process restart asks
 again.

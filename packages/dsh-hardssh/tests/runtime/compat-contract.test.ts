@@ -22,6 +22,11 @@ function manifest(name: string): CompatManifest {
   return JSON.parse(readFileSync(resolve(repoRoot, `compat/${name}.json`), 'utf8')) as CompatManifest
 }
 
+/** A Context stand-in answering `get()` from a plain service table. */
+function probingContext(services: Record<string, unknown>): Parameters<typeof probeOptionalServices>[0] {
+  return { get: (name: string) => services[name] } as unknown as Parameters<typeof probeOptionalServices>[0]
+}
+
 describe('runtime compatibility contract', () => {
   it('lists every required runtime export and the installed test set supplies it', async () => {
     const required = HARDSSH_CONTRACT.filter(entry => entry.kind === 'required-runtime')
@@ -39,6 +44,28 @@ describe('runtime compatibility contract', () => {
     const probes = probeOptionalServices(new Context())
     expect(probes.map(probe => probe.service)).toEqual(['webServer', 'settings', 'systemPrompt'])
     expect(probes.every(probe => !probe.available && probe.missingMethods.length > 0)).toBe(true)
+  })
+
+  it('accepts every generation of the settings surface', async () => {
+    // 0.1.x installs a section; 0.2.0 replaced the service with `SettingsForms`
+    // and generates the page from the plugin's own Config schema. Probing only
+    // the old name made the plugin report `settings` as unavailable on 0.2.0
+    // while the configuration UI was in fact working.
+    const old = probeOptionalServices(probingContext({ settings: { installSection: () => undefined } }))
+    expect(old.find(probe => probe.service === 'settings')).toEqual({ service: 'settings', available: true, missingMethods: [] })
+
+    const modern = probeOptionalServices(probingContext({ settings: { configure: () => undefined, describe: () => [] } }))
+    expect(modern.find(probe => probe.service === 'settings')).toEqual({ service: 'settings', available: true, missingMethods: [] })
+  })
+
+  it('reports the closest generation when the settings surface is genuinely absent', () => {
+    // Nothing usable: report the smaller gap (the 0.1.x surface) rather than
+    // concatenating both generations into a confusing list.
+    const empty = probeOptionalServices(probingContext({ settings: {} })).find(probe => probe.service === 'settings')
+    expect(empty).toEqual({ service: 'settings', available: false, missingMethods: ['installSection'] })
+
+    const partial = probeOptionalServices(probingContext({ settings: { describe: () => [] } })).find(probe => probe.service === 'settings')
+    expect(partial).toEqual({ service: 'settings', available: false, missingMethods: ['configure'] })
   })
 
   it('covers every DeepSeek peer in the tested component manifest', () => {

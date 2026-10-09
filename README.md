@@ -279,6 +279,15 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 
 **在 SSH 工作区会话里打开侧边栏终端，开的是本机还是远端？** —— 跟随会话：**SSH 工作区会话里开的是远端 shell**（该世界的 `$SHELL`，读不到则 `/bin/sh`，cwd 为远端根），本机会话里开的是本机 shell。DSH 的侧边栏终端通过 `ctx.subprocess` seam 挑 shell，而那个入口没有 cwd 上下文，所以在 Windows 上它本来会挑出 `cmd.exe` 这类客户端二进制、再被「客户端原生二进制在本机运行」的规则开到**本地锚点占位目录**里——既暴露内部占位路径，又造成"以为在服务器上"的误判；`0.2.7` 起改为按会话世界替换成该世界的登录 shell。**已知代价**：Shell 选择器仍只能列出本机 shell（`resolveExecutable()` 同样没有 cwd 上下文），因此绑定会话里显式选 `pwsh.exe` 会被映射为远端默认 shell，而不是报错。需要远端运维的完整入口（传输、隧道、目标固定跟随会话）仍推荐右侧栏 **SSH 操作台**。
 
+**本机会话的终端默认是 cmd，想换成 PowerShell 7 / 别的 shell？** —— 两条路：① 在终端面板的 Shell 选择器里临时挑（候选内置 `zsh/bash/fish/pwsh/powershell/cmd`）；② 设成默认——在 profile 的 `cordis.patch.yml` 里给终端控制器加 config（`path` 会被 `resolveExecutable` 走 PATH 解析，比写死安装路径稳）：
+
+```yaml
+- id: terminal-controller
+  name: "@deepseek-ai/dsh-api-terminal-controller"
+  config:
+    shell: { path: pwsh, name: pwsh, args: ["-NoLogo"] }
+```
+
 **连接时要求输入密码 / 提示“需要密码”** —— 安全默认不保存密码：首次连接、浏览远端目录时会弹窗输入一次，在该连接存活期内复用；连接池空闲回收（默认 30 分钟）或进程重启后需重新输入。
 
 **主机密钥变化 / 提示可能中间人** —— 服务器重装或轮换密钥：打开该服务器的 SSH 工作区会话时弹出「密钥已变更」对话框，按提示「重置」后重新信任。

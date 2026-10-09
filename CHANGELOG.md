@@ -23,6 +23,11 @@
   现在 `spawnTerminal` 单独路由：世界为远端且 shell 是客户端原生二进制时，把程序换成**该世界自己的登录 shell**（`terminalEnvironment()` 取 `$SHELL`，取不到或读取失败用 `/bin/sh`）并按 POSIX 语义重建参数（`-i`），cwd 翻译成远端根。**`spawn()` 的规则不变**——那里调用方是明确要求某个程序（例如 `pwsh` 工具）；只有"给我一个会话世界的 shell"这个语义走新路径。
   已知代价（如实记录）：DSH 的 **Shell 选择器仍只能列出本机 shell**，因为 `resolveExecutable()` 同样没有 cwd 上下文、无法按会话路由；因此在绑定会话里显式选择的 Windows shell 会被映射成远端默认 shell，而不是报错。
 
+### 修复：0.2.0 的设置服务探测误报
+
+- 0.2.0 把 `ctx.settings` 换成了 **`SettingsForms`**（`configure` / `describe` / `update`，按每个插件自己的 `Config` schema 自动生成设置页），旧的 `installSection(owner, ns, schema, entry, hooks)` 不复存在。我们的「可选服务」探测只认旧方法名，于是在 0.2.0 上把 `settings` 报成 `available: false, missingMethods: ["installSection"]` —— 这是**误报**：配置界面其实照常工作（本插件本来就导出 `Config` schema，0.2.0 会据此自动生成那一页），而健康横幅却宣称该能力消失了。
+  现在探测按「代际」匹配：每个可选服务列出多套可接受的方法面，任一套完整即算可用；都缺时报告**最接近**的那一代（已具备成员更多者优先，其次缺失更少），避免把 0.2.0 的服务描述成「缺 `installSection`」。0.1.x 的 `installSection` 路径与行为完全不变。
+
 ### 内部清理
 
 - 抽出 `src/utf8.ts`：两份有界输出收集器（引擎 exec 捕获的**头部**截断、远端子进程投影的**尾部**滑动窗口）共用同一份 UTF-8 序列边界算法；顺带修掉尾部窗口在字节预算边界裁剪时会切出半个字符（窗口开头解码成 U+FFFD）的隐患——只在「本次 push 确实丢弃了头部字节」时对齐，避免误伤跨 chunk 的合法字符。

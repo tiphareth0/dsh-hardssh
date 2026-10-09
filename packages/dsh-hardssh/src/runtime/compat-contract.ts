@@ -128,21 +128,52 @@ export interface ServiceProbe {
   missingMethods: string[]
 }
 
-function methodMissing(value: unknown, methods: readonly string[]): string[] {
+/** One accepted generation of an optional service's surface. */
+type ServiceSurface = readonly string[]
+
+function methodMissing(value: unknown, methods: ServiceSurface): string[] {
   if (typeof value !== 'object' || value === null) return [...methods]
   return methods.filter(method => typeof (value as Record<string, unknown>)[method] !== 'function')
 }
 
+/**
+ * The generations of each optional service that count as available.
+ *
+ * A service can be rewritten between dsh lines, so a service is reported
+ * available when ANY listed surface is complete. `settings` is the concrete
+ * case: 0.1.x exposes `installSection(owner, ns, schema, entry, hooks)`, while
+ * 0.2.0 replaced the service with `SettingsForms` (`configure` / `describe` /
+ * `update`) and generates each plugin's page from its own `Config` schema
+ * instead. Probing only the old name reported `settings` as unavailable on
+ * 0.2.0 — a false alarm that claimed the configuration surface had disappeared
+ * while the UI was in fact working from the schema this plugin already exports.
+ */
+const OPTIONAL_SERVICE_SURFACES: ReadonlyArray<{ service: string; surfaces: readonly ServiceSurface[] }> = [
+  { service: 'webServer', surfaces: [['register', 'registerUpgrade']] },
+  { service: 'settings', surfaces: [['installSection'], ['configure', 'describe']] },
+  { service: 'systemPrompt', surfaces: [['section']] },
+]
+
 /** Probe optional Cordis surfaces without importing their implementation. */
 export function probeOptionalServices(ctx: Context): ServiceProbe[] {
-  const specs: Array<{ service: string; methods: readonly string[] }> = [
-    { service: 'webServer', methods: ['register', 'registerUpgrade'] },
-    { service: 'settings', methods: ['installSection'] },
-    { service: 'systemPrompt', methods: ['section'] },
-  ]
-  return specs.map(({ service, methods }) => {
+  return OPTIONAL_SERVICE_SURFACES.map(({ service, surfaces }) => {
     const value = ctx.get(service as never) as unknown
-    const missingMethods = methodMissing(value, methods)
-    return { service, available: missingMethods.length === 0, missingMethods }
+    // Report the generation the service is closest to: more present members
+    // first, then fewer missing ones. Without this, a 0.2.0 settings service that
+    // merely lacks `configure` would be reported as "missing installSection" —
+    // the generation it plainly is not.
+    let closest: string[] | undefined
+    let closestPresent = -1
+    for (const surface of surfaces) {
+      const missing = methodMissing(value, surface)
+      if (missing.length === 0) return { service, available: true, missingMethods: [] }
+      const present = surface.length - missing.length
+      const better = present > closestPresent || (present === closestPresent && closest !== undefined && missing.length < closest.length)
+      if (better) {
+        closest = missing
+        closestPresent = present
+      }
+    }
+    return { service, available: false, missingMethods: closest ?? [] }
   })
 }
