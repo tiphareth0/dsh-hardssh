@@ -161,9 +161,69 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
   }
 
   /** @inheritdoc */
-  spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
-    const routed = this.route(spec)
+  async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
+    const routed = await this.terminalRoute(spec)
     return routed.runtime.spawnTerminal(routed.spec)
+  }
+
+  /**
+   * Terminal routing differs from `spawn()` in one deliberate way: a terminal is
+   * a user SHELL in the session's world, so a bound session never gets a client
+   * shell.
+   *
+   * The controller picks that shell from `terminalEnvironment()`, which — like
+   * `resolveExecutable()` — carries no cwd and therefore answers for the LOCAL
+   * host; on Windows the pick is a client-native executable that cannot exist on
+   * the server. Spawning it locally opened a local shell inside the workspace's
+   * ANCHOR placeholder directory — the anchor is a routing placeholder that is
+   * never supposed to be user-visible, and a local shell in an SSH-workspace
+   * session is exactly the "wrong machine" impression this plugin exists to
+   * prevent. So the shell is replaced by the world's own login shell and the
+   * anchor cwd is translated to the remote root.
+   *
+   * Ordinary `spawn()` keeps the client-binary rule: there the caller asked for
+   * that exact program (e.g. the `pwsh` tool), which is a different question from
+   * "give me a shell in this session's world".
+   */
+  private async terminalRoute(
+    spec: SubprocessTerminalSpawnSpec,
+  ): Promise<{ runtime: SubprocessRuntime; spec: SubprocessTerminalSpawnSpec }> {
+    const runtime = this.runtimeFor(spec.cwd)
+    if (runtime === undefined) return { runtime: this.deps.local, spec }
+    const exe = spec.argv.length > 0 ? spec.argv[0] as string : ''
+    if (!isClientNativeExecutable(exe, this.deps.clientToolNames ?? DEFAULT_CLIENT_TOOL_NAMES)) {
+      // A shell name the world can plausibly run (`/bin/bash`, `bash`): only its
+      // cwd has to be translated.
+      return { runtime, spec: this.remoteSpec(spec) }
+    }
+    spec.signal?.throwIfAborted()
+    const shell = await this.worldShell(runtime, spec.signal)
+    // Arguments belong to the program they were built for (cmd: none, pwsh:
+    // -NoLogo, POSIX: -i); since the program is replaced, they are rebuilt the
+    // way DSH profiles a POSIX shell.
+    return { runtime, spec: this.remoteSpec({ ...spec, argv: [shell, '-i'] }) }
+  }
+
+  /**
+   * The login shell of a runtime's own world, or `/bin/sh` when it cannot report
+   * one.
+   *
+   * Deliberately NOT `delegateOrLocalTerminalEnvironment`: that helper falls back
+   * to the LOCAL host's facts, which would hand a bound session a Windows shell
+   * again. This world is remote and POSIX, so the safe fallback is `/bin/sh`.
+   */
+  private async worldShell(runtime: SubprocessRuntime, signal?: AbortSignal): Promise<string> {
+    const probe = runtime as TerminalEnvironmentProbe
+    if (typeof probe.terminalEnvironment === 'function') {
+      try {
+        const environment = await probe.terminalEnvironment(signal)
+        if (environment.defaultShell !== undefined && environment.defaultShell !== '') return environment.defaultShell
+      } catch {
+        // Fall through: an unreadable environment must not block the terminal —
+        // /bin/sh exists on the POSIX hosts this plugin supports.
+      }
+    }
+    return '/bin/sh'
   }
 }
 

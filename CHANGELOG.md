@@ -19,7 +19,9 @@
   `终端错误：subprocess.terminalEnvironment is not a function`。
   现在 4 个成员齐全：`SwitchSubprocessRuntime` 委托本地 runtime（**必须与它本地的 `resolveExecutable` 同属一个世界**，否则控制器选出的 shell 会在本地验证失败）；`SshSubprocessRuntime` 报 `platform: 'posix'` 并从已缓存的远端 `env -0` 探针取 `SHELL`（读取失败或无 alias 时降级为只报平台，控制器退回 `/bin/sh`，真正的连接问题留给随后的 spawn）；本地 provider 的 `RootedLocalSubprocessRuntime`（作为 `workspace.process` capability 对外）同样补齐并转发。
   类型与本地推导放在 `src/subprocess-environment.ts`——不 import `@deepseek-ai/dsh-subprocess` 的类型，因为本插件仍构建在 0.1.x 线上（那时该类型不存在）；运行期是版本容错的：内部本地 runtime 实现了该方法就委托，没有就按官方 local provider 的同款公式在本地合成（Windows → `ComSpec`，POSIX → `$SHELL` 或 passwd 条目，空串视为缺席）。
-  **行为边界**：DSH 自带的侧边栏终端是**本机**终端（该 seam 的两个入口都没有 cwd 上下文，无法按会话路由；Windows 上的 shell 还命中「客户端原生二进制在本机运行」的既有规则）。远端 shell 仍由本插件的 SSH 操作台（右侧栏，xterm over SSH）提供。
+- **终端按会话路由到远端（而不是开在本地锚点占位目录里）**。修好上面的缺失成员后暴露出的第二个问题：控制器把 `agent.session.header.cwd`（绑定会话 = 本地锚点）作为 cwd 交给 seam，而它挑出的 shell 在 Windows 上是客户端原生二进制（`cmd.exe` / `pwsh.exe`），命中我们 `spawn()` 的「客户端原生二进制在本机运行」规则——结果是一个**本机 shell 开在 anchor 占位目录里**：既把内部占位路径暴露给用户，又正好造成本插件最想避免的「以为在服务器上」的误判。
+  现在 `spawnTerminal` 单独路由：世界为远端且 shell 是客户端原生二进制时，把程序换成**该世界自己的登录 shell**（`terminalEnvironment()` 取 `$SHELL`，取不到或读取失败用 `/bin/sh`）并按 POSIX 语义重建参数（`-i`），cwd 翻译成远端根。**`spawn()` 的规则不变**——那里调用方是明确要求某个程序（例如 `pwsh` 工具）；只有"给我一个会话世界的 shell"这个语义走新路径。
+  已知代价（如实记录）：DSH 的 **Shell 选择器仍只能列出本机 shell**，因为 `resolveExecutable()` 同样没有 cwd 上下文、无法按会话路由；因此在绑定会话里显式选择的 Windows shell 会被映射成远端默认 shell，而不是报错。
 
 ### 内部清理
 
@@ -28,7 +30,7 @@
 
 ### 测试
 
-新增 33 条：客户端会话推导 8 条（0.1.x 形状 / 0.2.0 形状 / 无会话 / `ids` 顺序 / `ids` 外行 / 忽略其它来源 / 缺 `byId` / 形状守卫正反例）、工作区注册表适配 4 条、UTF-8 边界与尾部窗口 9 条、终端环境探针 12 条（本地推导与空串处理 / abort、委托与回退、门面委托与回退、远端 posix+`SHELL` / 读取失败降级 / 无 alias 不探测）。全量 **70 个测试文件 / 663 通过 / 4 跳过**。
+新增 39 条：客户端会话推导 8 条（0.1.x 形状 / 0.2.0 形状 / 无会话 / `ids` 顺序 / `ids` 外行 / 忽略其它来源 / 缺 `byId` / 形状守卫正反例）、工作区注册表适配 4 条、UTF-8 边界与尾部窗口 9 条、终端环境探针 12 条（本地推导与空串处理 / abort、委托与回退、门面委托与回退、远端 posix+`SHELL` / 读取失败降级 / 无 alias 不探测）、终端路由 6 条（绑定会话换世界 shell 并翻译 cwd、世界读不到 shell 时退回 `/bin/sh`、世界能跑的 shell 名不替换、本机会话原样、预中止不探测、以及 `spawn()` 保持客户端二进制规则的回归护栏）。全量 **71 个测试文件 / 669 通过 / 4 跳过**。
 
 ## v0.2.6-alpha — 2026-09-17
 

@@ -395,14 +395,18 @@ completely → install (see "Install → Desktop (Electron) dsh") → start it. 
 path is the working one; one restart also clears the half-applied state.
 
 **In an SSH-workspace session, does the sidebar terminal open locally or on the server?**
-— **Locally.** The built-in sidebar terminal picks and verifies its shell through the
-`ctx.subprocess` seam's `terminalEnvironment()` / `resolveExecutable()`, and neither call
-carries the session's cwd, so a plugin cannot tell which server the session is bound to;
-on Windows the shell also matches the "client-native binaries run here" routing rule. Use
-this plugin's **SSH console** for a remote shell (right sidebar → SSH → Terminal: an xterm
-over SSH that follows the current session's server). On 0.2.0 a missing member of that
-seam made the sidebar terminal fail with a terminal error; **fixed in `0.2.7`** (usable,
-still a local terminal).
+— It follows the session: **in an SSH-workspace session it opens a REMOTE shell** (that
+world's `$SHELL`, `/bin/sh` when unreadable, cwd = the remote root), and a local shell in a
+local session. The built-in sidebar terminal picks its shell through the `ctx.subprocess`
+seam, whose members carry no cwd; on Windows that pick is a client-native executable
+(`cmd.exe`), which the "client-native binaries run here" rule then spawned **inside the
+workspace's local anchor placeholder** — leaking an internal path and inviting exactly the
+"think I'm on the server" mistake this plugin exists to prevent. Since `0.2.7` the program
+is replaced with the session world's login shell instead. **Known cost:** the shell picker
+still lists only local shells (`resolveExecutable()` has no cwd either), so an explicit
+`pwsh.exe` pick in a bound session is mapped to the remote default shell rather than
+failing. For full remote operations (transfers, tunnels, a target pinned to the session)
+the **SSH console** in the right sidebar remains the richer entry point.
 
 **Prompted to enter a password / "credential required"** — passwords are never saved
 by default: connect and remote browse ask once per session; a process restart asks
