@@ -13,6 +13,7 @@
   display: flex;
   flex-direction: column;
   gap: 5px;
+  min-width: 0;
 }
 
 .field > span {
@@ -26,6 +27,13 @@
   padding: 7px 10px;
   min-height: 36px;
   box-sizing: border-box;
+  /* A <select>'s intrinsic width is its LONGEST option, so a long server alias
+     used to widen the grid track past the fixed-width dropdown and push the
+     action buttons out of view (clipped by overflow-x: hidden). These controls
+     must follow the card instead of sizing it. */
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   font-size: 13px;
   color: var(--dsw-alias-label-primary, #0f1115);
   background: var(--dsw-alias-bg-layer-1, #fff);
@@ -60,6 +68,8 @@
   border: 1px solid var(--dsw-alias-state-error-primary, rgba(245, 63, 63, 0.4));
   color: var(--dsw-alias-state-error-primary, #d03050);
   font-size: 12px;
+  /* Long unbroken diagnostics (paths, fingerprints) must not widen the card. */
+  overflow-wrap: anywhere;
 }
 
 .dialogInfo {
@@ -70,13 +80,25 @@
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
   color: var(--dsw-alias-label-primary, #0f1115);
   font-size: 12px;
+  overflow-wrap: anywhere;
 }
 
 .dialogActions {
   display: flex;
+  /* Wrap instead of overflowing: with a narrow card the buttons move to the
+     next line rather than being clipped off the right edge. */
+  flex-wrap: wrap;
+  align-items: center;
   justify-content: flex-end;
   gap: 8px;
   margin-top: 14px;
+}
+
+/* Buttons keep their label on one line and never shrink below it; wrapping is
+   the action row's job. */
+.dialogActions .button {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .button {
@@ -123,6 +145,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  min-width: 0;
   padding: 7px 10px;
   border: 1px solid var(--dsw-alias-border-l2, rgba(0, 0, 0, 0.1));
   border-radius: 8px;
@@ -140,6 +163,10 @@
   font-size: 13px;
   color: var(--dsw-alias-label-primary, #0f1115);
   white-space: nowrap;
+  /* Long aliases shrink and ellipsize instead of widening the row. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .hostMeta {
@@ -150,6 +177,16 @@
   white-space: nowrap;
   font-size: 12px;
   color: var(--dsw-alias-label-tertiary, #81858c);
+}
+
+/* Inline text that must not widen its row: long host aliases inside a label. */
+.ellipsis {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
 }
 
 .danger {

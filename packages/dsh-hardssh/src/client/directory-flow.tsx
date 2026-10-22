@@ -412,6 +412,10 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
   const rawLeft = anchor !== undefined ? anchor.left : Math.max(8, window.innerWidth - menuWidth - 8)
   const top = Math.max(8, Math.min(rawTop, window.innerHeight - menuHeight - 8))
   const left = Math.max(8, Math.min(rawLeft, window.innerWidth - menuWidth - 8))
+  // Never exceed the space actually available to the RIGHT of the anchor: a
+  // trigger near the right edge (or a narrow window) shrinks the card instead of
+  // letting its content overflow and be clipped.
+  const width = Math.max(220, Math.min(menuWidth, window.innerWidth - left - 8))
 
   return createPortal(
     <div
@@ -422,7 +426,7 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
       style={{
         top,
         left,
-        width: menuWidth,
+        width,
         maxHeight: menuHeight,
         overflowY: 'auto',
       }}
@@ -563,7 +567,9 @@ export function DirectoryFlow(props: DirectoryFlowOwnerProps & DirectoryFlowInje
         {choice === 'browsing' && (
           <div className={css.dialogGrid} style={{ gridTemplateColumns: '1fr' }}>
             <div className={css.field} style={{ gridColumn: '1' }}>
-              <span>{tt('create.browse')} · {host}</span>
+              <span>
+                {tt('create.browse')} · <span className={css.ellipsis} title={host}>{host}</span>
+              </span>
               <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                 <button
                   type="button"
