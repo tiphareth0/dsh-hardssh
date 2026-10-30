@@ -26,8 +26,15 @@
  */
 
 import { readFileSync } from 'node:fs'
-import { sshConfigPath } from './store.ts'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import type { SshHostEntry } from './protocol.ts'
+
+/** The user's standard OpenSSH config path (single source: this module reads and
+ *  the store imports through it, so it cannot live in the store's file). */
+export function sshConfigPath(): string {
+  return join(homedir(), '.ssh', 'config')
+}
 
 /** One addressable host from `~/.ssh/config`. */
 export interface SshConfigHost {

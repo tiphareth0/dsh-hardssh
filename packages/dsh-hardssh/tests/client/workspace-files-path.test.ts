@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { normalizeFilesPath, remapAnchorToRemote } from '../../src/client/workspace-files-path.ts'
+import { normalizeDisplayPath as normalizeFilesPath, remapAnchorToRemote } from '../../src/client/anchor-display.ts'
 
 describe('normalizeFilesPath', () => {
   it('unifies separators and drops trailing separators', () => {

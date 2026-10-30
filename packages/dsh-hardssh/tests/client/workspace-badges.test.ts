@@ -11,7 +11,7 @@
  * does (the DOM walk itself needs a browser and is exercised in the GUI).
  */
 import { describe, expect, it } from 'vitest'
-import { replaceAnchorPaths } from '../../src/client/workspace-badges.ts'
+import { replaceAnchorPaths } from '../../src/client/anchor-display.ts'
 
 const ANCHOR = 'C:\\Users\\Kether\\.dsh\\ssh-workspaces\\7821e2ce'
 const LABEL = '/yutiancheng/2026/regvelo（regvelo）'

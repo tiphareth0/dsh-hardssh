@@ -11,6 +11,7 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import type { HostPayload, ImportResult, SshAuthKind, SshHostEntry, SshHostSummary } from './protocol.ts'
 import { validateCommandPolicy } from './command-policy.ts'
+import { readSshConfig, sshConfigPath } from './ssh-config.ts'
 
 /** File format version. */
 const FORMAT_VERSION = 1
@@ -20,85 +21,49 @@ export function storePath(): string {
   return join(homedir(), '.dsh', 'dsh-ssh.json')
 }
 
-/** The user's standard OpenSSH config path. */
-export function sshConfigPath(): string {
-  return join(homedir(), '.ssh', 'config')
-}
+/** The user's standard OpenSSH config path — owned by the ssh-config reader so
+ *  the live reader and this store cannot disagree about which file they mean. */
+export { sshConfigPath } from './ssh-config.ts'
 
 interface StoreFile {
   version: number
   hosts: SshHostEntry[]
 }
 
-/** One parsed Host block from `~/.ssh/config`. */
-interface SshConfigBlock {
-  pattern: string
-  props: Record<string, string>
-}
-
-/** Parse `~/.ssh/config` into importable candidate payloads. Pure (no store
- *  writes): the caller applies each candidate through ITS OWN create, so the
- *  plaintext `HostStore` and the secret-aware `SecureHostStore` share one
- *  parser while differing only in how an entry's secrets are stored. */
-function parseSshConfigToImport(configPath: string): {
+/**
+ * Map the LIVE ssh-config reader to import candidates.
+ *
+ * The importer used to carry a second parser for the same file, which had
+ * already drifted from the live reader (IdentityFile handling, skipped-block
+ * reasons). Both now use `ssh-config.ts`; this adapter only turns parsed hosts
+ * into the store's payload shape, leaving secret handling to the caller's
+ * `create`.
+ * @param configPath - the ssh config to read.
+ * @returns candidate payloads plus the skipped block names and total count.
+ */
+function sshConfigImportCandidates(configPath: string): {
   candidates: HostPayload[]
-  /** Wildcard / no-HostName patterns (reported as skipped, not importable). */
+  /** Wildcard / no-HostName / multi-pattern blocks (reported as skipped). */
   invalidNames: string[]
-  /** Total Host blocks parsed (including non-importable ones). */
+  /** Total Host blocks read (importable or not). */
   totalBlocks: number
 } {
-  const lines = readFileSync(configPath, 'utf8').split(/\r?\n/)
-  const blocks: SshConfigBlock[] = []
-  let current: SshConfigBlock | undefined
-  for (const raw of lines) {
-    const line = raw.trim()
-    if (line === '' || line.startsWith('#')) continue
-    const match = /^([A-Za-z0-9_\-]+)\s+(.+)$/.exec(line)
-    if (match === null) continue
-    const key = match[1].toLowerCase()
-    const value = match[2].trim()
-    if (key === 'host') {
-      current = { pattern: value, props: {} }
-      blocks.push(current)
-    } else if (current !== undefined) {
-      current.props[key] = value
-    }
+  const read = readSshConfig(configPath)
+  return {
+    candidates: read.hosts.map(host => ({
+      alias: host.alias,
+      host: host.host,
+      port: host.port,
+      user: host.user,
+      auth: host.identityFile === undefined
+        ? { kind: 'password' as const }
+        : { kind: 'key' as const, keyPath: host.identityFile },
+      proxyJump: [...host.proxyJump],
+    })),
+    invalidNames: read.skipped.map(skip => skip.pattern),
+    totalBlocks: read.hosts.length + read.skipped.length,
   }
-  const candidates: HostPayload[] = []
-  const invalidNames: string[] = []
-  for (const block of blocks) {
-    const pattern = block.pattern.split(/\s+/)[0]
-    if (pattern.includes('*') || pattern.includes('?')) {
-      if (pattern !== '') invalidNames.push(pattern)
-      continue
-    }
-    const hostName = block.props.hostname
-    if (hostName === undefined || hostName === '') {
-      if (pattern !== '') invalidNames.push(pattern)
-      continue
-    }
-    candidates.push({
-      alias: pattern,
-      host: hostName,
-      port: block.props.port !== undefined ? Number.parseInt(block.props.port, 10) : 22,
-      user: block.props.user ?? process.env.USER ?? 'root',
-      auth: {
-        kind: block.props.identityfile !== undefined ? 'key' : 'password',
-        keyPath: block.props.identityfile,
-        password: block.props.password,
-      },
-      proxyJump: block.props.proxyjump !== undefined
-        ? block.props.proxyjump.split(',').map(hop => hop.trim()).filter(hop => hop !== '')
-        : [],
-      description: block.props.description,
-      environment: block.props.environment,
-      tags: (block.props.tags ?? '').split(',').map(tag => tag.trim()).filter(tag => tag !== ''),
-      location: block.props.location,
-    })
-  }
-  return { candidates, invalidNames, totalBlocks: blocks.length }
 }
-
 /** Payload shape the validator enforces: full create vs partial patch. */
 export type HostPayloadValidationMode = 'create' | 'patch'
 
@@ -381,7 +346,7 @@ export class HostStore {
     this.skippedNames = new Set<string>()
     const configPath = this.sshConfigOverride ?? sshConfigPath()
     if (!existsSync(configPath)) return { parsed: 0, added: 0, skipped: 0, skippedNames: [] }
-    const { candidates, invalidNames, totalBlocks } = parseSshConfigToImport(configPath)
+    const { candidates, invalidNames, totalBlocks } = sshConfigImportCandidates(configPath)
     for (const name of invalidNames) this.skippedNames.add(name)
     let added = 0
     for (const payload of candidates) {
@@ -492,7 +457,7 @@ export class SecureHostStore {
   async importFromSshConfig(): Promise<ImportResult> {
     const configPath = this.inner.sshConfigOverridePath ?? sshConfigPath()
     if (!existsSync(configPath)) return { parsed: 0, added: 0, skipped: 0, skippedNames: [] }
-    const { candidates, invalidNames, totalBlocks } = parseSshConfigToImport(configPath)
+    const { candidates, invalidNames, totalBlocks } = sshConfigImportCandidates(configPath)
     const skipped = new Set<string>(invalidNames.filter(name => name !== ''))
     let added = 0
     for (const payload of candidates) {

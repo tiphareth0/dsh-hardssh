@@ -17,31 +17,13 @@
  * @module dsh-hardssh/client/workspace-files-path
  */
 
+import { normalizeDisplayPath, remapAnchorToRemote } from './anchor-display.ts'
+
 /** Native panel root marker (rendered as `data-files-root={root}` by
  *  `dsh-client-ui-sidebar-files`, verified in the 0.1.5-rc.1 bundle). */
 const PANEL_SELECTOR = '[data-files-root]'
 /** The header element whose `title` carries the panel root. */
 const ROOT_TITLE_SELECTOR = '[title]'
-
-/** Normalize a path for prefix comparison: unified separators, no trailing
- *  separator, case-folded for Windows-shaped paths (Windows anchors are
- *  case-insensitive; POSIX anchors are not). */
-export function normalizeFilesPath(path: string): string {
-  const unified = path.replace(/\\/gu, '/').replace(/\/+$/u, '')
-  return /^[a-zA-Z]:\//u.test(unified) || unified.startsWith('//') ? unified.toLowerCase() : unified
-}
-
-/** Rewrite one displayed path: when it equals the anchor or sits under it,
- *  replace the anchor prefix with the remote root (separators normalized to
- *  `/`); otherwise unchanged. */
-export function remapAnchorToRemote(anchorPath: string, remoteRoot: string, value: string): string {
-  const anchor = normalizeFilesPath(anchorPath)
-  const root = remoteRoot.endsWith('/') ? remoteRoot.slice(0, -1) : remoteRoot
-  const normalized = normalizeFilesPath(value)
-  if (normalized === anchor) return root
-  if (normalized.startsWith(`${anchor}/`)) return `${root}${normalized.slice(anchor.length)}`
-  return value
-}
 
 /**
  * Mount the address-rewrite pass. Scans the document for native file panels
@@ -57,16 +39,16 @@ export function mountWorkspaceFilesPathRemap(
   workspaces: ReadonlyArray<{ anchorPath: string; remoteRoot: string }>,
 ): () => void {
   const byRoot = new Map<string, { anchorPath: string; remoteRoot: string }>()
-  for (const workspace of workspaces) byRoot.set(normalizeFilesPath(workspace.anchorPath), workspace)
+  for (const workspace of workspaces) byRoot.set(normalizeDisplayPath(workspace.anchorPath), workspace)
 
   /** Rewrite one panel's root header into the remote form, if it is ours. */
   const decorate = (panel: Element): void => {
     const root = panel.getAttribute('data-files-root') ?? ''
-    const owner = byRoot.get(normalizeFilesPath(root))
+    const owner = byRoot.get(normalizeDisplayPath(root))
     if (owner === undefined) return
     // The header `.path` element is the one whose `title` equals the root.
     const pathEl = [...panel.querySelectorAll<HTMLElement>(ROOT_TITLE_SELECTOR)]
-      .find(element => normalizeFilesPath(element.getAttribute('title') ?? '') === normalizeFilesPath(root))
+      .find(element => normalizeDisplayPath(element.getAttribute('title') ?? '') === normalizeDisplayPath(root))
     if (pathEl === undefined) return
     const base = remapAnchorToRemote(root, owner.remoteRoot, root)
     if (pathEl.title !== base) pathEl.title = base

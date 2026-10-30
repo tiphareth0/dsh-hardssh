@@ -10,7 +10,6 @@ import {
   type ExecResult,
   type HardsshHealthSnapshot,
   type HostPayload,
-  type ImportResult,
   type KnownHostAction,
   type KnownHostView,
   type RemoteDirEntry,
@@ -113,12 +112,6 @@ export class SshApi {
   async deleteHost(alias: string): Promise<void> {
     const response = await fetch(SSH_API.hosts + query({ alias }), { method: 'DELETE' })
     await readJson<{ ok: boolean }>(response)
-  }
-
-  async importSshConfig(): Promise<ImportResult> {
-    const response = await fetch(SSH_API.importSshConfig, { method: 'POST' })
-    const body = await readJson<{ result: ImportResult }>(response)
-    return body.result
   }
 
   // ---------------------------------------------------------------- ops

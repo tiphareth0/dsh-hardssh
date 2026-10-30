@@ -25,6 +25,11 @@ export function normalizeAnchorPath(path: string): string {
   return trimTrailing(path, rootLength)
 }
 
+/** Drop trailing separators (either spelling) without touching the rest. */
+export function trimTrailingSeparators(path: string): string {
+  return path.replace(/[\\/]+$/, '')
+}
+
 /** True when `candidate` equals `anchor` or is one of its descendants (lexical). */
 export function isPathUnderAnchor(anchor: string, candidate: string): boolean {
   const normAnchor = normalizeAnchorPath(anchor)
@@ -39,4 +44,37 @@ function trimTrailing(path: string, minimumLength: number): string {
   let end = path.length
   while (end > minimumLength && (path[end - 1] === '/' || path[end - 1] === '\\')) end -= 1
   return path.slice(0, end)
+}
+
+/**
+ * Comparison form for a LOCAL path used in containment checks that are not about
+ * anchors: separators unified to `/`, trailing separators dropped, case folded
+ * only for a drive-letter root (no OS guessing).
+ *
+ * This is deliberately NOT `normalizeAnchorPath`: that one preserves the path's
+ * own separator style (the fs seam must hand back the spelling the caller used)
+ * and folds case for any Windows-shaped path. Keeping both rules in this module
+ * makes the difference explicit instead of leaving a private copy in one seam.
+ * @param path - a local root or candidate path.
+ * @returns the comparison form.
+ */
+export function normalizeComparisonPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+$/, '')
+}
+
+/**
+ * True when `path` equals `root` or is under it (drive-letter roots compare
+ * case-insensitively; everything else is case-sensitive).
+ * @param root - a local root path (undefined/empty = no match).
+ * @param path - the candidate path.
+ * @returns whether the candidate belongs to the root.
+ */
+export function isPathUnder(root: string | undefined, path: string): boolean {
+  if (root === undefined || root === '') return false
+  const r = normalizeComparisonPath(root)
+  const p = normalizeComparisonPath(path)
+  const fold = /^[a-zA-Z]:\//.test(r)
+  const nr = fold ? r.toLowerCase() : r
+  const np = fold ? p.toLowerCase() : p
+  return np === nr || np.startsWith(nr + '/')
 }

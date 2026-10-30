@@ -15,34 +15,10 @@
  * @module dsh-hardssh/client/workspace-badges
  */
 
+import { anchorLabels, replaceAnchorPaths } from './anchor-display.ts'
+
 const PROJECT_ROW_SELECTOR = '[class*="projectRow"]'
 const TITLE_SELECTOR = '[class*="title"]'
-
-/**
- * Replace every LOCAL anchor path inside `text` with its remote label.
- *
- * The shell's own tooltip bubble (a styled React tooltip, not a `title`
- * attribute) prints the workspace PATH, which for an SSH workspace is the local
- * anchor directory. The plugin cannot change that value at the source — the
- * anchor is the routing key — so the bubble's text is rewritten instead, which
- * keeps the native presentation and removes the need for a second tooltip.
- *
- * Matching is case-insensitive (Windows paths) and also accepts the
- * forward-slash spelling the shell may normalise to.
- * @param text - text node content to rewrite.
- * @param labels - local path (or its forward-slash variant) → remote label.
- * @returns the text with any anchor replaced.
- */
-export function replaceAnchorPaths(text: string, labels: ReadonlyMap<string, string>): string {
-  let next = text
-  for (const [anchor, label] of labels) {
-    if (anchor === '') continue
-    const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    // A function replacement: labels are paths and may contain `$` sequences.
-    next = next.replace(new RegExp(escaped, 'gi'), () => label)
-  }
-  return next
-}
 
 /** Render a small remote badge element. The cloud icon marks "remote";
  *  connected servers render in DeepSeek blue, disconnected stay gray; a
@@ -109,16 +85,8 @@ export function mountWorkspaceBadges(
   const byTitle = new Map<string, { alias: string; remoteRoot: string }>()
   for (const workspace of workspaces) byTitle.set(workspace.title, workspace)
   // Local anchor (and its forward-slash spelling) → the remote label the shell
-  // tooltip should display. Kept as data so the same rewrite serves rows and
-  // tooltips.
-  const labels = new Map<string, string>()
-  for (const workspace of workspaces) {
-    if (workspace.anchorPath === undefined || workspace.anchorPath === '') continue
-    const label = `${workspace.remoteRoot}（${workspace.alias}）`
-    labels.set(workspace.anchorPath, label)
-    const slashed = workspace.anchorPath.replace(/\\/g, '/')
-    if (slashed !== workspace.anchorPath) labels.set(slashed, label)
-  }
+  // hover card should display; shared with the file-panel address rewrite.
+  const labels = anchorLabels(workspaces)
   ensureSpinnerStyle()
 
   /** Decorate one project row: mount/replace the badge with the row's live

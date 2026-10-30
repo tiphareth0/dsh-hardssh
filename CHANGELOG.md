@@ -90,6 +90,15 @@
 - 修法：**删掉我们自己的 `row.title`**（正是它产生了第二个提示），改为**改写 DSH 原生气泡里的文本**：把 anchor 路径替换成 `remoteRoot（alias）`，保留 DSH 的样式、出现时机与交互。纯函数 `replaceAnchorPaths` 负责替换（大小写不敏感、兼容正斜杠写法），`MutationObserver` 在气泡挂载/重渲染时自愈；同时清掉旧版本可能留在 row/标题上的 `<title>`，升级后无需刷新。
 - 测试 +6（`tests/client/workspace-badges.test.ts`）：整段替换、嵌入长文本、大小写/正斜杠、无关文本不动、幂等且标签含 `$` 安全、空 anchor 忽略。全量 **77 个测试文件 / 731 通过 / 4 跳过**。
 
+### 重构：去除重复实现（A 组）
+
+- **客户端三套主机 API → 一套**：`SshHostsApi`（与 `SshApi` 完全重复）和 `WorkspaceApi.listHosts`（第三种列表形状）删除，目录流改用 `SshApi.listHosts/createHost`；服务端一直只有 `/api/dsh-ssh/hosts` 一套端点。
+- **两套 `~/.ssh/config` 解析器 → 一套**：导入改为复用实时读取器（`ssh-config.ts`），删除 `parseSshConfigToImport`；`sshConfigPath()` 移入 `ssh-config.ts`（store 再导出）以消除循环依赖。行为收敛：非标准 `Password` 行不再被导入（ssh config 不承载密码），这类块按 skipped 上报。
+- **客户端 anchor→远端 映射两份 → 一份**：新增 `client/anchor-display.ts`，悬停卡片（`workspace-badges`）与工作区文件面板地址（`workspace-files-path`）共用 `normalizeDisplayPath` / `remapAnchorToRemote` / `anchorLabels` / `replaceAnchorPaths`。
+- **路径归一化收敛**：`switch-fs` 的包含判断移入 `base/anchor-path.ts`（`normalizeComparisonPath` / `isPathUnder`）；`backend.ts` 的 `normalizeRemoteRoot` 不再自带一份归一化，改为委托 `ledger.ts`（只保留 `BackendError` 错误类型映射）；`switch/anchor-path` 复用共享的 `trimTrailingSeparators`。
+- **清理无调用代码**：删除客户端 `SshApi.importSshConfig` 与 `hosts.import*` 词典键（UI 已无入口）；服务端 `/hosts/import-ssh-config` 保留，注释标注弃用（方案 1 迁移时移除）。
+- 测试：改写 1 条导入用例（断言非标准 `Password` 不入库）；全量 **77 个测试文件 / 731 通过 / 4 跳过**，typecheck 与构建通过。
+
 ### 内部清理
 
 - 抽出 `src/utf8.ts`：两份有界输出收集器（引擎 exec 捕获的**头部**截断、远端子进程投影的**尾部**滑动窗口）共用同一份 UTF-8 序列边界算法；顺带修掉尾部窗口在字节预算边界裁剪时会切出半个字符（窗口开头解码成 U+FFFD）的隐患——只在「本次 push 确实丢弃了头部字节」时对齐，避免误伤跨 chunk 的合法字符。

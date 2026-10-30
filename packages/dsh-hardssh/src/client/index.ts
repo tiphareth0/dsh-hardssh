@@ -17,7 +17,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import type {} from '@deepseek-ai/dsh-client-ui-workspace/client'
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import type {} from '@deepseek-ai/dsh-client-locale/client'
-import { SshHostsApi, WorkspaceApi } from './api.ts'
+import { WorkspaceApi } from './api.ts'
 import { SshApi } from './ssh/api.ts'
 import { currentSessionIdOf, sessionListShapeUnsupported, type SessionListSnapshotLike } from './session-list-current.ts'
 import { NS, dictionaries, type WorkspaceKey } from './locales.ts'
@@ -82,7 +82,6 @@ function resolveDirectoryPicker(ctx: ClientContext): { pickDirectory: () => Prom
 /** Apply the browser half. */
 export function apply(ctx: ClientContext): void {
   const api = new WorkspaceApi()
-  const hostsApi = new SshHostsApi()
   const sshApi = new SshApi()
   const manager = new WorkspaceManager(api)
   const sessionList = ctx.sessions.list
@@ -140,14 +139,14 @@ export function apply(ctx: ClientContext): void {
         return await picker.pickDirectory()
       },
       createSshWorkspace: (input: { title: string; alias: string; remoteRoot: string }) => api.createWorkspace(input),
-      listHosts: () => api.listHosts(),
+      listHosts: () => sshApi.listHosts(),
       createHost: (input: {
         alias: string
         host: string
         port?: number
         user: string
         auth: { kind: 'password'; password: string } | { kind: 'key'; keyPath: string; passphrase?: string }
-      }) => hostsApi.create(input),
+      }) => sshApi.createHost(input),
       listRemoteDir: (alias: string, path?: string) => api.listRemoteDir(alias, path),
       ensureConnected: (alias: string) => connectHost(sshApi, alias),
     })

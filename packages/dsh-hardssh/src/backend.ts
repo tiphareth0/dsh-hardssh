@@ -180,8 +180,10 @@ function normalizeRemoteRoot(root: string): string {
   if (root.includes('\\') || !posix.isAbsolute(root)) {
     throw new BackendError('root-mismatch', `remote root must be an absolute POSIX path (got '${root}')`)
   }
-  const normalized = posix.normalize(root)
-  return normalized === '/' ? '/' : normalized.replace(/\/+$/, '')
+  // The normalization itself lives in ONE place (`ledger.ts`). A second copy here
+  // had already drifted from it (trim / NUL handling), which is exactly the split
+  // that makes two entry points disagree about the same remote root.
+  return normalizeSshRemoteRoot(root)
 }
 
 

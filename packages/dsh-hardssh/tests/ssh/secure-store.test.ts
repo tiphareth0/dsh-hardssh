@@ -4,7 +4,7 @@
  * secretStorage='vault' (encrypted at rest via secretRef). No network.
  */
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -210,7 +210,7 @@ describe('SecureHostStore (vault mode — encrypted at rest)', () => {
     await expect(vault.reveal(ref)).rejects.toMatchObject({ code: 'VAULT_MISSING' })
   })
 
-  it('imports ssh-config passwords into the vault, never the hosts file', async () => {
+  it('never imports a non-standard Password line into the hosts file', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'dsh-ssh-import-vault-'))
     dirs.push(dir)
     const path = join(dir, 'hosts.json')
@@ -227,10 +227,12 @@ describe('SecureHostStore (vault mode — encrypted at rest)', () => {
     const store = new SecureHostStore(vault, path, configPath, 'vault')
 
     const result = await store.importFromSshConfig()
-    expect(result).toEqual({ parsed: 1, added: 1, skipped: 0, skippedNames: [] })
-    const entry = store.find('imported-vault')!
-    expect(entry.auth.secretRef).toBeDefined()
-    expect(readFileSync(path, 'utf8')).not.toContain('import-secret-vault')
-    await expect(store.resolveAuth(entry)).resolves.toMatchObject({ password: 'import-secret-vault' })
+    // `Password` is NOT an OpenSSH keyword: the single live parser ignores it,
+    // so the block carries no usable credential and is reported as skipped
+    // instead of smuggling the secret into the store.
+    expect(result.added).toBe(0)
+    expect(result.skippedNames).toContain('imported-vault')
+    const written = existsSync(path) ? readFileSync(path, 'utf8') : ''
+    expect(written).not.toContain('import-secret-vault')
   })
 })

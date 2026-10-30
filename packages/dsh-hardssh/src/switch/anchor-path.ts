@@ -13,8 +13,10 @@
 /** Rewrite `<anchor>/<rest>` to `<remoteRoot>/<rest>` when `path` is the
  *  anchor or under it; otherwise return `path` unchanged (remote absolute
  *  paths, relative paths, and foreign local paths all pass through). */
+import { trimTrailingSeparators } from '../base/anchor-path.ts'
+
 export function translateAnchorPath(anchor: string, remoteRoot: string, path: string): string {
-  const norm = (value: string): string => value.replace(/[\\/]+$/, '')
+  const norm = trimTrailingSeparators
   const a = norm(anchor)
   const isWin = a.includes('\\')
   const normPath = (value: string): string => {

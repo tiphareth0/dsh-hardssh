@@ -31,6 +31,7 @@ import type {
 import type { SandboxExecutionPolicy, SandboxMode } from '@deepseek-ai/dsh-sandbox'
 import type { Context } from '@deepseek-ai/cordis'
 import { translateAnchorPath } from './anchor-path.ts'
+import { isPathUnder } from '../base/anchor-path.ts'
 
 /** Key namespace: 'ssh:<recordId>:' (legacy) or 'wfs://<id>/' (current)
  *  for remote/workspace-bound targets. Both decode; new keys emit wfs://. */
@@ -88,22 +89,6 @@ export interface SwitchFsDeps {
   worldForAnchorPath?(path: string): WorkspaceWorld | undefined
 }
 
-function normalizeForEquality(path: string): string {
-  return path.replace(/\\/g, '/').replace(/\/+$/, '')
-}
-
-/** Whether `path` is `root` itself or under it. Case-folding is applied ONLY
- *  when the root is a Windows-style path (drive letter) — no OS guessing. */
-function isUnder(root: string | undefined, path: string): boolean {
-  if (root === undefined || root === '') return false
-  const r = normalizeForEquality(root)
-  const p = normalizeForEquality(path)
-  const fold = /^[a-zA-Z]:\//.test(r)
-  const nr = fold ? r.toLowerCase() : r
-  const np = fold ? p.toLowerCase() : p
-  return np === nr || np.startsWith(nr + '/')
-}
-
 /** Membership test for a REMOTE world. Default: EVERYTHING routes remote —
  *   a bound session's work lives on the server (including absolute paths
  *   outside the workspace tree, e.g. another project dir on that host).
@@ -114,8 +99,8 @@ function isUnder(root: string | undefined, path: string): boolean {
  *   live under `~/.dsh` and must never be treated as local. No host-OS
  *   syntax guessing. */
 function belongsToRemoteWorld(path: string, deps: Pick<SwitchFsDeps, 'localRoots' | 'localRootExclusions'>): boolean {
-  if (deps.localRootExclusions?.some((root) => isUnder(root, path)) === true) return true
-  if (deps.localRoots !== undefined && deps.localRoots.some((root) => isUnder(root, path))) return false
+  if (deps.localRootExclusions?.some((root) => isPathUnder(root, path)) === true) return true
+  if (deps.localRoots !== undefined && deps.localRoots.some((root) => isPathUnder(root, path))) return false
   return true
 }
 
@@ -197,7 +182,7 @@ export class SwitchFileSystem extends FileSystem {
    */
   private assertNotDenied(path: string, namespace: string): void {
     if (namespace !== '') return
-    const denied = this.deps.deniedRoots?.find(root => isUnder(root, path))
+    const denied = this.deps.deniedRoots?.find(root => isPathUnder(root, path))
     if (denied !== undefined) {
       throw new Error(`fs-hardssh: '${path}' is not accessible through the workspace filesystem (protected client directory)`)
     }
