@@ -158,18 +158,21 @@ export function mountWorkspaceBadges(
     titleEl.appendChild(makeBadge(target.alias, target.remoteRoot, state))
   }
 
-  /** Rewrite the shell's tooltip bubble: its text carries the local anchor path,
-   *  which is meaningless to the user — show the remote directory instead.
+  /** Rewrite the shell's hover card: its `hoverPath` row prints the workspace
+   *  PATH — the local anchor for an SSH workspace — which is meaningless to the
+   *  user; show the remote directory instead.
    *
-   *  Runs on every observed mutation (the bubble mounts on hover) and is
-   *  idempotent: once the text no longer contains an anchor nothing changes, so
-   *  a React re-render either keeps the patched text or gets patched again. */
+   *  dsh 0.2.1 renders this card as `WorkspaceHoverContent` with hashed classes
+   *  (`…_hoverPath`, `…_hoverContent`), NOT a `role="tooltip"` bubble, so both
+   *  shapes are matched. Runs on every observed mutation (the card mounts on
+   *  hover) and is idempotent: once the text no longer contains an anchor
+   *  nothing changes, so a React re-render either keeps the patched text or gets
+   *  patched again. */
   const patchTooltips = (): void => {
     if (labels.size === 0) return
-    // `role="tooltip"` is the accessible contract; the class substring covers a
-    // hashed CSS-module class (`…_tooltip_…`) when the role is absent. Both are
-    // safe: the rewrite is a no-op unless an anchor path is actually present.
-    const tips = document.querySelectorAll<HTMLElement>('[role="tooltip"], [class*="tooltip"], [class*="Tooltip"]')
+    const tips = document.querySelectorAll<HTMLElement>(
+      '[class*="hoverPath"], [class*="hoverContent"], [role="tooltip"], [class*="tooltip"], [class*="Tooltip"]',
+    )
     for (const tip of tips) {
       if (tip.closest('[data-ssh-workspace-flow-menu]') !== null) continue
       const walker = document.createTreeWalker(tip, NodeFilter.SHOW_TEXT)

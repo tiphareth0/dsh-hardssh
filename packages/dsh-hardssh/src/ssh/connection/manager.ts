@@ -1210,10 +1210,35 @@ export class ConnectionManager {
     try {
       // `true` is idempotent — allow channel-open retries, never replays
       // once the server accepted the channel.
-      const result = await this.executor(alias, 'true', { timeoutMs: 10_000, retry: 'idempotent', signal })
-      return result.success
-        ? { ok: true, latencyMs: result.durationMs }
-        : { ok: false, latencyMs: result.durationMs, error: `remote exit code ${result.exitCode}` }
+      const probe = (): Promise<ExecResult> => this.executor(alias, 'true', { timeoutMs: 10_000, retry: 'idempotent', signal })
+      let result = await probe()
+      // A channel that closed WITHOUT an exit status is a transport hiccup, not
+      // an answer about the host: the first connection of a session can land on
+      // a channel the server tears down early (observed as "remote exit code
+      // null" on the very first connect). Retry once on a fresh channel before
+      // reporting, instead of surfacing a confusing diagnostic.
+      if (!result.success && result.exitCode === null && result.timedOut !== true) {
+        result = await probe()
+      }
+      if (result.success) return { ok: true, latencyMs: result.durationMs }
+      const detail = result.stderr.trim()
+      if (result.timedOut === true) {
+        return { ok: false, latencyMs: result.durationMs, error: 'probe timed out after 10000 ms' }
+      }
+      if (result.exitCode === null) {
+        return {
+          ok: false,
+          latencyMs: result.durationMs,
+          error: detail === ''
+            ? 'the session channel closed before the probe reported an exit code'
+            : `the session channel closed before the probe reported an exit code: ${detail}`,
+        }
+      }
+      return {
+        ok: false,
+        latencyMs: result.durationMs,
+        error: `remote exit code ${result.exitCode}${detail === '' ? '' : `: ${detail}`}`,
+      }
     } catch (error) {
       if (error instanceof NeedsPasswordError || error instanceof HostKeyUnknownError || error instanceof HostKeyMismatchError) {
         throw error
