@@ -82,11 +82,13 @@
 ## 安装
 
 ```sh
-# npm 现状：最新是预发布 0.2.6-alpha，稳定版仍是 0.2.5（均不含 0.2.0/桌面版适配）
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
+# 已发布 npm，latest = 0.2.7（含 dsh 0.2.0 / 0.2.1 与桌面版支持）
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
-# 本包当前版本 0.2.7（含 dsh 0.2.0 与桌面版支持，尚未发布 npm）：用源码/打包安装
+# 需要固定版本时
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.7
+
+# 开发/迭代：源码链接（改码重建 lib/ 后重启即生效）
 dsh plugin --profile web add link:<repo>/packages/dsh-hardssh
 ```
 

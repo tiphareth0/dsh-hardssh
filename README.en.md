@@ -167,22 +167,25 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-The package is on npm, but **the newest npm version is the pre-release `0.2.6-alpha`**
-(the stable release is still `0.2.5`). This checkout is **`0.2.7`**, which adds dsh 0.2.0
-and Desktop support, and is **not published to npm yet** — install it from source:
+Published on npm — **`latest = 0.2.7`** (includes dsh 0.2.0 / 0.2.1 and Desktop support):
 
 ```sh
-# source link (recommended: rebuild lib/ after edits and restart dsh; no re-packing)
+# one-line install (follows latest)
+dsh plugin --profile web add @tiphareth/dsh-hardssh
+
+# pin the version when needed
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.7
+```
+
+For development / local iteration, install from the source checkout or a local tarball:
+
+```sh
+# source link (rebuild lib/ after edits and restart dsh; no re-packing)
 dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
 dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.7.tgz
-
-# what npm can give you today (0.2.6-alpha pre-release / 0.2.5 stable); without the
-# 0.2.0 and Desktop support added in 0.2.7
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-dsh plugin --profile web add @tiphareth/dsh-hardssh
 ```
 
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and

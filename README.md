@@ -103,19 +103,25 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm，但**当前最新的 npm 版本是预发布版 `0.2.6-alpha`**（稳定版仍是 `0.2.5`）；本仓库已经到 **`0.2.7`**（含 dsh 0.2.0 / 桌面版支持），**尚未发布到 npm**——请用下面的源码方式安装：
+已发布到 npm，当前 **`latest = 0.2.7`**（含 dsh 0.2.0 / 0.2.1 与桌面版支持）：
 
 ```sh
-# 源码链接（推荐：改码后重建 lib/ 并重启 dsh 即生效，无需重新打包）
+# 一行安装（跟随 latest）
+dsh plugin --profile web add @tiphareth/dsh-hardssh
+
+# 需要固定版本时
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.7
+```
+
+开发/迭代用本机源码或本地 tarball：
+
+```sh
+# 源码链接（改码后重建 lib/ 并重启 dsh 即生效，无需重新打包）
 dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
 dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.7.tgz
-
-# npm 上能装到的（0.2.6-alpha 预发布 / 0.2.5 稳定）；这些版本尚不含 0.2.0 与桌面版适配
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.6-alpha
-dsh plugin --profile web add @tiphareth/dsh-hardssh
 ```
 
 手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
