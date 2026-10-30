@@ -18,6 +18,32 @@
 const PROJECT_ROW_SELECTOR = '[class*="projectRow"]'
 const TITLE_SELECTOR = '[class*="title"]'
 
+/**
+ * Replace every LOCAL anchor path inside `text` with its remote label.
+ *
+ * The shell's own tooltip bubble (a styled React tooltip, not a `title`
+ * attribute) prints the workspace PATH, which for an SSH workspace is the local
+ * anchor directory. The plugin cannot change that value at the source — the
+ * anchor is the routing key — so the bubble's text is rewritten instead, which
+ * keeps the native presentation and removes the need for a second tooltip.
+ *
+ * Matching is case-insensitive (Windows paths) and also accepts the
+ * forward-slash spelling the shell may normalise to.
+ * @param text - text node content to rewrite.
+ * @param labels - local path (or its forward-slash variant) → remote label.
+ * @returns the text with any anchor replaced.
+ */
+export function replaceAnchorPaths(text: string, labels: ReadonlyMap<string, string>): string {
+  let next = text
+  for (const [anchor, label] of labels) {
+    if (anchor === '') continue
+    const escaped = anchor.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    // A function replacement: labels are paths and may contain `$` sequences.
+    next = next.replace(new RegExp(escaped, 'gi'), () => label)
+  }
+  return next
+}
+
 /** Render a small remote badge element. The cloud icon marks "remote";
  *  connected servers render in DeepSeek blue, disconnected stay gray; a
  *  connecting server rotates a small spinner instead. The tooltip shows the
@@ -76,27 +102,47 @@ function ensureSpinnerStyle(): void {
  * @returns disposer.
  */
 export function mountWorkspaceBadges(
-  workspaces: Array<{ id: string; title: string; alias: string; remoteRoot: string }>,
+  workspaces: Array<{ id: string; title: string; alias: string; remoteRoot: string; anchorPath?: string }>,
   connected?: ReadonlySet<string>,
   connecting?: ReadonlySet<string>,
 ): () => void {
   const byTitle = new Map<string, { alias: string; remoteRoot: string }>()
   for (const workspace of workspaces) byTitle.set(workspace.title, workspace)
+  // Local anchor (and its forward-slash spelling) → the remote label the shell
+  // tooltip should display. Kept as data so the same rewrite serves rows and
+  // tooltips.
+  const labels = new Map<string, string>()
+  for (const workspace of workspaces) {
+    if (workspace.anchorPath === undefined || workspace.anchorPath === '') continue
+    const label = `${workspace.remoteRoot}（${workspace.alias}）`
+    labels.set(workspace.anchorPath, label)
+    const slashed = workspace.anchorPath.replace(/\\/g, '/')
+    if (slashed !== workspace.anchorPath) labels.set(slashed, label)
+  }
   ensureSpinnerStyle()
 
-  /** Decorate one project row: ALWAYS keep the row tooltip = the REMOTE
-   *  directory (server), never the local anchor path the shell would show;
-   *  mount/replace the badge with the row's live connection state
-   *  (connected / connecting / disconnected). Re-runs on every scan,
-   *  so a shell re-render that resets <title> or drops the badge heals. */
+  /** Decorate one project row: mount/replace the badge with the row's live
+   *  connection state (connected / connecting / disconnected).
+   *
+   *  The row tooltip is NOT ours to own any more. The shell renders its own
+   *  styled bubble showing the workspace PATH — the local anchor for an SSH
+   *  workspace — and an extra `<title>` here produced a SECOND tooltip (the
+   *  remote label) right after it. Instead the shell's bubble text is rewritten
+   *  by `patchTooltips()`, so there is exactly one tooltip and it shows the
+   *  remote directory. A stale `<title>` left by an older build of this plugin
+   *  is cleared here so an upgraded session heals without a reload. */
   const decorate = (row: HTMLElement): void => {
     const titleEl = row.querySelector<HTMLElement>(TITLE_SELECTOR)
     if (titleEl === null || titleEl === undefined) return
     const title = titleEl.textContent?.trim() ?? ''
     const target = byTitle.get(title)
     if (target === undefined) return
-    const desiredTitle = `${target.remoteRoot}（${target.alias}）`
-    if (row.title !== desiredTitle) row.title = desiredTitle
+    // Heal a title this plugin used to set, and drop a shell-provided <title>
+    // whose text is the local anchor (that would be a native duplicate of the
+    // bubble `patchTooltips` already fixes).
+    if (row.title !== '') row.removeAttribute('title')
+    const stale = titleEl.getAttribute('title')
+    if (stale !== null && replaceAnchorPaths(stale, labels) !== stale) titleEl.removeAttribute('title')
     const state = connecting?.has(target.alias) === true
       ? 'connecting'
       : connected?.has(target.alias) === true ? 'connected' : 'disconnected'
@@ -112,6 +158,29 @@ export function mountWorkspaceBadges(
     titleEl.appendChild(makeBadge(target.alias, target.remoteRoot, state))
   }
 
+  /** Rewrite the shell's tooltip bubble: its text carries the local anchor path,
+   *  which is meaningless to the user — show the remote directory instead.
+   *
+   *  Runs on every observed mutation (the bubble mounts on hover) and is
+   *  idempotent: once the text no longer contains an anchor nothing changes, so
+   *  a React re-render either keeps the patched text or gets patched again. */
+  const patchTooltips = (): void => {
+    if (labels.size === 0) return
+    // `role="tooltip"` is the accessible contract; the class substring covers a
+    // hashed CSS-module class (`…_tooltip_…`) when the role is absent. Both are
+    // safe: the rewrite is a no-op unless an anchor path is actually present.
+    const tips = document.querySelectorAll<HTMLElement>('[role="tooltip"], [class*="tooltip"], [class*="Tooltip"]')
+    for (const tip of tips) {
+      if (tip.closest('[data-ssh-workspace-flow-menu]') !== null) continue
+      const walker = document.createTreeWalker(tip, NodeFilter.SHOW_TEXT)
+      for (let node = walker.nextNode(); node !== null; node = walker.nextNode()) {
+        const value = node.nodeValue ?? ''
+        const replaced = replaceAnchorPaths(value, labels)
+        if (replaced !== value) node.nodeValue = replaced
+      }
+    }
+  }
+
   /** Scan the sidebar column for project rows and decorate each. */
   const scan = (): void => {
     for (const row of document.querySelectorAll<HTMLElement>(PROJECT_ROW_SELECTOR)) {
@@ -119,11 +188,12 @@ export function mountWorkspaceBadges(
     }
   }
 
-  // Watch the whole document for the sidebar column arriving / re-rendering,
-  // including <title> attribute changes (the shell may reset row tooltips).
-  const observer = new MutationObserver(() => { scan() })
+  // Watch the whole document for the sidebar column arriving / re-rendering and
+  // for the shell's tooltip bubble mounting on hover.
+  const observer = new MutationObserver(() => { scan(); patchTooltips() })
   observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['title'] })
   scan()
+  patchTooltips()
 
   return () => {
     observer.disconnect()

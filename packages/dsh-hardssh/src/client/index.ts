@@ -190,6 +190,7 @@ export function apply(ctx: ClientContext): void {
           title: workspace.title,
           alias: workspace.alias,
           remoteRoot: workspace.remoteRoot,
+          anchorPath: workspace.anchorPath,
         })), connectedAliases, connectingAliases)
         // The native file panel's address (anchor) is rewritten to the remote
         // root by the same workspace state (P1/UX-1).
