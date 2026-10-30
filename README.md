@@ -1,13 +1,13 @@
 # dsh-hardssh
 
 [![version](https://img.shields.io/badge/version-0.2.7-4D6BFE)](CHANGELOG.md)
-[![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.0-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
+[![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.1-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
 
 **中文** · [English](./README.en.md)
 
-**【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】** · 已适配 DSH **0.1.5 ~ 0.2.0**，**含官方桌面版（Electron）**
+**【DeepSeek Harness (DSH) 的 SSH 工作区 + SSH 运维插件】** · 已适配 DSH **0.1.5 ~ 0.2.1**，**含官方桌面版（Electron）**
 
 把服务器上的任意目录变成 **SSH 工作区**：绑定后，该会话里的文件读写与命令执行**透明地运行在远端主机**，
 你和 agent 都像在操作本机一样工作——同时提供完整的 SSH 运维面板（终端、传输、隧道、命令）。
@@ -93,9 +93,10 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 - **SSH 工作区**：任意 `user@host` 的目录即可成为工作区。绑定的会话透明远端路由；侧边栏工作区带服务器标识（已连接 / 未连接，悬停显示远端目录）。
 - **SSH 运维（跟随会话）**：Web 终端（xterm + WebSocket PTY）、SFTP 上传下载、本地端口转发（访问内网数据库/服务）、当前服务器的远端命令。
-- **主机管理**：左侧「SSH 工作区」面板按服务器分组列出全部主机与工作区，带已连接 / 未连接徽章，支持增删改查与 `~/.ssh/config` 导入。
+- **主机管理**：左侧「SSH 工作区」面板按服务器分组列出全部主机与工作区，带已连接 / 未连接徽章，支持增删改查；`~/.ssh/config` 会被**实时读取**（`Host` / `HostName` / `Port` / `User` / `IdentityFile` / `ProxyJump`），**无需导入**，插件从不改写该文件（同名主机以插件存储的编辑为准）。
+- **密钥优先认证**：连接顺序固定为 **key → agent → password**。显式 `IdentityFile` 优先，其次自动尝试 `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` / `id_dsa`，再走 agent（`SSH_AUTH_SOCK`，Windows 上还支持 OpenSSH 的命名管道 `\\.\pipe\openssh-ssh-agent`），以上都不可用时才询问密码——**有可用 key 就不会弹密码**。
 - **命令守卫（按主机可选）**：每台主机可配置「禁止命令」（正则 + 命令名，自动解包 `bash -c` / `sudo` / 绝对路径），agent 在 `ssh_exec` / `ssh_cluster` / `bash` 里尝试执行时被拦下并显示你写的提示；也可在编辑服务器的对话框里直接填。默认不拦截。
-- **远端地址显示**：SSH 工作区的「工作区文件」面板、侧边栏工作区行的悬停提示都显示**远端真实路径**（本地锚点目录只是路由占位，不暴露给用户）。
+- **远端地址显示**：SSH 工作区的「工作区文件」面板、侧边栏工作区行的**原生悬停卡片**都显示**远端真实路径**（本地锚点目录只是路由占位，不暴露给用户；悬停卡片是改写原生内容，不会额外叠加第二个提示）。
 - **Agent 工具**：`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster`，以及远端工作区工具 `remote_status` / `remote_ls` / `remote_search`（远端检索：正则语法、显式预算，以及宿主机没有可用正则引擎时的明确报错；`glob` / `grep` 已能直接查远端，见上文）。
 - **多主机**：任意数量主机（`host` / `port` / `user` + 私钥、密码或 `SSH_AUTH_SOCK` agent），密码免提交、连接时输入；跨主机并发命令用 `ssh_cluster`。
 - **不修改官方内核**：只作为普通插件挂载（目录流、左侧全局入口行、右侧栏 Tab），`dsh-workspace` 内核原样工作。
@@ -122,7 +123,7 @@ dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 ### 桌面版（Electron）dsh
 
-官方桌面版**可以正常加载本插件**（0.2.0-rc.2 实测：插件激活、`/api/dsh-ssh/*` 与 `/api/dsh-hardssh/*` 路由、工作区注册进官方 `ctx.workspace` 均正常）。但它的 profile 有两条特殊规则，装法与其他版本不同：
+官方桌面版**可以正常加载本插件**（0.2.1-rc.5 实测：插件激活、`/api/dsh-ssh/*` 与 `/api/dsh-hardssh/*` 路由、工作区注册进官方 `ctx.workspace` 均正常）。但它的 profile 有两条特殊规则，装法与其他版本不同：
 
 1. **普通 CLI 不能管理桌面版的 `desktop` profile**——`dsh plugin --profile desktop …` 会被直接拒绝：
    ```
@@ -137,7 +138,7 @@ dsh plugin --profile web add @tiphareth/dsh-hardssh
    **正确做法：完全退出桌面版 → 安装（改 `package.json` 的 `dependencies` 与 `dsh.profile.bundles`，在 profile 目录跑 `pnpm install`，或用上面那条自带 CLI 命令）→ 再启动。**冷启动应用补丁是正常的路径。
    一旦插件名已经在 `dsh.profile.bundles` 里，之后在应用内停用/启用会走「需要重启」分支，不会再触发这个问题。
 
-> 已知边界：桌面版自带 dsh 的版本号即应用内置的核心版本（当前 `0.2.0-rc.2`）；插件声明的 peer 区间不设 0.2.x 上限，因此 0.2.x 的后续版本可直接加载。
+> 已知边界：桌面版自带 dsh 的版本号即应用内置的核心版本（实测 `0.2.1-rc.5`，以应用发布为准）；插件声明的 peer 区间不设 0.2.x 上限，因此 0.2.x 的后续版本可直接加载。
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
@@ -148,10 +149,10 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | 插件版本 | 已验证 DSH | Node | 远端主机 |
 |---|---|---|---|
-| `0.2.7`（当前） | **`0.2.0-rc.2`（桌面版 Electron 实测）** + `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1`（0.1.x 矩阵四条线全绿：`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
+| `0.2.7`（当前） | **`0.2.1-rc.5` / `0.2.0-rc.2`（桌面版 Electron 实测）** + `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1`（0.1.x 矩阵四条线全绿：`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`） | `^22.19.0 \|\| >=24.0.0` | POSIX（GNU 工具链实测：CentOS/RHEL；BSD/BusyBox 缺 GNU 参数时自动退回 SFTP，功能受限但可用） |
 | `0.2.5` ~ `0.2.6-alpha` | `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1`（同上四条线） | 同上 | 同上 |
 
-> 0.2.0 线的说明：宿主侧（插件激活、路由、工作区注册进官方 `ctx.workspace`）已在 **桌面版 0.2.0-rc.2** 上实测通过；客户端会话跟随已按 0.2.0 的新会话 API（`retainedBy.mainView`）适配。0.1.x 的四条线由 `compat/dsh-*.json` 兼容集与 CI 矩阵保证；**0.2.0 的兼容集尚未加入矩阵**（见 `compat/README.md` 的约定）。
+> 0.2.x 线的说明：宿主侧（插件激活、路由、工作区注册进官方 `ctx.workspace`）已在 **桌面版 0.2.1-rc.5 / 0.2.0-rc.2** 上实测通过；客户端会话跟随已按 0.2.x 的新会话 API（`retainedBy.mainView`）适配。0.1.x 的四条线由 `compat/dsh-*.json` 兼容集与 CI 矩阵保证；**0.2.x 的兼容集尚未加入矩阵**（见 `compat/README.md` 的约定）。
 
 > 更早的 `0.1.5-alpha.1` **不支持**：`dsh-client-ui-slots@0.1.5-alpha.1` 没有 `main` 槽位，工作区面板无处挂载（矩阵实测 typecheck 直接失败）。见 `compat/README.md`。
 
@@ -164,8 +165,8 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 ## 快速开始
 
-1. **添加主机**：左侧「SSH 工作区」面板 → 新建服务器，填别名/主机/端口/用户名——**密码可留空**（新增不会连接，首次使用时再输入）。
-2. **添加 SSH 工作区**：侧边栏「添加工作区」→ SSH 工作区 → 选服务器 → 浏览远端目录（首次会自动弹出连接：未信任则先确认主机指纹，随后输入一次密码）→ 命名创建。
+1. **添加主机**：`~/.ssh/config` 里已有的主机会**自动出现在列表里**，无需导入；也可以在左侧「SSH 工作区」面板 → 新建服务器，填别名/主机/端口/用户名——**密码可留空**（有 key/agent 时直接直连，否则首次使用时再输入密码）。
+2. **添加 SSH 工作区**：侧边栏「添加工作区」→ SSH 工作区 → 选服务器 → 浏览远端目录（首次会自动弹出连接：未信任则先确认主机指纹；有可用 key 时不询问密码）→ 命名创建。
 3. **开始操作**：在这个工作区的会话里读写文件、运行命令即是远端执行；左侧面板出现远端目录标识与连接徽章。
 4. **SSH 运维**：切到该 SSH 工作区的会话，右侧栏标签条「+」→ SSH（或右侧栏引导页入口）打开操作台——终端 / 传输 / 隧道 / 命令都自动作用于**当前会话所在的服务器**。
 
@@ -272,6 +273,10 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 将 tarball 装入 profile（`pnpm add file:...`）后重启 `dsh web`。
 
 ## FAQ
+
+**`~/.ssh/config` 里加了主机，插件里看不到 / 改了不生效？** —— 插件现在**实时读取**该文件（支持 `Host` / `HostName` / `Port` / `User` / `IdentityFile` / `ProxyJump`），**不需要导入**；但同名主机以插件存储里的编辑为准（GUI 覆盖层；方案 1 迁移后会反转为 config 为准）。`Include` / `Match` / 通配 `Host *` / 多模式 `Host a b` 目前不解析，会被跳过。
+
+**有密钥为什么还弹密码 / 首次连接报 `remote exit code null`？** —— 连接顺序固定为 **key → agent → password**：显式 `IdentityFile` 若不存在会回退到 `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa`，再走 agent；只有都被服务器拒绝、且服务器允许密码时才询问。`0.2.7` 起首次连接的通道抖动会在新连接上**自动重试一次**，并把失败原因区分为「超时 / 通道提前关闭 / 非零退出码」，不会再出现无信息量的 `remote exit code null`。
 
 **在桌面版上点 SSH 工作区的会话，没有弹出登录框** —— 0.2.0 删除了客户端会话列表里的 `current` 字段（客户端会话改为多实例），旧版插件因此在 0.2.0 上永远认为「没有会话被打开」：不弹密码框、右侧操作台也解析不到目标，且不报错。**`0.2.7` 起已适配**（改为按官方语义读列表行上的 `retainedBy.mainView`）。若你装的仍是 `0.2.5` / `0.2.6-alpha`，请升级到 `0.2.7`；临时绕法：左侧「添加工作区」→ SSH → 浏览远端目录，这条路径会正常弹密码框并把凭据放进引擎。
 

@@ -1,13 +1,13 @@
 # dsh-hardssh
 
 [![version](https://img.shields.io/badge/version-0.2.7-4D6BFE)](CHANGELOG.md)
-[![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.0-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
+[![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.1-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
 
 **English** · [中文](./README.md)
 
-**SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).** Supports DSH **0.1.5 – 0.2.0**, **including the official Desktop (Electron) app**.
+**SSH workspace + SSH operations plugin for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (DSH).** Supports DSH **0.1.5 – 0.2.1**, **including the official Desktop (Electron) app**.
 
 Turn any directory on a server into an **SSH workspace**: once bound, file I/O and
 command execution in that session run **transparently on the remote host** — you and
@@ -138,8 +138,14 @@ workspace**; there is no host dropdown:
   SFTP upload/download, local port forwarding (reach internal databases/services),
   remote commands on the current server.
 - **Host management** — the left-sidebar "SSH workspaces" panel lists every host and
-  workspace grouped per server with connected / disconnected badges, plus CRUD and
-  `~/.ssh/config` import.
+  workspace grouped per server with connected / disconnected badges, plus CRUD. The
+  user's `~/.ssh/config` is **read live** (`Host` / `HostName` / `Port` / `User` /
+  `IdentityFile` / `ProxyJump`) — no import step, and the plugin never rewrites that
+  file (same-alias edits in the plugin store win).
+- **Key-first authentication** — the order is fixed at **key → agent → password**: an
+  explicit `IdentityFile` first, then `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa` /
+  `id_dsa`, then the agent (`SSH_AUTH_SOCK`, plus the Windows OpenSSH named pipe), and
+  only afterwards a password prompt — **a usable key means no password prompt**.
 - **Agent tools** — `ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` /
   `ssh_tunnel` / `ssh_cluster`, plus the remote workspace tools `remote_status` /
   `remote_ls` / `remote_search`. `glob` / `grep` work remotely too (see the
@@ -149,9 +155,10 @@ workspace**; there is no host dropdown:
   (regex lines and/or command names that are auto-unwrapped across `bash -c` / `sudo` /
   absolute paths); the agent's `ssh_exec` / `ssh_cluster` / `bash` attempt is refused
   with your own message. Editable right in the host dialog. Off by default.
-- **Remote address display** — the "workspace files" panel and the sidebar row tooltip
-  show the **real remote path** (the local anchor directory is only a routing
-  placeholder and is never exposed to the user).
+- **Remote address display** — the "workspace files" panel and the sidebar row's
+  **native hover card** show the **real remote path** (the local anchor directory is
+  only a routing placeholder and is never exposed; the hover card's text is rewritten
+  in place, so no second tooltip is stacked on top).
 - **Multi-host** — any number of hosts (`host` / `port` / `user` + key, password, or
   `SSH_AUTH_SOCK` agent); passwords are optional at creation. Cross-host fan-out via
   `ssh_cluster`.
@@ -183,7 +190,7 @@ to `dsh.profile.bundles`, then restart `dsh`.
 
 ### Desktop (Electron) dsh
 
-The official Desktop app **loads this plugin fine** (verified on 0.2.0-rc.2: plugin
+The official Desktop app **loads this plugin fine** (verified on 0.2.1-rc.5: plugin
 activation, the `/api/dsh-ssh/*` and `/api/dsh-hardssh/*` routes, and workspace
 registration into the official `ctx.workspace` all work). Its profile has two special
 rules, so the install path differs:
@@ -215,10 +222,8 @@ rules, so the install path differs:
    inside the app takes the "restart required" branch and no longer triggers the defect.
 
 > Known boundary: the Desktop's bundled dsh is the core version baked into the app
-> (currently `0.2.0-rc.2`). The declared peer range puts no upper bound on 0.2.x, so
-> later 0.2.x builds load as well.
-
-npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
+> (verified `0.2.1-rc.5`; the app's own release decides). The declared peer range puts
+> no upper bound on 0.2.x, so later 0.2.x builds load as well.
 
 npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
@@ -230,10 +235,10 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 | Plugin | Verified DSH | Node | Remote hosts |
 |---|---|---|---|
-| `0.2.7` (current) | **`0.2.0-rc.2` (verified on the Desktop/Electron app)** + `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1` (four 0.1.x matrix lines green: `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.6-alpha.1`, `0.1.6-alpha.2`) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
+| `0.2.7` (current) | **`0.2.1-rc.5` / `0.2.0-rc.2` (verified on the Desktop/Electron app)** + `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1` (four 0.1.x matrix lines green: `0.1.5-rc.1`, `0.1.5-rc.2`, `0.1.6-alpha.1`, `0.1.6-alpha.2`) | `^22.19.0 \|\| >=24.0.0` | POSIX (verified with a GNU userland: CentOS/RHEL; BSD/BusyBox hosts without the GNU flags fall back to SFTP — limited but usable) |
 | `0.2.5` – `0.2.6-alpha` | `>=0.1.5-rc.1 <0.1.7 \|\| >=0.1.6-alpha.1` (the same four lines) | same | same |
 
-> About the 0.2.0 line: the host half (plugin activation, routes, workspace registration into the official `ctx.workspace`) was verified on the **Desktop app running dsh 0.2.0-rc.2**, and the client session-follow was ported to the 0.2.0 session API (`retainedBy.mainView`). The four 0.1.x lines are covered by the `compat/dsh-*.json` sets and the CI matrix; **a 0.2.0 compat set is not in the matrix yet** (see the rules in `compat/README.md`).
+> About the 0.2.x line: the host half (plugin activation, routes, workspace registration into the official `ctx.workspace`) was verified on the **Desktop app running dsh 0.2.1-rc.5 and 0.2.0-rc.2**, and the client session-follow was ported to the 0.2.x session API (`retainedBy.mainView`). The four 0.1.x lines are covered by the `compat/dsh-*.json` sets and the CI matrix; **a 0.2.x compat set is not in the matrix yet** (see the rules in `compat/README.md`).
 
 > The earlier `0.1.5-alpha.1` is **not** supported: `dsh-client-ui-slots@0.1.5-alpha.1` declares no `main` slot, so the workspace panel has nowhere to mount (the matrix fails typecheck). See `compat/README.md`.
 
@@ -246,12 +251,13 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 
 ## Quick start
 
-1. **Add a host** — left-sidebar "SSH workspaces" panel → new server:
-   alias/host/port/user. The **password may be left empty** (adding never connects;
-   it is asked on first use).
+1. **Add a host** — hosts already in `~/.ssh/config` appear in the list automatically
+   (no import); you can also create one in the left-sidebar "SSH workspaces" panel:
+   alias/host/port/user. The **password may be left empty** (a usable key or agent
+   connects directly; otherwise it is asked on first use).
 2. **Add an SSH workspace** — sidebar "Add workspace" → SSH workspace → pick a server
    → browse the remote directory (the first browse connects automatically: confirm the
-   host fingerprint if untrusted, then enter the password once) → name it.
+   host fingerprint if untrusted; no password is asked when a key works) → name it.
 3. **Work** — in that workspace session, reading/writing files and running commands
    executes on the remote host; the left panel shows the remote directory and the
    connection badge.
@@ -375,6 +381,21 @@ Pack & deploy: `pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dis
 then `pnpm add file:...` into the profile and restart `dsh web`.
 
 ## FAQ
+
+**A host I added to `~/.ssh/config` does not show up / my config edit has no effect** —
+the plugin now **reads that file live** (`Host` / `HostName` / `Port` / `User` /
+`IdentityFile` / `ProxyJump`), no import needed; same-alias edits stored by the plugin
+win over the file (the GUI overlay layer; the planned migration reverses this).
+`Include` / `Match` / wildcard `Host *` / multi-pattern `Host a b` blocks are not parsed
+yet and are reported as skipped.
+
+**Why am I still asked for a password when I have a key? / the first connect reported
+`remote exit code null`** — the order is fixed at **key → agent → password**: a missing
+explicit `IdentityFile` falls back to `~/.ssh/id_ed25519` / `id_ecdsa` / `id_rsa`, then
+the agent; only when all are rejected and the server allows it is a password asked.
+Since `0.2.7` a channel hiccup on the first connect is retried once on a fresh channel,
+and the failure is reported as timeout / channel closed early / non-zero exit code
+instead of a bare `remote exit code null`.
 
 **On the Desktop app, clicking an SSH-workspace session never asks me to log in** — dsh
 0.2.0 removed `current` from the client session list (client sessions became
