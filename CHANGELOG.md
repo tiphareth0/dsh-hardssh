@@ -2,6 +2,22 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
+## v0.2.8（未发布）
+
+### 修复
+
+- **`ssh_list` 在配置了命令守卫的主机上整条调用失败**（0.2.7 回归）。主机记录与 `summarize()` 会带 `commandPolicy`，但 `ssh_list` 的输出 schema 没声明它；DSH 按 `additionalProperties: false` 严格校验，任一台守卫主机就让整个调用被判非法。schema 已补上该字段（嵌套对象同样显式 `additionalProperties: false`，数组带 `items`），并新增一条“schema 覆盖输出值”的回归测试。
+- **`timeout -k` 在 coreutils < 8.5 的主机上导致远端命令根本未执行**（CentOS 6 自带 8.4，返回 `[exit code: 125]` + `timeout: invalid option -- 'k'`）。服务端预算包装现在先用零时长 `true` 探测 `-k`，不支持则退回 `timeout -s KILL`（8.4 / busybox / BSD 均支持）；代价是降级分支在截止时硬杀而非先 TERM 再 KILL（客户端本身也会 KILL，语义上已覆盖）。测试补了探测与降级断言。
+
+### 兼容性矩阵（CI）
+
+- **0.1.6-alpha.x 的 typecheck 失败**：`SubprocessHandle` 在该线新增必需成员 `control`（`Duplex | undefined`），`SidebarRightGuideEntry` 新增必需 `id`。两个 SSH 句柄显式声明 `control = undefined`（SSH exec 通道没有独立控制流），引导条目补 `id` 并断言类型（0.1.5 的类型还没有该字段，单一源码需同时编译两代）。
+- **兼容集从未真正锁定传递依赖**：pnpm ≥ 10 不再读取 `package.json` 的 `pnpm.overrides`（只认 `pnpm-workspace.yaml` 的 `overrides`），矩阵一直在“声称锁定、实际未锁”的状态下安装。`scripts/compat/apply-set.mjs` 改为写入 workspace 文件的 `overrides`（幂等替换）。
+- 四条 0.1.x 线（`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`）在本地副本中逐条验证：typecheck 通过、**77 个测试文件 / 733 通过 / 4 跳过**。
+
+### 文档
+
+- 桌面版安装章节补充“**安装 ≠ 启用**”：插件管理器只写 `dependencies`，不写 `dsh.profile.bundles`；关闭对话框且未点「立即启用」时插件不会加载（无入口、无工具）。由于应用内启用的热重载缺陷，仍推荐“退出应用 → 手工写入 bundles → 启动”。
 ## v0.2.7 — 2026-10-08
 
 ### 支持 dsh 0.2.0 与桌面版（Electron）

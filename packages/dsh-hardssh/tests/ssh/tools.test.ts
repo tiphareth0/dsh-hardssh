@@ -114,6 +114,32 @@ describe('tool factories (defineTool DSL regression)', () => {
 })
 
 describe('ssh_list', () => {
+  /** Mirror DSH's output contract: a property present in the value must be
+   *  declared, and every object node must set additionalProperties explicitly. */
+  type SchemaNode = {
+    type?: string
+    additionalProperties?: boolean
+    properties?: Record<string, SchemaNode>
+    items?: SchemaNode
+  }
+  function assertSchemaCovers(schema: SchemaNode | undefined, value: unknown, path: string): void {
+    if (schema === undefined) return
+    if (schema.type === 'object') {
+      expect(schema.additionalProperties, `${path}: additionalProperties`).toBe(false)
+      if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+        for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+          const property = schema.properties?.[key]
+          expect(property, `${path}.${key} declared`).toBeDefined()
+          assertSchemaCovers(property, child, `${path}.${key}`)
+        }
+      }
+      return
+    }
+    if (schema.type === 'array' && Array.isArray(value)) {
+      value.forEach((item, index) => assertSchemaCovers(schema.items, item, `${path}[${index}]`))
+    }
+  }
+
   it('returns hosts and renders a table', async () => {
     const stub = new StubEngine()
     stub.hosts = [host]
@@ -124,6 +150,20 @@ describe('ssh_list', () => {
     const text = render(tool, result)
     expect(text).toContain('web-01')
     expect(text).toContain('10.0.0.1')
+  })
+
+  it('declares commandPolicy so a guarded host does not invalidate the output', async () => {
+    const stub = new StubEngine()
+    stub.hosts = [{
+      ...host,
+      commandPolicy: { deny: ['^rm\\s+-rf'], denyCommands: ['shutdown'], hint: 'ask first' },
+    }]
+    const tool = sshListTool(engine(stub))
+    const result = await run(tool, {})
+    expect(result.ok).toBe(true)
+    // 0.2.7 regression: the record carried commandPolicy but the schema did
+    // not, so DSH rejected the whole call (additionalProperties:false).
+    assertSchemaCovers(tool.output.schema as unknown as SchemaNode, result, 'output')
   })
 })
 

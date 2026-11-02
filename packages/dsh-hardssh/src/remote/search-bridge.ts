@@ -30,7 +30,7 @@
  */
 
 import { posix } from 'node:path'
-import { PassThrough } from 'node:stream'
+import { PassThrough, type Duplex } from 'node:stream'
 import type { SubprocessHandle, SubprocessOutcome, SubprocessOutputReader, SubprocessSpawnSpec } from '@deepseek-ai/dsh-subprocess'
 import { MAX_TIMER_DELAY_MS } from '@deepseek-ai/dsh-timeout'
 import type { SshEngine } from '../ssh/engine.ts'
@@ -244,6 +244,8 @@ export class SshSearchBridgeHandle implements SubprocessHandle {
   readonly stdin = undefined
   readonly stdout: PassThrough | undefined
   readonly stderr: PassThrough | undefined
+  /** See `SshSubprocessHandle.control`: required by 0.1.6+, always absent here. */
+  readonly control: Duplex | undefined = undefined
   readonly done: Promise<SubprocessOutcome>
 
   private readonly ownStdoutCollector: SshOutputCollector | undefined

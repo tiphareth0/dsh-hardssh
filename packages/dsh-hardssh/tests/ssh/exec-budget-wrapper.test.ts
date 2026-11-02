@@ -28,6 +28,16 @@ describe('server-side exec budget', () => {
     expect(wrapped.endsWith('; else echo hi; fi')).toBe(true)
   })
 
+  it('probes -k support and falls back to -s KILL on coreutils < 8.5', () => {
+    const wrapped = wrapCommandWithServerBudget('echo hi', 2_000)
+    // CentOS 6 ships coreutils 8.4: `timeout -k` exits 125 without running the
+    // command. The wrapper probes it with a zero-duration `true` and then uses
+    // `-s KILL`, which 8.4/busybox/BSD all understand.
+    expect(wrapped).toContain('timeout -k 2 0 true >/dev/null 2>&1')
+    expect(wrapped).toContain('else timeout -s KILL 3 ')
+    expect(wrapped).not.toContain('timeout -s KILL 3 "${SHELL:-/bin/sh}" -c undefined')
+  })
+
   it('quotes the caller command as ONE argument and round-trips it', () => {
     const nasty = `printf '%s' "a b"; echo 'it''s'; exit 3`
     const wrapped = wrapCommandWithServerBudget(nasty, 1_500)

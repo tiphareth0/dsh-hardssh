@@ -33,16 +33,23 @@ for (const [name, version] of Object.entries(versions)) {
   if (Object.hasOwn(packageJson.devDependencies ?? {}, name)) packageJson.devDependencies[name] = version
 }
 
-// The script runs only in an ephemeral CI checkout. Root overrides keep
-// transitive DSH components on the same tested line; they are not committed to
-// the release package and therefore cannot force a user's profile versions.
-rootPackage.pnpm = {
-  ...(rootPackage.pnpm ?? {}),
-  overrides: {
-    ...(rootPackage.pnpm?.overrides ?? {}),
-    ...versions,
-  },
-}
+// The script runs only in an ephemeral CI checkout. Overrides keep transitive
+// DSH components on the same tested line; they are not committed to the release
+// package and therefore cannot force a user's profile versions.
+//
+// pnpm >= 10 reads `overrides` only from pnpm-workspace.yaml and IGNORES
+// package.json's `pnpm` field (it logs a warning and drops the block), so the
+// matrix used to install unpinned transitive components while claiming to pin
+// them. The overrides therefore live in the workspace file.
+const workspacePath = path.join(root, 'pnpm-workspace.yaml')
+let workspace = fs.existsSync(workspacePath) ? fs.readFileSync(workspacePath, 'utf8') : ''
+// Replace an existing overrides block (idempotent on repeated runs).
+workspace = workspace.replace(/\noverrides:\n(?:[ \t]+[^\n]*\n?)*/u, '\n')
+const overrideLines = Object.entries(versions)
+  .map(([name, version]) => `  '${name}': ${version}`)
+  .join('\n')
+workspace = `${workspace.replace(/\n*$/u, '\n')}overrides:\n${overrideLines}\n`
+fs.writeFileSync(workspacePath, workspace, 'utf8')
 
 fs.writeFileSync(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`, 'utf8')
 fs.writeFileSync(rootPackagePath, `${JSON.stringify(rootPackage, null, 2)}\n`, 'utf8')

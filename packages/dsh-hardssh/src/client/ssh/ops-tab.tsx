@@ -20,7 +20,7 @@
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
 // Type-only: pulls the SidebarRightTabDefinition type and the `sidebar.right.*`
 // SlotMap augmentations.
-import type {} from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
+import type { SidebarRightGuideEntry } from '@deepseek-ai/dsh-client-ui-sidebar-right/client'
 // Type-only: pulls the LocaleNamespaceMap augmentation.
 import type {} from '@deepseek-ai/dsh-client-ui-slots'
 import { tt } from '../text.ts'
@@ -53,11 +53,15 @@ export function registerOperationsTab(
     title: () => tt('ops.tab'),
     // An entry box on the right sidebar's empty-state guide, so the surface is
     // discoverable without a plugin-owned button.
+    // id became required on SidebarRightGuideEntry in 0.1.6; 0.1.5's type
+    // predates it, so the literal is asserted to keep one source compiling
+    // against both lines.
     guide: [{
+      id: 'dsh-hardssh-ops',
       order: 100,
       title: () => tt('ops.tab'),
       description: () => tt('ops.guide'),
-    }],
+    } as SidebarRightGuideEntry],
   }), 'dsh-hardssh: operations tab type')
 
   // The body: receives every tab of this kind, in every pane, docked or floating.

@@ -78,8 +78,17 @@ export function wrapCommandWithServerBudget(command: string, budgetMs: number): 
   const seconds = Math.ceil(budgetMs / 1000) + SERVER_BUDGET_SLACK_SECONDS
   const quoted = shellQuote(command)
   const shell = '"${SHELL:-/bin/sh}"'
+  const killAfter = `timeout -k ${SERVER_KILL_GRACE_SECONDS} ${seconds} ${shell} -c ${quoted}`
+  const hardKill = `timeout -s KILL ${seconds} ${shell} -c ${quoted}`
+  // `-k` (--kill-after) only exists in GNU coreutils >= 8.5. Older hosts
+  // (e.g. CentOS 6 ships 8.4) answer "invalid option -- 'k'" with exit 125 and
+  // never run the command at all. Probe it per command with a zero-duration
+  // `true` (instant), then fall back to `-s KILL`, which 8.4, busybox and BSD
+  // `timeout` all understand. The trade-off is documented: the fallback kills
+  // hard at the deadline instead of allowing the 2 s SIGTERM grace.
   return 'if command -v timeout >/dev/null 2>&1; then '
-    + `timeout -k ${SERVER_KILL_GRACE_SECONDS} ${seconds} ${shell} -c ${quoted}; `
+    + `if timeout -k ${SERVER_KILL_GRACE_SECONDS} 0 true >/dev/null 2>&1; then ${killAfter}; `
+    + `else ${hardKill}; fi; `
     + `else ${command}; fi`
 }
 

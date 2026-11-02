@@ -144,6 +144,8 @@ dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0
    **正确做法：完全退出桌面版 → 安装（改 `package.json` 的 `dependencies` 与 `dsh.profile.bundles`，在 profile 目录跑 `pnpm install`，或用上面那条自带 CLI 命令）→ 再启动。**冷启动应用补丁是正常的路径。
    一旦插件名已经在 `dsh.profile.bundles` 里，之后在应用内停用/启用会走「需要重启」分支，不会再触发这个问题。
 
+> **新手最容易踩的一步：安装 ≠ 启用。** 插件管理器安装时只写 profile 的 `dependencies`，**不会**写 `dsh.profile.bundles`；关闭对话框且没有点「立即启用」时，插件处于「已安装、未启用」——界面没有 SSH 入口、`ssh_*` / `remote_*` 工具也不存在。由于上面的热重载缺陷，推荐路径仍是：完全退出应用 → 在 profile 的 `package.json` 里把 `@tiphareth/dsh-hardssh` 加入 `dsh.profile.bundles`（并确认 `dependencies` 已有它）→ 启动。装完可看侧边栏有没有 SSH 入口，或请求 `GET /api/dsh-ssh/health` 确认。
+
 > 已知边界：桌面版自带 dsh 的版本号即应用内置的核心版本（实测 `0.2.1-rc.5`，以应用发布为准）；插件声明的 peer 区间不设 0.2.x 上限，因此 0.2.x 的后续版本可直接加载。
 
 NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh

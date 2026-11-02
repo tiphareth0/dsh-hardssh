@@ -130,6 +130,20 @@ export function sshListTool(engine: SshEngine) {
                 environment: { type: 'string' },
                 tags: { type: 'array', items: { type: 'string' }, required: true },
                 location: { type: 'string' },
+                // 0.2.7 added the per-host guard to the stored record and
+                // `summarize()` forwards it; the output schema must declare it.
+                // DSH validates with additionalProperties:false, and every nested
+                // object needs its own explicit additionalProperties.
+                commandPolicy: {
+                  type: 'object',
+                  additionalProperties: false,
+                  properties: {
+                    deny: { type: 'array', items: { type: 'string' }, required: true },
+                    denyCommands: { type: 'array', items: { type: 'string' } },
+                    allowCommands: { type: 'array', items: { type: 'string' } },
+                    hint: { type: 'string' },
+                  },
+                },
                 createdAt: { type: 'integer', required: true },
                 updatedAt: { type: 'integer', required: true },
               },

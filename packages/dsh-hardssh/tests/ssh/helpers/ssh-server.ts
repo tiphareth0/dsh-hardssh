@@ -32,19 +32,32 @@ function generateKey(target: string): void {
  * Undo the server-budget wrapper (`wrapCommandWithServerBudget`) so this shim
  * dispatches on the caller's ORIGINAL command, exactly as a real shell hands it
  * to `timeout`. The wrapper's POSIX single-quoting is inverted here.
+ *
+ * The wrapper probes `timeout -k` support and has two command branches, so the
+ * FIRST ` -c ` segment is the one to unquote (the `-s KILL` fallback repeats it).
  */
 export function unwrapServerBudget(command: string): string {
-  const prefix = 'if command -v timeout >/dev/null 2>&1; then timeout -k '
-  if (!command.startsWith(prefix)) return command
   const marker = ' -c '
-  const at = command.indexOf(marker, prefix.length)
+  const at = command.indexOf(marker)
   if (at < 0) return command
-  const rest = command.slice(at + marker.length)
-  const end = rest.lastIndexOf('; else ')
-  if (end < 0) return command
-  const quoted = rest.slice(0, end)
-  if (!quoted.startsWith("'") || !quoted.endsWith("'")) return command
-  return quoted.slice(1, -1).replace(/'\\''/g, "'")
+  let index = at + marker.length
+  if (command[index] !== "'") return command
+  index += 1
+  let value = ''
+  while (index < command.length) {
+    if (command[index] === "'") {
+      // shellQuote() escapes an embedded quote as '\'' — no other escape exists.
+      if (command.startsWith("'\\''", index)) {
+        value += "'"
+        index += 4
+        continue
+      }
+      return value
+    }
+    value += command[index]
+    index += 1
+  }
+  return command
 }
 
 /** The exec shim: deterministic responses for known commands. */

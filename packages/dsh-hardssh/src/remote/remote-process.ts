@@ -4,7 +4,7 @@
  * engine's streaming ExecSession.
  */
 
-import { PassThrough, type Writable } from 'node:stream'
+import { PassThrough, type Duplex, type Writable } from 'node:stream'
 import type { SshEngine, ExecSession } from '../ssh/engine.ts'
 import type {
   SubprocessCollect,
@@ -45,6 +45,13 @@ export class SshSubprocessHandle implements SubprocessHandle {
   readonly stdin: PassThrough | undefined
   readonly stdout: PassThrough | undefined
   readonly stderr: PassThrough | undefined
+  /**
+   * Caller-owned byte channel. DSH 0.1.6 made `control` a required member of
+   * `SubprocessHandle` (`Duplex | undefined`); an SSH exec channel has no
+   * separate control stream, so it is always absent. Declared explicitly so this
+   * class compiles against both 0.1.5 (which predates the member) and 0.1.6+.
+   */
+  readonly control: Duplex | undefined = undefined
   readonly collected: SubprocessHandle['collected']
   readonly done: Promise<SubprocessOutcome>
 
