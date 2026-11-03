@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.7-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.8-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.1-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -103,14 +103,14 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm，当前 **`latest = 0.2.7`**（含 dsh 0.2.0 / 0.2.1 与桌面版支持）：
+已发布到 npm（当前 **`latest = 0.2.7`**；**`0.2.8` 为本轮修复版本，发布后即为 latest**）：
 
 ```sh
 # 一行安装（跟随 latest）
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # 需要固定版本时
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.7
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.8
 ```
 
 开发/迭代用本机源码或本地 tarball：
@@ -121,7 +121,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.7.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.8.tgz
 ```
 
 手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
@@ -337,6 +337,17 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 如需无人值守自动化访问密码主机，再显式启用 `vault` 模式并妥善保管主密码。
 
 完整的信任边界、能力清单与静态扫描逐条说明见 [SECURITY.md](./SECURITY.md)。
+
+## 致谢
+
+感谢 **[@Durian](https://github.com/Durian)** 在真实桌面版环境（DSH 0.2.1-rc.x + CentOS 6 远端）中逐一复现并汇报了 0.2.7 的这几个缺陷，并给出了清晰的根因分析与修复方向：
+
+- `ssh_list` 在配置了命令守卫的主机上整条调用失败（`commandPolicy` 未进输出 schema）；
+- `timeout -k` 在 coreutils < 8.5 的主机上让远端命令根本无法执行；
+- 桌面版"安装 ≠ 启用"的首次使用体验问题；
+- 终端被解析到 Windows Store 版 `pwsh.exe` 别名后无法启动。
+
+这些反馈直接形成了 0.2.8 的修复清单。
 
 ## License
 

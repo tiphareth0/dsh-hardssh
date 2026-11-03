@@ -2,12 +2,21 @@
 
 > 自 v0.1.2 起开始记录；更早的迭代版本见 Git 提交历史。
 
-## v0.2.8（未发布）
+## v0.2.8 — 2026-11-04
+
+### 致谢
+
+感谢 **[@Durian](https://github.com/Durian)** 在真实桌面版环境（DSH 0.2.1-rc.x + CentOS 6 远端）中逐一复现并汇报了 0.2.7 的这些缺陷，并给出根因与修复方向；本轮修复清单直接来自这些反馈。
+
 
 ### 修复
 
 - **`ssh_list` 在配置了命令守卫的主机上整条调用失败**（0.2.7 回归）。主机记录与 `summarize()` 会带 `commandPolicy`，但 `ssh_list` 的输出 schema 没声明它；DSH 按 `additionalProperties: false` 严格校验，任一台守卫主机就让整个调用被判非法。schema 已补上该字段（嵌套对象同样显式 `additionalProperties: false`，数组带 `items`），并新增一条“schema 覆盖输出值”的回归测试。
 - **`timeout -k` 在 coreutils < 8.5 的主机上导致远端命令根本未执行**（CentOS 6 自带 8.4，返回 `[exit code: 125]` + `timeout: invalid option -- 'k'`）。服务端预算包装现在先用零时长 `true` 探测 `-k`，不支持则退回 `timeout -s KILL`（8.4 / busybox / BSD 均支持）；代价是降级分支在截止时硬杀而非先 TERM 再 KILL（客户端本身也会 KILL，语义上已覆盖）。测试补了探测与降级断言。
+
+### 终端
+
+- **终端 shell 解析到 Windows Store 别名时无法启动**。DSH 侧边栏终端由宿主 `terminal-controller` 选 shell（`terminalEnvironment()` 返回的是本机答案，因为随后用本机 `resolveExecutable` 校验），Store 版 PowerShell 7 会给出 `C:\Program Files\WindowsApps\…\pwsh.exe`——重解析点，`dsh-subprocess-local` 直接报 `command "…\pwsh.exe" is not an executable file`。`terminalEnvironment()` 现在把 WindowsApps 别名替换为真实可执行的 shell（`ComSpec` → `System32\WindowsPowerShell\v1.0\powershell.exe` → `cmd.exe` → `Program Files\PowerShell\7\pwsh.exe`）。SSH 工作区的终端路由不变：命中锚点即替换为远端登录 shell。
 
 ### 兼容性矩阵（CI）
 

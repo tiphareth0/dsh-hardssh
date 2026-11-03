@@ -1,6 +1,6 @@
 # dsh-hardssh — SSH 远程工作区 + SSH 运维插件
 
-已适配 DSH **0.1.5 ~ 0.2.1，含官方桌面版（Electron）**（0.1.x 兼容矩阵四条线全绿：`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.6-alpha.1`、`0.1.6-alpha.2`；0.2.x 线已在桌面版 `0.2.1-rc.5` / `0.2.0-rc.2` 上实测宿主侧与工作区注册；peer 范围 `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`，对 0.2.x 不设上限；本包版本 `0.2.7`）。客户端 Windows / Linux / macOS 均可用（CI 在 Linux runner 上跑 Node 22.19 与 24 的完整套件；客户端路径、锚点与远端根之间的映射有专门的跨平台回归用例）。`~/.ssh/config` 会被实时读取（无需导入，插件从不改写该文件）；认证顺序固定为 key → agent → password。在 DSH Web GUI 中提供两块能力（单包单引擎）：
+已适配 DSH **0.1.5 ~ 0.2.1，含官方桌面版（Electron）**（0.1.x 兼容矩阵四条线全绿：`0.1.5-rc.1`、`0.1.5-rc.2`、`0.1.6-alpha.1`、`0.1.6-alpha.2`；0.2.x 线已在桌面版 `0.2.1-rc.5` / `0.2.0-rc.2` 上实测宿主侧与工作区注册；peer 范围 `>=0.1.5-rc.1 <0.1.7 || >=0.1.6-alpha.1`，对 0.2.x 不设上限；本包版本 `0.2.8`）。客户端 Windows / Linux / macOS 均可用（CI 在 Linux runner 上跑 Node 22.19 与 24 的完整套件；客户端路径、锚点与远端根之间的映射有专门的跨平台回归用例）。`~/.ssh/config` 会被实时读取（无需导入，插件从不改写该文件）；认证顺序固定为 key → agent → password。在 DSH Web GUI 中提供两块能力（单包单引擎）：
 
 1. **SSH 运维**：右侧栏「SSH」Tab（从右侧栏标签条的「+」或右侧栏引导页入口打开）→ Web 终端（xterm + WebSocket PTY）、文件上传下载、本地端口转发隧道、当前服务器的远端命令；`ssh_list` / `ssh_exec` / `ssh_upload` / `ssh_download` / `ssh_tunnel` / `ssh_cluster` 六个 Agent 工具；主机配置存 `~/.dsh/dsh-ssh.json`。
 2. **SSH 工作区**：左侧侧栏的全局入口行 → 中央面板管理服务器与工作区（增删改查 / `~/.ssh/config` 导入）；绑定后本地 harness 的 fs/subprocess 经接缝门面透明路由到远程主机执行（read/write/edit/bash 在绑定会话中即远程操作）；`remote_*` 三个 Agent 工具（`remote_ls` / `remote_search` / `remote_status`）用于显式操作远端工作区。
@@ -82,11 +82,11 @@
 ## 安装
 
 ```sh
-# 已发布 npm，latest = 0.2.7（含 dsh 0.2.0 / 0.2.1 与桌面版支持）
+# 已发布 npm（latest = 0.2.7；0.2.8 为本轮修复版本，发布后即为 latest）
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # 需要固定版本时
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.7
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.8
 
 # 开发/迭代：源码链接（改码重建 lib/ 后重启即生效）
 dsh plugin --profile web add link:<repo>/packages/dsh-hardssh
@@ -125,3 +125,6 @@ pnpm --filter dsh-hardssh build       # 产出 lib/（构建前先清空，避�
 - 凭据默认不落盘；`secretStorage: vault` 时以 AES-256-GCM + scrypt 加密存储于 `~/.dsh/ssh-secrets/dsh-ssh-vault.json`（被 fs seam 拒绝访问），且 `DSH_CREDENTIAL_PASSWORD` 自动解锁默认关闭（需 `vaultAutoUnlock: env`）。会话密码按**连接存活期**复用，连接池回收即失效。
 
 完整的信任边界、能力清单，以及静态扫描命中项（`exec` 方法名、`child_process`、私钥路径字面量等）的逐条说明见仓库根目录的 [SECURITY.md](https://github.com/tiphareth0/dsh-hardssh/blob/master/SECURITY.md)。
+## 致谢
+
+感谢 **[@Durian](https://github.com/Durian)** 在真实桌面版环境（DSH 0.2.1-rc.x + CentOS 6 远端）中复现并汇报了 0.2.7 的多个缺陷（`ssh_list` 的 `commandPolicy` schema、`timeout -k` 兼容性、桌面版"安装≠启用"、终端 Store `pwsh.exe` 别名），并给出根因与修复方向；这些反馈构成了 0.2.8 的修复清单。

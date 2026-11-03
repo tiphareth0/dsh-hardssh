@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.7-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.8-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.1-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -167,14 +167,14 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm — **`latest = 0.2.7`** (includes dsh 0.2.0 / 0.2.1 and Desktop support):
+Published on npm (currently **`latest = 0.2.7`**; **`0.2.8` is the fix release and becomes latest once published**):
 
 ```sh
 # one-line install (follows latest)
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # pin the version when needed
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.7
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.8
 ```
 
 For development / local iteration, install from the source checkout or a local tarball:
@@ -185,7 +185,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.7.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.8.tgz
 ```
 
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and
@@ -517,6 +517,17 @@ when unattended access to password hosts is required.
 
 The full trust boundaries, capability inventory, and a per-finding answer to static scanners
 live in [SECURITY.md](./SECURITY.md).
+
+## Acknowledgements
+
+Thanks to **[@Durian](https://github.com/Durian)**, who reproduced and reported the following 0.2.7 defects on a real Desktop setup (DSH 0.2.1-rc.x + a CentOS 6 remote host) with clear root-cause analysis and fix directions:
+
+- `ssh_list` failed for the whole call on hosts with a command policy (`commandPolicy` was missing from the output schema);
+- `timeout -k` made remote commands un-runnable on hosts with coreutils < 8.5;
+- the Desktop "installed ≠ enabled" first-run experience;
+- the terminal failing when the shell resolved to the Windows Store `pwsh.exe` alias.
+
+Those reports became the 0.2.8 fix list.
 
 ## License
 
