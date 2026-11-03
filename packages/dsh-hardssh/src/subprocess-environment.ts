@@ -22,7 +22,9 @@
  * @module dsh-hardssh/subprocess-environment
  */
 
+import { statSync } from 'node:fs'
 import { userInfo } from 'node:os'
+import { join } from 'node:path'
 
 /** Operating-system family plus the provider's preferred shell (DSH 0.2.0 shape). */
 export interface SubprocessTerminalEnvironment {
@@ -70,6 +72,40 @@ export function localTerminalEnvironment(signal?: AbortSignal): SubprocessTermin
 }
 
 /**
+ * Replace a Windows shell that Node cannot spawn with a real executable.
+ *
+ * The shell picker resolves an App Execution Alias (`…\Microsoft\WindowsApps\
+ * pwsh.exe` → `…\WindowsApps\Microsoft.PowerShell_<ver>_x64__…\pwsh.exe`) that
+ * `dsh-subprocess-local` then rejects with
+ * `command "…\pwsh.exe" is not an executable file`, because the Store package
+ * path is a reparse point, not a regular file. The user sees a dead terminal.
+ * Answering with an executable that actually exists keeps the terminal usable;
+ * `undefined` lets the caller apply its own fallback.
+ * @param shell - the provider's preferred shell (may be undefined).
+ * @returns a spawnable shell path, or undefined when none can be found.
+ */
+export function sanitizeWindowsShell(shell: string | undefined): string | undefined {
+  if (shell === undefined || shell === '') return undefined
+  if (process.platform !== 'win32') return shell
+  if (!/windowsapps/i.test(shell)) return shell
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+  const candidates = [
+    process.env.ComSpec,
+    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    join(systemRoot, 'System32', 'cmd.exe'),
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'),
+  ]
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === '') continue
+    try {
+      if (statSync(candidate).isFile()) return candidate
+    } catch {
+      // Missing candidate: keep looking.
+    }
+  }
+  return undefined
+}
+/**
  * Ask a runtime that implements the 0.2.0 probe, else answer for the local host.
  *
  * Delegation is preferred wherever the runtime owns a real answer (the official
@@ -83,6 +119,10 @@ export async function delegateOrLocalTerminalEnvironment(
   runtime: TerminalEnvironmentProbe | undefined,
   signal?: AbortSignal,
 ): Promise<SubprocessTerminalEnvironment> {
-  if (typeof runtime?.terminalEnvironment === 'function') return await runtime.terminalEnvironment(signal)
-  return localTerminalEnvironment(signal)
+  const environment = typeof runtime?.terminalEnvironment === 'function'
+    ? await runtime.terminalEnvironment(signal)
+    : localTerminalEnvironment(signal)
+  return environment.defaultShell === undefined
+    ? environment
+    : { ...environment, defaultShell: sanitizeWindowsShell(environment.defaultShell) }
 }
