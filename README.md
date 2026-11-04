@@ -264,6 +264,7 @@ dsh-hardssh: 已阻止在 login-node 上执行该命令（命中该主机的禁�
 - 工作区锚点目录：`~/.dsh/workspaces/anchors`
 - 主机密钥信任：`~/.dsh/ssh-known-hosts.json`
 - `vault` 模式的加密凭据：`~/.dsh/ssh-secrets/dsh-ssh-vault.json`（位于 `~/.dsh` 内，但被 fs seam 在所有派发路径上拒绝访问）
+- 终端诊断日志：`~/.dsh/dsh-hardssh-terminal.log`（每次侧边栏终端 spawn 的 `cwd`、清洗前后 argv、路由到 local 还是 remote；只记这些，不记环境变量与凭据）
 
 以上文件按系统权限（0600 / 0700）落盘。
 
@@ -309,6 +310,8 @@ pnpm --filter @tiphareth/dsh-hardssh build       # 构建（lib/ 产物）
 - **MSI 安装版**（`C:\Program Files\PowerShell\7\pwsh.exe`）安装器会把目录加进机器 PATH，写裸 `pwsh` 即可且不受升级影响——长期推荐这种装法。
 
 > 顺带一个反直觉点：终端控制器是**先用 `resolveExecutable()` 校验 shell、再交给 seam 路由**的，而这个校验固定在本机进行；所以**本机 shell 解析失败时，绑定会话的远端终端也会一起失败**（即使它最终会换成远端 shell）——报错就是上面那条。
+
+> **`0.2.8` 起已从根上修掉**：插件的 `resolveExecutable()` 会先把 `WindowsApps` 别名换成真实可执行文件，解析失败且命令是 shell 名（`pwsh` / `powershell` / `cmd`）时回退到 `Program Files\PowerShell\7\pwsh.exe` → `System32\WindowsPowerShell\v1.0\powershell.exe` → `ComSpec`。所以裸 `pwsh` 也能直接用，上面"必须写绝对路径 / 包目录带版本号"的坑只存在于 `0.2.7` 及更早。排查终端问题时可以看 `~/.dsh/dsh-hardssh-terminal.log`（记录每次 spawn 的 `cwd`、清洗前后 argv、路由到 local 还是 remote）。
 
 **连接时要求输入密码 / 提示“需要密码”** —— 安全默认不保存密码：首次连接、浏览远端目录时会弹窗输入一次，在该连接存活期内复用；连接池空闲回收（默认 30 分钟）或进程重启后需重新输入。
 

@@ -367,6 +367,9 @@ tool itself.
 - Host-key trust: `~/.dsh/ssh-known-hosts.json`
 - `vault` mode ciphertext: `~/.dsh/ssh-secrets/dsh-ssh-vault.json` (inside `~/.dsh`,
   but denied to the fs seam on every dispatch path)
+- Terminal diagnostic log: `~/.dsh/dsh-hardssh-terminal.log` (per sidebar-terminal spawn:
+  `cwd`, argv before/after sanitizing, and whether it routed local or remote; nothing else
+  — no environment variables, no credentials)
 
 These files are written with owner-only permissions (0600 / 0700).
 
@@ -463,6 +466,15 @@ controller a config entry in the profile's `cordis.patch.yml`:
 > `resolveExecutable()` before handing it to the seam**, and that verification always runs
 > locally — so a local shell that cannot be resolved breaks the REMOTE terminal of a bound
 > session too, even though that shell is about to be replaced by the host's own.
+
+> **Fixed at the root in `0.2.8`**: the plugin's `resolveExecutable()` replaces a
+> `WindowsApps` alias with a real executable, and when resolution throws for a shell name
+> (`pwsh` / `powershell` / `cmd`) it falls back to `Program Files\PowerShell\7\pwsh.exe` →
+> `System32\WindowsPowerShell\v1.0\powershell.exe` → `ComSpec`. A bare `pwsh` therefore
+> works, and the "absolute path required / the package directory carries a version" trap
+> only exists on `0.2.7` and earlier. When debugging a terminal, check
+> `~/.dsh/dsh-hardssh-terminal.log` (per spawn: `cwd`, argv before/after sanitizing, and
+> the chosen world).
 
 **Prompted to enter a password / "credential required"** — passwords are never saved
 by default: connect and remote browse ask once per session; a process restart asks

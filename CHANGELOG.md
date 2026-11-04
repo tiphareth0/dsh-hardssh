@@ -16,13 +16,15 @@
 
 ### 终端
 
-- **终端 shell 解析到 Windows Store 别名时无法启动**。DSH 侧边栏终端由宿主 `terminal-controller` 选 shell（`terminalEnvironment()` 返回的是本机答案，因为随后用本机 `resolveExecutable` 校验），Store 版 PowerShell 7 会给出 `C:\Program Files\WindowsApps\…\pwsh.exe`——重解析点，`dsh-subprocess-local` 直接报 `command "…\pwsh.exe" is not an executable file`。`terminalEnvironment()` 现在把 WindowsApps 别名替换为真实可执行的 shell（`ComSpec` → `System32\WindowsPowerShell\v1.0\powershell.exe` → `cmd.exe` → `Program Files\PowerShell\7\pwsh.exe`）。SSH 工作区的终端路由不变：命中锚点即替换为远端登录 shell。
+- **终端在 shell 解析阶段就失败（`subprocess-local: … is not an executable file`）**。真正的失败点不是 spawn，而是 DSH 终端控制器**先**用 `resolveExecutable()` 解析所选 shell（`config.shell` / 记住的 `shellPath` 都会走这条路），**之后**才调用 `spawnTerminal()`；Windows Store 版 PowerShell 7 的 App Execution Alias 是重解析点，官方解析器在这一步就抛错，所以此前在 spawn 阶段做的 argv 清洗永远执行不到。
+  修复在解析层：`SwitchSubprocessRuntime.resolveExecutable()`（与本地 workspace provider 的同名方法）先委托官方解析器——拿到 `WindowsApps` 别名就换成真实可执行；解析本身抛错且命令是 shell 名（`pwsh` / `powershell` / `cmd`）时，回退到 `Program Files\PowerShell\7\pwsh.exe` → `System32\WindowsPowerShell\v1.0\powershell.exe` → `ComSpec`。非 shell 命令行为不变；`spawnTerminal` 的 argv 清洗与 `terminalEnvironment` 的 `defaultShell` 清洗保留为纵深防御。
+  本机用真实 `dsh-subprocess-local` 实测：官方解析器抛 `command "pwsh" was not found on PATH`（应用环境里 PATH 含别名时即报 "is not an executable file"），我们的解析器返回 `C:\WINDOWS\System32\WindowsPowerShell\v1.0\powershell.exe`，并用它成功 spawn 了真实 PTY 终端（`tests/ssh/terminal-shell-resolution.test.ts`）。
 
 ### 兼容性矩阵（CI）
 
 - **0.1.6-alpha.x 的 typecheck 失败**：`SubprocessHandle` 在该线新增必需成员 `control`（`Duplex | undefined`），`SidebarRightGuideEntry` 新增必需 `id`。两个 SSH 句柄显式声明 `control = undefined`（SSH exec 通道没有独立控制流），引导条目补 `id` 并断言类型（0.1.5 的类型还没有该字段，单一源码需同时编译两代）。
 - **兼容集从未真正锁定传递依赖**：pnpm ≥ 10 不再读取 `package.json` 的 `pnpm.overrides`（只认 `pnpm-workspace.yaml` 的 `overrides`），矩阵一直在“声称锁定、实际未锁”的状态下安装。`scripts/compat/apply-set.mjs` 改为写入 workspace 文件的 `overrides`（幂等替换）。
-- 四条 0.1.x 线（`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`）在本地副本中逐条验证：typecheck 通过、**77 个测试文件 / 733 通过 / 4 跳过**。
+- 四条 0.1.x 线（`0.1.5-rc.1` / `0.1.5-rc.2` / `0.1.6-alpha.1` / `0.1.6-alpha.2`）在本地副本中逐条验证：typecheck 通过、**78 个测试文件 / 736 通过 / 4 跳过**。
 
 ### 文档
 
