@@ -22,6 +22,7 @@ import { logTerminalDiagnostic } from '../terminal-diagnostic.ts'
 import {
   delegateOrLocalTerminalEnvironment,
   sanitizeTerminalArgv,
+  spawnableShellFor,
   type SubprocessTerminalEnvironment,
   type TerminalEnvironmentProbe,
 } from '../subprocess-environment.ts'
@@ -133,12 +134,24 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
   }
 
   /** @inheritdoc */
-  resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
+  async resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
     // Executable resolution is not cwd-scoped; route by the caller's cwd is
     // impossible here, so use the local runtime (bare PATH names on remote
     // hosts are resolved inside the remote command anyway). Local-only
     // resolution keeps `command -v` semantics on this machine.
-    return this.deps.local.resolveExecutable(command, env, signal)
+    //
+    // A Windows Store shell (`pwsh` → the App Execution Alias under WindowsApps)
+    // makes the official resolver THROW "is not an executable file", and the
+    // sidebar terminal resolves its shell here BEFORE spawning — so answering
+    // with a real executable is the only place that actually fixes it.
+    try {
+      const resolved = await this.deps.local.resolveExecutable(command, env, signal)
+      return spawnableShellFor(resolved) ?? resolved
+    } catch (error) {
+      const fallback = spawnableShellFor(command)
+      if (fallback !== undefined) return fallback
+      throw error
+    }
   }
 
   /**

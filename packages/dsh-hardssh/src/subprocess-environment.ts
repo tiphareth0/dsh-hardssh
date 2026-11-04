@@ -84,17 +84,7 @@ export function localTerminalEnvironment(signal?: AbortSignal): SubprocessTermin
  * @param shell - the provider's preferred shell (may be undefined).
  * @returns a spawnable shell path, or undefined when none can be found.
  */
-export function sanitizeWindowsShell(shell: string | undefined): string | undefined {
-  if (shell === undefined || shell === '') return undefined
-  if (process.platform !== 'win32') return shell
-  if (!/windowsapps/i.test(shell)) return shell
-  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
-  const candidates = [
-    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'),
-    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    process.env.ComSpec,
-    join(systemRoot, 'System32', 'cmd.exe'),
-  ]
+function firstExisting(candidates: ReadonlyArray<string | undefined>): string | undefined {
   for (const candidate of candidates) {
     if (candidate === undefined || candidate === '') continue
     try {
@@ -104,6 +94,55 @@ export function sanitizeWindowsShell(shell: string | undefined): string | undefi
     }
   }
   return undefined
+}
+
+/**
+ * The first spawnable Windows shell (PowerShell family preferred), or undefined.
+ * @param preferCommandPrompt - pick cmd.exe first (for a cmd-style shell name).
+ * @returns an existing executable path, or undefined off Windows / when none exists.
+ */
+export function windowsShellFallback(preferCommandPrompt = false): string | undefined {
+  if (process.platform !== 'win32') return undefined
+  const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
+  const powerShellFamily = [
+    join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'),
+    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+  ]
+  const commandPrompt = [process.env.ComSpec, join(systemRoot, 'System32', 'cmd.exe')]
+  return preferCommandPrompt
+    ? firstExisting([...commandPrompt, ...powerShellFamily])
+    : firstExisting([...powerShellFamily, ...commandPrompt])
+}
+
+/** Executable basenames that make a terminal, not an ordinary command. */
+const SHELL_BASENAMES = new Set(['pwsh', 'pwsh.exe', 'powershell', 'powershell.exe', 'cmd', 'cmd.exe'])
+
+/**
+ * A spawnable replacement for a SHELL command name or a Store alias.
+ *
+ * The terminal controller resolves the chosen shell with `resolveExecutable()`
+ * BEFORE it spawns: on this platform a bare `pwsh` resolves to the Windows Store
+ * App Execution Alias, and `dsh-subprocess-local` throws
+ * `command "…\\pwsh.exe" is not an executable file` right there, so a spawn-time
+ * rewrite never runs. Answering the resolver (and the spawn argv) with a real
+ * executable is what actually fixes the terminal.
+ * @param command - an absolute path or a bare executable name.
+ * @returns a spawnable shell, or undefined when `command` is not a shell.
+ */
+export function spawnableShellFor(command: string | undefined): string | undefined {
+  if (command === undefined || command === '') return undefined
+  if (process.platform !== 'win32') return undefined
+  const base = command.replace(/\\/g, '/').split('/').pop()?.toLowerCase() ?? ''
+  if (!SHELL_BASENAMES.has(base)) return undefined
+  if (/windowsapps/i.test(command)) return windowsShellFallback(base.startsWith('cmd'))
+  return windowsShellFallback(base.startsWith('cmd'))
+}
+
+export function sanitizeWindowsShell(shell: string | undefined): string | undefined {
+  if (shell === undefined || shell === '') return undefined
+  if (process.platform !== 'win32') return shell
+  if (!/windowsapps/i.test(shell)) return shell
+  return windowsShellFallback()
 }
 /**
  * Sanitize the argv the terminal controller is about to spawn.
@@ -120,7 +159,7 @@ export function sanitizeWindowsShell(shell: string | undefined): string | undefi
 export function sanitizeTerminalArgv(argv: readonly string[]): readonly string[] {
   const first = argv[0]
   if (first === undefined) return argv
-  const replacement = sanitizeWindowsShell(first)
+  const replacement = sanitizeWindowsShell(first) ?? spawnableShellFor(first)
   if (replacement === undefined || replacement === first) return argv
   // cmd.exe takes no `-NoLogo`-style flags; drop the PowerShell args in that case.
   const base = replacement.slice(replacement.lastIndexOf('\\') + 1).toLowerCase()

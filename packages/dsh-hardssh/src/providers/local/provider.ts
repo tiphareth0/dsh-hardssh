@@ -26,6 +26,7 @@ import { logTerminalDiagnostic } from '../../terminal-diagnostic.ts'
 import {
   delegateOrLocalTerminalEnvironment,
   sanitizeTerminalArgv,
+  spawnableShellFor,
   type SubprocessTerminalEnvironment,
   type TerminalEnvironmentProbe,
 } from '../../subprocess-environment.ts'
@@ -139,8 +140,17 @@ export class RootedLocalSubprocessRuntime {
   ) {}
 
   /** The shared runtime already owns executable lookup; no root path is involved. */
-  resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
-    return this.runtime.resolveExecutable(command, env, signal)
+  async resolveExecutable(command: string, env?: Readonly<Record<string, string>>, signal?: AbortSignal): Promise<string> {
+    // Same Windows-Store shell trap as the switching facade: the resolver throws
+    // on the App Execution Alias, and the terminal asks here before spawning.
+    try {
+      const resolved = await this.runtime.resolveExecutable(command, env, signal)
+      return spawnableShellFor(resolved) ?? resolved
+    } catch (error) {
+      const fallback = spawnableShellFor(command)
+      if (fallback !== undefined) return fallback
+      throw error
+    }
   }
 
   /**
