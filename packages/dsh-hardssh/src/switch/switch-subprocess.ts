@@ -20,6 +20,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { isClientSearchHelperPath, searchBridgeRefusal } from '../remote/search-bridge.ts'
 import {
   delegateOrLocalTerminalEnvironment,
+  sanitizeTerminalArgv,
   type SubprocessTerminalEnvironment,
   type TerminalEnvironmentProbe,
 } from '../subprocess-environment.ts'
@@ -162,7 +163,7 @@ export class SwitchSubprocessRuntime extends SubprocessRuntime {
 
   /** @inheritdoc */
   async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
-    const routed = await this.terminalRoute(spec)
+    const routed = await this.terminalRoute({ ...spec, argv: [...sanitizeTerminalArgv(spec.argv)] })
     return routed.runtime.spawnTerminal(routed.spec)
   }
 

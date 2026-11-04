@@ -90,10 +90,10 @@ export function sanitizeWindowsShell(shell: string | undefined): string | undefi
   if (!/windowsapps/i.test(shell)) return shell
   const systemRoot = process.env.SystemRoot ?? 'C:\\Windows'
   const candidates = [
-    process.env.ComSpec,
-    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    join(systemRoot, 'System32', 'cmd.exe'),
     join(process.env.ProgramFiles ?? 'C:\\Program Files', 'PowerShell', '7', 'pwsh.exe'),
+    join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
+    process.env.ComSpec,
+    join(systemRoot, 'System32', 'cmd.exe'),
   ]
   for (const candidate of candidates) {
     if (candidate === undefined || candidate === '') continue
@@ -104,6 +104,27 @@ export function sanitizeWindowsShell(shell: string | undefined): string | undefi
     }
   }
   return undefined
+}
+/**
+ * Sanitize the argv the terminal controller is about to spawn.
+ *
+ * `resolveShell()` may skip `terminalEnvironment()` entirely when a shell is
+ * configured or remembered (`request.shellPath`/`config.shell`): it calls
+ * `resolveExecutable()` instead, which can still hand back the Windows Store
+ * `pwsh.exe` alias. `dsh-subprocess-local` then refuses to spawn it
+ * ("is not an executable file"). Rewriting argv[0] at the spawn boundary is the
+ * only place every path shares.
+ * @param argv - the argv about to be spawned.
+ * @returns the same argv when nothing needs replacing, else a spawnable one.
+ */
+export function sanitizeTerminalArgv(argv: readonly string[]): readonly string[] {
+  const first = argv[0]
+  if (first === undefined) return argv
+  const replacement = sanitizeWindowsShell(first)
+  if (replacement === undefined || replacement === first) return argv
+  // cmd.exe takes no `-NoLogo`-style flags; drop the PowerShell args in that case.
+  const base = replacement.slice(replacement.lastIndexOf('\\') + 1).toLowerCase()
+  return base === 'cmd.exe' ? [replacement] : [replacement, ...argv.slice(1)]
 }
 /**
  * Ask a runtime that implements the 0.2.0 probe, else answer for the local host.

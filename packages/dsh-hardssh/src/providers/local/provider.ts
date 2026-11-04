@@ -24,6 +24,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath }
 import { WORKSPACE_PROVIDER_API_VERSION } from '../../base/model.ts'
 import {
   delegateOrLocalTerminalEnvironment,
+  sanitizeTerminalArgv,
   type SubprocessTerminalEnvironment,
   type TerminalEnvironmentProbe,
 } from '../../subprocess-environment.ts'
@@ -171,7 +172,10 @@ export class RootedLocalSubprocessRuntime {
   /** LocalSubprocessRuntime.spawnTerminal() accepts any cwd, so this method fences it. */
   async spawnTerminal(spec: SubprocessTerminalSpawnSpec): Promise<SubprocessTerminalHandle> {
     assertInsideRoot(this.workspaceRoot, spec.cwd)
-    const handle = await this.runtime.spawnTerminal(spec)
+    // The controller may resolve the shell through resolveExecutable(), which can
+    // still hand back a Windows Store alias Node cannot spawn; rewrite argv at the
+    // seam so no shell resolution path can leave a dead terminal.
+    const handle = await this.runtime.spawnTerminal({ ...spec, argv: [...sanitizeTerminalArgv(spec.argv)] })
     this.terminals.add(handle)
     // Same rejection-safe ownership cleanup as spawn(): the caller still owns
     // the authoritative done rejection.
