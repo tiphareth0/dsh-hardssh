@@ -167,7 +167,7 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm (currently **`latest = 0.2.7`**; **`0.2.8` is the fix release and becomes latest once published**):
+Published on npm — **`latest = 0.2.8`**:
 
 ```sh
 # one-line install (follows latest)

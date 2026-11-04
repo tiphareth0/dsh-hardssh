@@ -84,7 +84,7 @@
 ## 安装
 
 ```sh
-# 已发布 npm（latest = 0.2.7；0.2.8 为本轮修复版本，发布后即为 latest）
+# 已发布 npm，latest = 0.2.8
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # 需要固定版本时

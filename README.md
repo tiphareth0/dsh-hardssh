@@ -103,7 +103,7 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm（当前 **`latest = 0.2.7`**；**`0.2.8` 为本轮修复版本，发布后即为 latest**）：
+已发布到 npm（当前 **`latest = 0.2.8`**）：
 
 ```sh
 # 一行安装（跟随 latest）
