@@ -35,6 +35,7 @@
     "src/protocol.ts",
     "src/utf8.ts",
     "src/subprocess-environment.ts",
+    "src/terminal-diagnostic.ts",
     "src/ledger.ts",
     "src/backend.ts",
     "src/shell.ts",

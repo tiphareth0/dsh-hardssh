@@ -22,6 +22,7 @@ import { constants as fsConstants, existsSync, realpathSync } from 'node:fs'
 import { access, lstat as fsLstat, mkdir, readFile, readdir, rename, rm, stat as fsStat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve as resolvePath } from 'node:path'
 import { WORKSPACE_PROVIDER_API_VERSION } from '../../base/model.ts'
+import { logTerminalDiagnostic } from '../../terminal-diagnostic.ts'
 import {
   delegateOrLocalTerminalEnvironment,
   sanitizeTerminalArgv,
@@ -175,7 +176,9 @@ export class RootedLocalSubprocessRuntime {
     // The controller may resolve the shell through resolveExecutable(), which can
     // still hand back a Windows Store alias Node cannot spawn; rewrite argv at the
     // seam so no shell resolution path can leave a dead terminal.
-    const handle = await this.runtime.spawnTerminal({ ...spec, argv: [...sanitizeTerminalArgv(spec.argv)] })
+    const sanitized = [...sanitizeTerminalArgv(spec.argv)]
+    logTerminalDiagnostic('localProvider.spawnTerminal', { cwd: spec.cwd, argvBefore: spec.argv, argvAfter: sanitized })
+    const handle = await this.runtime.spawnTerminal({ ...spec, argv: sanitized })
     this.terminals.add(handle)
     // Same rejection-safe ownership cleanup as spawn(): the caller still owns
     // the authoritative done rejection.
