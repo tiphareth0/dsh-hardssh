@@ -43,6 +43,7 @@
 - **非交互失败可见**：探测失败（网络不可达、认证失败、主机密钥异常、重试耗尽）会弹出「无法连接服务器」对话框并显示具体原因；用户主动取消密码/指纹弹窗不算失败。
 - **认证被拒立刻重弹并给出原因**：凭据已输入后服务器仍拒绝时，重新打开密码对话框并携带具体 SSH 错误，而不是落到非交互失败对话框。
 - **连接中可见**：连接期间左侧工作区徽章显示旋转指示器，状态翻转原地替换。
+- **首次连接超时可调（0.2.9）**：握手/连接阶段默认 **30s**、连通性探针默认 **20s**（旧值为 15s / 10s，跨境或实验室主机的首次连接常被误判超时）；可用插件配置 `connectTimeoutMs` / `probeTimeoutMs` 调整，取值钳制在 5s–10min。
 - **工作区文件面板显示远端地址**：面板根锚在本机（会话 cwd），内容已经是远端、地址与面包屑也重写为远端根，避免「地址是本机、内容是服务器」的错觉。
 - **终端 shell 解析已从根上兜底（0.2.8）**：DSH 终端控制器先 `resolveExecutable()` 再 spawn；Windows Store 版 PowerShell 的 App Execution Alias 会让这一步直接抛 `is not an executable file`。插件的解析层会把 `WindowsApps` 别名换成真实可执行文件，解析失败且命令是 shell 名时回退 `Program Files\PowerShell\7\pwsh.exe` → `System32\WindowsPowerShell\v1.0\powershell.exe` → `ComSpec`；非 shell 命令不受影响。
 - **终端诊断日志**：`~/.dsh/dsh-hardssh-terminal.log` 记录每次侧边栏终端 spawn 的 cwd、清洗前后 argv 与 local/remote 路由，便于定位终端问题（只记这些，不记环境变量与凭据）。
@@ -84,11 +85,11 @@
 ## 安装
 
 ```sh
-# 已发布 npm，latest = 0.2.8
+# 已发布 npm（latest = 0.2.8；0.2.9 为本轮修复版本）
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # 需要固定版本时
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.8
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.9
 
 # 开发/迭代：源码链接（改码重建 lib/ 后重启即生效）
 dsh plugin --profile web add link:<repo>/packages/dsh-hardssh

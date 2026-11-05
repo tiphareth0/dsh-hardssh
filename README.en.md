@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.8-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.9-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.1-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -167,14 +167,14 @@ workspace**; there is no host dropdown:
 
 ## Install
 
-Published on npm — **`latest = 0.2.8`**:
+Published on npm (currently **`latest = 0.2.8`**; **`0.2.9` is the fix release and becomes latest once published**):
 
 ```sh
 # one-line install (follows latest)
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # pin the version when needed
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.8
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.9
 ```
 
 For development / local iteration, install from the source checkout or a local tarball:
@@ -185,7 +185,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # or pack a tarball first
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.8.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.9.tgz
 ```
 
 Alternatively add the package to the profile's `dependencies` (`file:...` → tarball) and
@@ -276,6 +276,8 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 | `enabled` | boolean | `true` | **SSH-workspace surface switch, not a plugin master switch.** It gates only what this plugin mounts: the `/api/dsh-hardssh` workspace CRUD routes, the `remote_*` workspace tools and the workspace guidance section. The SSH operations capability (host manager, `ssh_*` tools, `/api/dsh-ssh`, web terminal) is controlled separately by the `enabled` key of the `dsh-ssh` settings namespace; the shared engine/host store, the fs/subprocess routing seams and the connection pool keep running. |
 | `secretStorage` | enum | `none` | `none` = no persisted credentials, prompt at connect (VSCode Remote-SSH style); `vault` = encrypted storage (unattended agents). **This plugin config is the only source**: the vault and host store are constructed from it once at plugin load, so changing it requires a plugin reload / `dsh web` restart. |
 | `vaultAutoUnlock` | enum | `off` | Whether the vault may auto-unlock from the `DSH_CREDENTIAL_PASSWORD` environment variable at plugin load: `off` (default, master password entered by hand) or `env` (explicit opt-in for unattended setups). That variable is visible to anything running as the same user, hence off by default. Only meaningful with `secretStorage: vault`. |
+| `connectTimeoutMs` | number | `30000` | Total budget for the SSH handshake/connect phase in milliseconds. A first connection to a far host (DNS + TCP + KEX + auth + ProxyJump) can easily exceed the old 15s and surface as a spurious "timed out on first connect"; raise it for slow links. Clamped to 5s–10min. |
+| `probeTimeoutMs` | number | `20000` | Connectivity-probe (`true`) budget in milliseconds, used by the GUI connection gate and `POST /api/dsh-ssh/test`. On a high-latency host this step decides whether the workspace is usable. Clamped to 5s–10min. |
 
 Example (`cordis.patch.yml`):
 

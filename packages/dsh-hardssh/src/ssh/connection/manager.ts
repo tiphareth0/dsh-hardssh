@@ -35,8 +35,10 @@ export interface SshInvalidateOptions {
 export interface EngineOptions {
   /** Connections idle longer than this are closed (ms). */
   idleTimeoutMs?: number
-  /** SSH handshake timeout (ms). */
+  /** SSH handshake timeout (ms). First connections to a far host can exceed the old 15s. */
   connectTimeoutMs?: number
+  /** Connectivity-probe (`true`) budget for the connection gate and `/test` (ms). */
+  probeTimeoutMs?: number
   /** Keepalive ping interval (ms). */
   keepaliveIntervalMs?: number
   /** Cap on captured stdout/stderr bytes per exec (ms). */
@@ -113,7 +115,8 @@ export class NeedsPasswordError extends Error {
 
 export const DEFAULTS: Required<Omit<EngineOptions, 'hostKeyAlgorithms'>> & Pick<EngineOptions, 'hostKeyAlgorithms'> = {
   idleTimeoutMs: 30 * 60_000,
-  connectTimeoutMs: 15_000,
+  connectTimeoutMs: 30_000,
+  probeTimeoutMs: 20_000,
   keepaliveIntervalMs: 15_000,
   maxOutputBytes: 2 * 1024 * 1024,
   defaultExecTimeoutMs: 60_000,
@@ -1210,7 +1213,7 @@ export class ConnectionManager {
     try {
       // `true` is idempotent — allow channel-open retries, never replays
       // once the server accepted the channel.
-      const probe = (): Promise<ExecResult> => this.executor(alias, 'true', { timeoutMs: 10_000, retry: 'idempotent', signal })
+      const probe = (): Promise<ExecResult> => this.executor(alias, 'true', { timeoutMs: this.opts.probeTimeoutMs, retry: 'idempotent', signal })
       let result = await probe()
       // A channel that closed WITHOUT an exit status is a transport hiccup, not
       // an answer about the host: the first connection of a session can land on

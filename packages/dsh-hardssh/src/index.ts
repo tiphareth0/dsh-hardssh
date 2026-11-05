@@ -101,6 +101,23 @@ export interface Config {
    * explicit opt-in for unattended/headless agents.
    */
   vaultAutoUnlock: 'off' | 'env'
+  /**
+   * SSH handshake timeout in milliseconds (default 30s).
+   *
+   * A first connection to a far host — DNS, TCP, key exchange, ProxyJump hops —
+   * can easily exceed the previous 15s, which surfaced as a spurious "timed out"
+   * on first use. Raise it for slow links; the value also bounds the whole
+   * connect phase, including a SYN-level hang.
+   */
+  connectTimeoutMs: number
+  /**
+   * Connectivity-probe (`true`) budget in milliseconds (default 20s).
+   *
+   * The GUI's connection gate and `POST /api/dsh-ssh/test` run one trivial
+   * command after the handshake; on a high-latency host this is the step that
+   * decides whether the workspace is usable.
+   */
+  probeTimeoutMs: number
 }
 
 export const Config: z<Config> = z.object({
@@ -108,6 +125,10 @@ export const Config: z<Config> = z.object({
   announceToAgent: z.boolean().default(true),
   secretStorage: z.union([z.const('none'), z.const('vault')]).default('none'),
   vaultAutoUnlock: z.union([z.const('off'), z.const('env')]).default('off'),
+  /** SSH handshake timeout; a first connection to a far host can exceed 15s. */
+  connectTimeoutMs: z.number().default(30_000),
+  /** Connectivity-probe (`true`) budget used by the connection gate and /test. */
+  probeTimeoutMs: z.number().default(20_000),
 })
 
 /**
@@ -117,6 +138,38 @@ export const Config: z<Config> = z.object({
  */
 export function resolveSecretStorageMode(config?: { secretStorage?: unknown }): 'none' | 'vault' {
   return config?.secretStorage === 'vault' ? 'vault' : 'none'
+}
+
+/** Lower/upper bounds for the connection budgets (5s … 10min). */
+const TIMEOUT_FLOOR_MS = 5_000
+const TIMEOUT_CEILING_MS = 10 * 60_000
+
+/**
+ * Resolve the two connection budgets from the plugin config.
+ *
+ * A first connection to a far host (DNS + TCP + KEX + auth + ProxyJump hops)
+ * routinely exceeds the old 15s handshake budget and the old 10s probe, which
+ * users experienced as a spurious "timed out" on first use. Both are now
+ * configurable and default to 30s / 20s.
+ *
+ * Values are clamped: a bad config (`0`, `NaN`, a negative or absurd number)
+ * must not disable the timeout — a zero budget would hang every connect — nor
+ * pin a dead host for hours.
+ * @param config - the plugin config slice (any shape; unvalidated input).
+ * @returns the effective handshake and probe budgets in milliseconds.
+ */
+export function resolveConnectionTimeouts(config?: { connectTimeoutMs?: unknown; probeTimeoutMs?: unknown }): {
+  connectTimeoutMs: number
+  probeTimeoutMs: number
+} {
+  const clamp = (value: unknown, fallback: number): number => {
+    if (typeof value !== 'number' || !Number.isFinite(value)) return fallback
+    return Math.min(Math.max(Math.trunc(value), TIMEOUT_FLOOR_MS), TIMEOUT_CEILING_MS)
+  }
+  return {
+    connectTimeoutMs: clamp(config?.connectTimeoutMs, 30_000),
+    probeTimeoutMs: clamp(config?.probeTimeoutMs, 20_000),
+  }
 }
 
 /** Read the `secretStorage` field out of a resolved settings section. */
@@ -449,6 +502,7 @@ export function apply(ctx: Context, config?: Config): void {
     // Env-based vault auto-unlock is opt-in (see the Config docs): the variable
     // is visible to anything running as this user, so it is not a default.
     vaultAutoUnlock: config?.vaultAutoUnlock === 'env' ? 'env' as const : 'off' as const,
+    ...resolveConnectionTimeouts(config),
   }
 
   // Single provider ownership is established BEFORE store/engine/core
@@ -478,7 +532,10 @@ export function apply(ctx: Context, config?: Config): void {
   // usable without an import step. The engine reads through this view, so
   // exec/SFTP/terminal/tunnels/cluster all see the same aliases.
   const hosts = withSshConfig(secureHosts)
-  const engine = new SshEngine(hosts, undefined, {
+  const engine = new SshEngine(hosts, {
+    connectTimeoutMs: resolved.connectTimeoutMs,
+    probeTimeoutMs: resolved.probeTimeoutMs,
+  }, {
     knownHosts,
     resolveSecrets: (entry) => secureHosts.resolveAuth(entry),
     redactOutput: vault === undefined ? undefined : (text) => vault.redact(text),

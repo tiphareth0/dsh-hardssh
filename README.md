@@ -1,6 +1,6 @@
 # dsh-hardssh
 
-[![version](https://img.shields.io/badge/version-0.2.8-4D6BFE)](CHANGELOG.md)
+[![version](https://img.shields.io/badge/version-0.2.9-4D6BFE)](CHANGELOG.md)
 [![dsh](https://img.shields.io/badge/dsh-0.1.5%20~%200.2.1-7a3ef3)](https://github.com/deepseek-ai/deepseek-harness)
 [![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
 [![dsh-plugin](https://img.shields.io/badge/topic-dsh--plugin-7a3ef3)](https://github.com/topics/dsh-plugin)
@@ -103,14 +103,14 @@ WorkspaceRecord / WorkspaceProvider / WorkspaceConnection / 能力(capability)
 
 ## 安装
 
-已发布到 npm（当前 **`latest = 0.2.8`**）：
+已发布到 npm（当前 **`latest = 0.2.8`**；**`0.2.9` 为本轮修复版本，发布后即为 latest**）：
 
 ```sh
 # 一行安装（跟随 latest）
 dsh plugin --profile web add @tiphareth/dsh-hardssh
 
 # 需要固定版本时
-dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.8
+dsh plugin --profile web add @tiphareth/dsh-hardssh@0.2.9
 ```
 
 开发/迭代用本机源码或本地 tarball：
@@ -121,7 +121,7 @@ dsh plugin --profile web add link:</path/to/dsh-hardssh>/packages/dsh-hardssh
 
 # 或先打包，再安装 tarball
 pnpm --filter @tiphareth/dsh-hardssh pack --pack-destination dist
-dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.8.tgz
+dsh plugin --profile web add </path/to/dsh-hardssh>/dist/tiphareth-dsh-hardssh-0.2.9.tgz
 ```
 
 手工方式：把包加入 profile 的 `dependencies`（`file:...` 指向 tarball）与
@@ -186,6 +186,8 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 | `enabled` | boolean | `true` | **SSH 工作区界面开关**（不是插件总开关）。只控制本插件挂载的 SSH 工作区界面与工具：`/api/dsh-hardssh` 工作区 CRUD 路由、`remote_*` 工作区工具、工作区提示段落。SSH 运维能力（主机管理、`ssh_*` 工具、`/api/dsh-ssh`、Web 终端）由 `dsh-ssh` 设置命名空间的 `enabled` 单独控制；共享 engine/主机存储、fs/subprocess 路由 seam 与连接池不受它影响。 |
 | `secretStorage` | enum | `none` | 凭据策略：`none` = 密码不落盘、连接时输入（VSCode Remote-SSH 式）；`vault` = 加密存储（供无人值守 agent）。**唯一来源是这里的插件配置**：Vault 与主机存储在插件加载时按它构造一次，因此改动后需重载插件/重启 `dsh web` 才生效。 |
 | `vaultAutoUnlock` | enum | `off` | 是否允许 Vault 在插件加载时用 `DSH_CREDENTIAL_PASSWORD` 环境变量**自动解锁**：`off`（默认，需手动输入主密码）或 `env`（无人值守场景显式开启）。该变量对同用户的任何进程可见，因此默认关闭。仅 `secretStorage: vault` 时相关。 |
+| `connectTimeoutMs` | number | `30000` | SSH 握手/连接阶段的总预算（毫秒）。首次连接远端（DNS + TCP + KEX + 认证 + ProxyJump）很容易超过旧的 15s，表现为「首次连接超时」；调大可适配慢链路。范围钳制在 5s–10min。 |
+| `probeTimeoutMs` | number | `20000` | 连通性探针（`true`）预算（毫秒）：GUI 的连接闸门与 `POST /api/dsh-ssh/test` 用它。高延迟主机上这一步决定工作区是否可用。范围钳制在 5s–10min。 |
 
 示例（`cordis.patch.yml`）：
 
