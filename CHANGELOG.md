@@ -14,6 +14,7 @@
   | `probeTimeoutMs` | `20000` | 连通性探针（`true`）预算：GUI 连接闸门与 `POST /api/dsh-ssh/test` |
 
   两者都钳制在 **5s–10min**：`0` / `NaN` / 负数不会把超时关掉（那会让连接永久挂起），超大值也不会把一台死主机钉住几小时。新增 `tests/connection-timeouts.test.ts` 覆盖默认值、自定义值与钳制行为。
+- **工作区名称较长时看不到 SSH 徽章**。DSH 0.2.1 的行结构是 `projectRow > [slot, slot, projectText > title, rowActions]`；徽章原先被追加到 `title` 文本 span **内部**，名字一长就被挤出行外、被侧边栏的 `overflow` 裁掉——看起来像「这个工作区没有徽章」。现在徽章作为 `projectText` 的**兄弟节点**插在行内（`flex` 子项），长名称只会让标题截断，徽章保持可见；同时会清理旧版本留在 `title` 内的徽章（否则读到的标题会混入徽章文字，导致匹配失败）。新增 `tests/client/workspace-badge-placement.test.ts`（jsdom）覆盖长名称与旧布局自愈。
 ## v0.2.8 — 2026-11-04
 
 ### 致谢

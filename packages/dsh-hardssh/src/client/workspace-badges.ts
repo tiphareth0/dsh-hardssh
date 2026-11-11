@@ -102,6 +102,17 @@ export function mountWorkspaceBadges(
   const decorate = (row: HTMLElement): void => {
     const titleEl = row.querySelector<HTMLElement>(TITLE_SELECTOR)
     if (titleEl === null || titleEl === undefined) return
+    // The shell's row is `projectRow > [slot, slot, projectText > title, rowActions]`.
+    // The badge used to be appended INSIDE the `title` text span, so a long name
+    // pushed it past the row's edge and the sidebar's overflow clipped it away —
+    // the "long name hides the badge" symptom. It now sits as a flex sibling right
+    // after `projectText`, so the title truncates instead of the badge vanishing.
+    const projectText = titleEl.closest<HTMLElement>('[class*="projectText"]')
+    const existing = row.querySelector<HTMLElement>('[data-ssh-badge]')
+    // An older build may have left the badge inside the title span: remove it
+    // BEFORE reading the title text, or the lookup below would see the badge's
+    // own label and never match the workspace.
+    if (existing !== null && titleEl.contains(existing)) existing.remove()
     const title = titleEl.textContent?.trim() ?? ''
     const target = byTitle.get(title)
     if (target === undefined) return
@@ -114,8 +125,7 @@ export function mountWorkspaceBadges(
     const state = connecting?.has(target.alias) === true
       ? 'connecting'
       : connected?.has(target.alias) === true ? 'connected' : 'disconnected'
-    const existing = row.querySelector<HTMLElement>('[data-ssh-badge]')
-    if (existing !== null) {
+    if (existing !== null && existing.isConnected) {
       // Update the existing badge in place so a connect-state flip (spinner ⇄
       // cloud) is visible without remounting the whole row.
       if (existing.dataset.sshBadge !== state) {
@@ -123,7 +133,9 @@ export function mountWorkspaceBadges(
       }
       return
     }
-    titleEl.appendChild(makeBadge(target.alias, target.remoteRoot, state))
+    const badge = makeBadge(target.alias, target.remoteRoot, state)
+    if (projectText !== null) projectText.after(badge)
+    else titleEl.appendChild(badge)
   }
 
   /** Rewrite the shell's hover card: its `hoverPath` row prints the workspace
