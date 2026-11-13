@@ -29,6 +29,7 @@ import { DirectoryFlow } from './directory-flow.tsx'
 import { connectHost, subscribeConnectState } from './connect-host.ts'
 import { mountWorkspaceBadges } from './workspace-badges.ts'
 import { mountWorkspaceFilesPathRemap } from './workspace-files-path.ts'
+import { joinShellWorkspaces, titleDrift, type ShellWorkspace } from './workspace-title-sync.ts'
 import { makeAnchorAliasResolver, mountSessionConnectGate, type SessionGateList } from './session-connect-gate.ts'
 import { mountSshOperations } from './ssh/apply.ts'
 import { createSessionSshTargetSource } from './ssh/session-target.ts'
@@ -79,6 +80,26 @@ function resolveDirectoryPicker(ctx: ClientContext): { pickDirectory: () => Prom
   return undefined
 }
 
+/** The shell's client `workspaces` service (dsh-api-workspace-controller). */
+interface ShellWorkspacesService {
+  getSnapshot?: () => { items?: unknown } | undefined
+  subscribe?: (listener: () => void) => () => void
+}
+
+/** The shell's client `workspaces` service, when this dsh line provides it. */
+function shellWorkspacesService(ctx: ClientContext): ShellWorkspacesService | undefined {
+  const get = (ctx as unknown as { get?: (key: string) => unknown }).get
+  if (typeof get !== 'function') return undefined
+  const service = get.call(ctx, 'workspaces')
+  return typeof service === 'object' && service !== null ? (service as ShellWorkspacesService) : undefined
+}
+
+/** The shell's workspace rows (id/title/path), or [] when unavailable. */
+function shellWorkspaceItems(service: ShellWorkspacesService | undefined): ShellWorkspace[] {
+  const snapshot = service?.getSnapshot?.()
+  const items = (snapshot as { items?: unknown } | undefined)?.items
+  return Array.isArray(items) ? (items as ShellWorkspace[]) : []
+}
 /** Apply the browser half. */
 export function apply(ctx: ClientContext): void {
   const api = new WorkspaceApi()
@@ -180,9 +201,36 @@ export function apply(ctx: ClientContext): void {
     let filesPathDispose: (() => void) | undefined
     let connectedAliases: ReadonlySet<string> = new Set<string>()
     let connectingAliases: ReadonlySet<string> = new Set<string>()
+    // The shell's own workspace list (dsh-api-workspace-controller). It is the
+    // only place that knows the shell workspace id (the row's `data-row-key`) and
+    // the title the user just renamed natively.
+    const shellService = shellWorkspacesService(ctx)
+    const adoptingTitles = new Set<string>()
+    /** Adopt a native rename back into our record so every surface agrees. */
+    const adoptShellTitles = (): void => {
+      try {
+        for (const change of titleDrift(manager.getSnapshot().workspaces, shellWorkspaceItems(shellService))) {
+          if (adoptingTitles.has(change.id)) continue
+          adoptingTitles.add(change.id)
+          void api.renameWorkspace(change.id, change.title)
+            .catch(() => undefined)
+            .finally(() => { adoptingTitles.delete(change.id) })
+        }
+      } catch {
+        // The shell service is optional; a missing one only means "no sync".
+      }
+    }
     const refreshBadges = (): void => {
       try {
         const workspaces = manager.getSnapshot().workspaces
+        // Join the shell's workspaces to our records by anchor path: the shell
+        // row's `data-row-key` carries the shell workspace id, which survives a
+        // native rename, so the badge no longer depends on the title matching.
+        const shellWorkspaces = shellWorkspaceItems(shellService)
+        const byWorkspaceId = new Map<string, { alias: string; remoteRoot: string }>()
+        for (const [shellId, record] of joinShellWorkspaces(workspaces, shellWorkspaces)) {
+          byWorkspaceId.set(shellId, { alias: record.alias, remoteRoot: record.remoteRoot })
+        }
         badgesDispose?.()
         badgesDispose = mountWorkspaceBadges(workspaces.map((workspace) => ({
           id: workspace.id,
@@ -190,7 +238,7 @@ export function apply(ctx: ClientContext): void {
           alias: workspace.alias,
           remoteRoot: workspace.remoteRoot,
           anchorPath: workspace.anchorPath,
-        })), connectedAliases, connectingAliases)
+        })), connectedAliases, connectingAliases, byWorkspaceId)
         // The native file panel's address (anchor) is rewritten to the remote
         // root by the same workspace state (P1/UX-1).
         filesPathDispose?.()
@@ -204,8 +252,13 @@ export function apply(ctx: ClientContext): void {
     }
     disposers.push(() => { badgesDispose?.(); filesPathDispose?.() })
     // Same-source sync: no independent workspace fetch — the manager emits on
-    // its 3s poll and on create/remove/rename.
-    disposers.push(manager.subscribe(() => { refreshBadges() }))
+    // its 3s poll and on create/remove/rename. A native sidebar rename arrives
+    // through the shell service instead, so its subscription repairs the title
+    // (and therefore every title-keyed surface) as well.
+    disposers.push(manager.subscribe(() => { adoptShellTitles(); refreshBadges() }))
+    const shellSubscription = shellService?.subscribe?.(() => { adoptShellTitles(); refreshBadges() })
+    if (shellSubscription !== undefined) disposers.push(shellSubscription)
+    adoptShellTitles()
 
     // Connecting-state feed: while `connectHost` probes/prompts an alias the
     // sidebar badge shows the spinner; on settle (success or failure) it flips

@@ -14,6 +14,10 @@
   | `probeTimeoutMs` | `20000` | 连通性探针（`true`）预算：GUI 连接闸门与 `POST /api/dsh-ssh/test` |
 
   两者都钳制在 **5s–10min**：`0` / `NaN` / 负数不会把超时关掉（那会让连接永久挂起），超大值也不会把一台死主机钉住几小时。新增 `tests/connection-timeouts.test.ts` 覆盖默认值、自定义值与钳制行为。
+- **DSH 原生菜单重命名后，插件记录与侧边栏标题不一致、徽章落空**。侧边栏的 `workspaces.rename` 只改 shell 自己的 workspace store，我们的 SSH 记录仍是旧标题，所有按标题匹配的界面（最明显是 SSH 徽章）就失效。两处一起修：
+  - **徽章改按稳定 id 匹配**：DSH 给每个工作区行打了 `data-row-key="workspace:<workspaceId>"`，该 id 不随改名变化；徽章优先按它匹配，标题匹配只作兜底。
+  - **原生改名回同步到插件记录**：客户端订阅 shell 的 `workspaces` 服务，按「锚点路径」把 shell 工作区与插件记录 join 起来，标题不一致时调用插件的重命名接口采纳新标题（空标题不采纳，避免把记录改成「未命名」）。
+  新增 `tests/client/workspace-title-sync.test.ts`（join 的大小写/斜杠容错、漂移检测、空标题忽略）与徽章测试的「原生改名后仍显示」用例。
 - **工作区名称较长时看不到 SSH 徽章**。DSH 0.2.1 的行结构是 `projectRow > [slot, slot, projectText > title, rowActions]`；徽章原先被追加到 `title` 文本 span **内部**，名字一长就被挤出行外、被侧边栏的 `overflow` 裁掉——看起来像「这个工作区没有徽章」。现在徽章作为 `projectText` 的**兄弟节点**插在行内（`flex` 子项），长名称只会让标题截断，徽章保持可见；同时会清理旧版本留在 `title` 内的徽章（否则读到的标题会混入徽章文字，导致匹配失败）。新增 `tests/client/workspace-badge-placement.test.ts`（jsdom）覆盖长名称与旧布局自愈。
 ## v0.2.8 — 2026-11-04
 

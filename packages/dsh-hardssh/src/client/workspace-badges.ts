@@ -75,12 +75,16 @@ function ensureSpinnerStyle(): void {
  * @param workspaces - the SSH workspace records (id/title/alias/remoteRoot).
  * @param connected - aliases with a live pooled connection (badge coloring).
  * @param connecting - aliases currently probing/connecting (spinner badge).
+ * @param byWorkspaceId - shell workspace id → the SSH record owning it. A native
+ *   rename changes the row's title but not its `data-row-key`, so matching by id
+ *   keeps the badge through a rename (the title lookup stays as a fallback).
  * @returns disposer.
  */
 export function mountWorkspaceBadges(
   workspaces: Array<{ id: string; title: string; alias: string; remoteRoot: string; anchorPath?: string }>,
   connected?: ReadonlySet<string>,
   connecting?: ReadonlySet<string>,
+  byWorkspaceId?: ReadonlyMap<string, { alias: string; remoteRoot: string }>,
 ): () => void {
   const byTitle = new Map<string, { alias: string; remoteRoot: string }>()
   for (const workspace of workspaces) byTitle.set(workspace.title, workspace)
@@ -113,8 +117,12 @@ export function mountWorkspaceBadges(
     // BEFORE reading the title text, or the lookup below would see the badge's
     // own label and never match the workspace.
     if (existing !== null && titleEl.contains(existing)) existing.remove()
+    // The shell tags every workspace row with `data-row-key="workspace:<id>"`;
+    // that id survives a rename, so prefer it over the (renamable) title.
+    const rowKey = row.getAttribute('data-row-key') ?? ''
+    const rowWorkspaceId = rowKey.startsWith('workspace:') ? rowKey.slice('workspace:'.length) : undefined
     const title = titleEl.textContent?.trim() ?? ''
-    const target = byTitle.get(title)
+    const target = (rowWorkspaceId === undefined ? undefined : byWorkspaceId?.get(rowWorkspaceId)) ?? byTitle.get(title)
     if (target === undefined) return
     // Heal a title this plugin used to set, and drop a shell-provided <title>
     // whose text is the local anchor (that would be a native duplicate of the

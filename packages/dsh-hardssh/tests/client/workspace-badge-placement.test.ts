@@ -71,3 +71,19 @@ describe('workspace badge placement', () => {
     expect(titleEl.textContent).toBe(title)
   })
 })
+  it('keeps the badge after a native rename (matched by data-row-key)', () => {
+    // The shell renamed the workspace; the row title no longer matches our record,
+    // but the row key still carries the shell workspace id.
+    const { row: project, projectText } = row('renamed-natively')
+    project.setAttribute('data-row-key', 'workspace:w1')
+    disposers.push(mountWorkspaceBadges(
+      [{ id: 'r1', title: 'zebrafish_westlake_new', alias: 'loop_new', remoteRoot: '/data/model', anchorPath: 'C:\\anchor' }],
+      undefined,
+      undefined,
+      new Map([['w1', { alias: 'loop_new', remoteRoot: '/data/model' }]]),
+    ))
+
+    const badge = project.querySelector<HTMLElement>('[data-ssh-badge]')
+    expect(badge).not.toBeNull()
+    expect(badge!.previousElementSibling).toBe(projectText)
+  })
