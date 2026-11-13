@@ -44,6 +44,7 @@
 - **认证被拒立刻重弹并给出原因**：凭据已输入后服务器仍拒绝时，重新打开密码对话框并携带具体 SSH 错误，而不是落到非交互失败对话框。
 - **连接中可见**：连接期间左侧工作区徽章显示旋转指示器，状态翻转原地替换。
 - **首次连接超时可调（0.2.9）**：握手/连接阶段默认 **30s**、连通性探针默认 **20s**（旧值为 15s / 10s，跨境或实验室主机的首次连接常被误判超时）；可用插件配置 `connectTimeoutMs` / `probeTimeoutMs` 调整，取值钳制在 5s–10min。
+- **空闲不自动断连（0.2.9）**：连接默认**永不因空闲回收**（keepalive 每 15s 维持链路），避免久不操作后内存里的会话密码被丢弃、下一次运行报 `NeedsPasswordError` 并吞掉消息；需要控制连接数时用插件配置 `idleTimeoutMs`（1min–24h，`0`/非正数=永不）。
 - **工作区文件面板显示远端地址**：面板根锚在本机（会话 cwd），内容已经是远端、地址与面包屑也重写为远端根，避免「地址是本机、内容是服务器」的错觉。
 - **终端 shell 解析已从根上兜底（0.2.8）**：DSH 终端控制器先 `resolveExecutable()` 再 spawn；Windows Store 版 PowerShell 的 App Execution Alias 会让这一步直接抛 `is not an executable file`。插件的解析层会把 `WindowsApps` 别名换成真实可执行文件，解析失败且命令是 shell 名时回退 `Program Files\PowerShell\7\pwsh.exe` → `System32\WindowsPowerShell\v1.0\powershell.exe` → `ComSpec`；非 shell 命令不受影响。
 - **终端诊断日志**：`~/.dsh/dsh-hardssh-terminal.log` 记录每次侧边栏终端 spawn 的 cwd、清洗前后 argv 与 local/remote 路由，便于定位终端问题（只记这些，不记环境变量与凭据）。

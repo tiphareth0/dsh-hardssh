@@ -190,3 +190,40 @@ describe('ConnectionPool retirement notification', () => {
     pool.invalidateAll()
   })
 })
+/**
+ * Idle retirement is what silently drops the in-memory session password: the
+ * next run then fails with NeedsPasswordError after a period of inactivity. The
+ * default is therefore "never" (`idleTimeoutMs: 0`), and a positive value must
+ * still retire (the feature has to keep working when configured).
+ */
+describe('ConnectionPool idle retirement', () => {
+  it('never retires for idleness when idleTimeoutMs is 0', async () => {
+    vi.useFakeTimers()
+    try {
+      const onRetire = vi.fn()
+      const pool = new ConnectionPool({ idleTimeoutMs: 0, connect: async () => ({ client: fakeClient(), hops: [] }), onRetire })
+      const lease = await pool.acquire('idle-host', { kind: 'operation' })
+      lease.release()
+      await vi.advanceTimersByTimeAsync(2 * 60 * 60_000)
+      expect(onRetire).not.toHaveBeenCalled()
+      pool.invalidateAll()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('still retires after the configured idle budget', async () => {
+    vi.useFakeTimers()
+    try {
+      const onRetire = vi.fn()
+      const pool = new ConnectionPool({ idleTimeoutMs: 60_000, connect: async () => ({ client: fakeClient(), hops: [] }), onRetire })
+      const lease = await pool.acquire('idle-host', { kind: 'operation' })
+      lease.release()
+      await vi.advanceTimersByTimeAsync(2 * 60_000)
+      expect(onRetire).toHaveBeenCalledWith('idle-host')
+      pool.invalidateAll()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})

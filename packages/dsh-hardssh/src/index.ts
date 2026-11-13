@@ -118,6 +118,17 @@ export interface Config {
    * decides whether the workspace is usable.
    */
   probeTimeoutMs: number
+  /**
+   * Close a pooled connection after this many idle milliseconds. `0` (default)
+   * keeps it open.
+   *
+   * The old default (30 min) retired the transport while the user was away, and
+   * retirement discards the in-memory session password — the next run then died
+   * with `NeedsPasswordError` mid-message. Keepalive pings already hold the
+   * transport, so "never" is the safe default; set a value (1 min – 24 h) only
+   * when many hosts must not stay connected.
+   */
+  idleTimeoutMs: number
 }
 
 export const Config: z<Config> = z.object({
@@ -129,6 +140,8 @@ export const Config: z<Config> = z.object({
   connectTimeoutMs: z.number().default(30_000),
   /** Connectivity-probe (`true`) budget used by the connection gate and /test. */
   probeTimeoutMs: z.number().default(20_000),
+  /** Close an idle pooled connection after this many ms; 0 = keep it open. */
+  idleTimeoutMs: z.number().default(0),
 })
 
 /**
@@ -170,6 +183,27 @@ export function resolveConnectionTimeouts(config?: { connectTimeoutMs?: unknown;
     connectTimeoutMs: clamp(config?.connectTimeoutMs, 30_000),
     probeTimeoutMs: clamp(config?.probeTimeoutMs, 20_000),
   }
+}
+
+/** Idle-close bounds: 1 min … 24 h; `0` keeps a connection open. */
+const IDLE_FLOOR_MS = 60_000
+const IDLE_CEILING_MS = 24 * 60 * 60_000
+
+/**
+ * Resolve the idle-close budget.
+ *
+ * `0` (the default) keeps pooled connections open: keepalive pings hold the
+ * transport, and retiring it discards the in-memory session password, which made
+ * a later run fail with `NeedsPasswordError` after a period of inactivity. Any
+ * non-positive or invalid value also means "never"; a real value is clamped to
+ * 1 min – 24 h so it cannot disable cleanup by accident or pin a dead host.
+ * @param config - the plugin config slice (any shape; unvalidated input).
+ * @returns the idle-close budget in milliseconds (`0` = never).
+ */
+export function resolveIdleTimeout(config?: { idleTimeoutMs?: unknown }): number {
+  const value = config?.idleTimeoutMs
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return 0
+  return Math.min(Math.max(Math.trunc(value), IDLE_FLOOR_MS), IDLE_CEILING_MS)
 }
 
 /** Read the `secretStorage` field out of a resolved settings section. */
@@ -503,6 +537,7 @@ export function apply(ctx: Context, config?: Config): void {
     // is visible to anything running as this user, so it is not a default.
     vaultAutoUnlock: config?.vaultAutoUnlock === 'env' ? 'env' as const : 'off' as const,
     ...resolveConnectionTimeouts(config),
+    idleTimeoutMs: resolveIdleTimeout(config),
   }
 
   // Single provider ownership is established BEFORE store/engine/core
@@ -535,6 +570,7 @@ export function apply(ctx: Context, config?: Config): void {
   const engine = new SshEngine(hosts, {
     connectTimeoutMs: resolved.connectTimeoutMs,
     probeTimeoutMs: resolved.probeTimeoutMs,
+    idleTimeoutMs: resolved.idleTimeoutMs,
   }, {
     knownHosts,
     resolveSecrets: (entry) => secureHosts.resolveAuth(entry),

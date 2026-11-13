@@ -5,7 +5,7 @@
  * or pin a dead host for hours.
  */
 import { describe, expect, it } from 'vitest'
-import { resolveConnectionTimeouts } from '../src/index.ts'
+import { resolveConnectionTimeouts, resolveIdleTimeout } from '../src/index.ts'
 import { DEFAULTS } from '../src/ssh/connection/manager.ts'
 
 describe('resolveConnectionTimeouts', () => {
@@ -15,6 +15,8 @@ describe('resolveConnectionTimeouts', () => {
     // The engine defaults agree with the plugin defaults.
     expect(DEFAULTS.connectTimeoutMs).toBe(30_000)
     expect(DEFAULTS.probeTimeoutMs).toBe(20_000)
+    // Idle close is OFF by default: retiring a transport drops the session password.
+    expect(DEFAULTS.idleTimeoutMs).toBe(0)
   })
 
   it('honours configured values', () => {
@@ -31,5 +33,21 @@ describe('resolveConnectionTimeouts', () => {
       .toEqual({ connectTimeoutMs: 10 * 60_000, probeTimeoutMs: 20_000 })
     expect(resolveConnectionTimeouts({ connectTimeoutMs: '30000', probeTimeoutMs: undefined }))
       .toEqual({ connectTimeoutMs: 30_000, probeTimeoutMs: 20_000 })
+  })
+})
+describe('resolveIdleTimeout', () => {
+  it('keeps connections open by default (0 = never)', () => {
+    expect(resolveIdleTimeout()).toBe(0)
+    expect(resolveIdleTimeout({})).toBe(0)
+    expect(resolveIdleTimeout({ idleTimeoutMs: 0 })).toBe(0)
+    expect(resolveIdleTimeout({ idleTimeoutMs: Number.NaN })).toBe(0)
+    expect(resolveIdleTimeout({ idleTimeoutMs: -5 })).toBe(0)
+    expect(resolveIdleTimeout({ idleTimeoutMs: '60000' })).toBe(0)
+  })
+
+  it('clamps a configured budget to 1 min – 24 h', () => {
+    expect(resolveIdleTimeout({ idleTimeoutMs: 1_000 })).toBe(60_000)
+    expect(resolveIdleTimeout({ idleTimeoutMs: 30 * 60_000 })).toBe(30 * 60_000)
+    expect(resolveIdleTimeout({ idleTimeoutMs: 48 * 60 * 60_000 })).toBe(24 * 60 * 60_000)
   })
 })

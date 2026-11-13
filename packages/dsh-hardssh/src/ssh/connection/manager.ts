@@ -33,7 +33,12 @@ export interface SshInvalidateOptions {
 
 /** Default engine knobs. */
 export interface EngineOptions {
-  /** Connections idle longer than this are closed (ms). */
+  /**
+   * Close a connection after this many idle milliseconds. `0` (default) keeps
+   * it open: the keepalive pings already hold the transport, and retiring it
+   * discards the in-memory session password, so a later run fails with
+   * NeedsPasswordError for no visible reason.
+   */
   idleTimeoutMs?: number
   /** SSH handshake timeout (ms). First connections to a far host can exceed the old 15s. */
   connectTimeoutMs?: number
@@ -114,7 +119,7 @@ export class NeedsPasswordError extends Error {
 }
 
 export const DEFAULTS: Required<Omit<EngineOptions, 'hostKeyAlgorithms'>> & Pick<EngineOptions, 'hostKeyAlgorithms'> = {
-  idleTimeoutMs: 30 * 60_000,
+  idleTimeoutMs: 0,
   connectTimeoutMs: 30_000,
   probeTimeoutMs: 20_000,
   keepaliveIntervalMs: 15_000,

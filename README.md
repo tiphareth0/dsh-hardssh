@@ -188,6 +188,7 @@ NPM 包页面：https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 | `vaultAutoUnlock` | enum | `off` | 是否允许 Vault 在插件加载时用 `DSH_CREDENTIAL_PASSWORD` 环境变量**自动解锁**：`off`（默认，需手动输入主密码）或 `env`（无人值守场景显式开启）。该变量对同用户的任何进程可见，因此默认关闭。仅 `secretStorage: vault` 时相关。 |
 | `connectTimeoutMs` | number | `30000` | SSH 握手/连接阶段的总预算（毫秒）。首次连接远端（DNS + TCP + KEX + 认证 + ProxyJump）很容易超过旧的 15s，表现为「首次连接超时」；调大可适配慢链路。范围钳制在 5s–10min。 |
 | `probeTimeoutMs` | number | `20000` | 连通性探针（`true`）预算（毫秒）：GUI 的连接闸门与 `POST /api/dsh-ssh/test` 用它。高延迟主机上这一步决定工作区是否可用。范围钳制在 5s–10min。 |
+| `idleTimeoutMs` | number | `0` | 连接空闲多久后回收（毫秒）。**`0` = 永不回收（默认）**：keepalive 每 15s 维持链路，而回收连接会丢弃内存里的会话密码，导致久不操作后的下一次运行报 `NeedsPasswordError`（还会吞掉当时发出的消息）。设为正值时钳制在 1min–24h；非正数/`NaN` 一律按“永不”处理。 |
 
 示例（`cordis.patch.yml`）：
 

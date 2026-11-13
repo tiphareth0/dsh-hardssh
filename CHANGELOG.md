@@ -14,6 +14,7 @@
   | `probeTimeoutMs` | `20000` | 连通性探针（`true`）预算：GUI 连接闸门与 `POST /api/dsh-ssh/test` |
 
   两者都钳制在 **5s–10min**：`0` / `NaN` / 负数不会把超时关掉（那会让连接永久挂起），超大值也不会把一台死主机钉住几小时。新增 `tests/connection-timeouts.test.ts` 覆盖默认值、自定义值与钳制行为。
+- **一段时间不交互就「断联」，随后报 `NeedsPasswordError` 并吞掉正在发送的消息**。旧的 `idleTimeoutMs` 默认 30 分钟；空闲回收连接时 `onRetire` 会清掉内存里的会话密码，于是下一次操作要求重新输入密码，而当时发出的消息随这次失败一起被丢掉。现在默认 **`idleTimeoutMs: 0`（永不因空闲回收）**：keepalive 每 15s 维持链路，密码在进程存活期内一直有效；同时新增插件配置 `idleTimeoutMs`，设为正值时钳制在 **1min–24h**，非正数 / `NaN` 一律按「永不」处理。新增连接池测试：`0` 时两小时不回收，配置 `60s` 时仍按预期回收。
 - **DSH 原生菜单重命名后，插件记录与侧边栏标题不一致、徽章落空**。侧边栏的 `workspaces.rename` 只改 shell 自己的 workspace store，我们的 SSH 记录仍是旧标题，所有按标题匹配的界面（最明显是 SSH 徽章）就失效。两处一起修：
   - **徽章改按稳定 id 匹配**：DSH 给每个工作区行打了 `data-row-key="workspace:<workspaceId>"`，该 id 不随改名变化；徽章优先按它匹配，标题匹配只作兜底。
   - **原生改名回同步到插件记录**：客户端订阅 shell 的 `workspaces` 服务，按「锚点路径」把 shell 工作区与插件记录 join 起来，标题不一致时调用插件的重命名接口采纳新标题（空标题不采纳，避免把记录改成「未命名」）。

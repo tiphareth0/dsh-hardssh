@@ -310,10 +310,15 @@ export class ConnectionPool implements SshConnectionService {
   }
 
   private sweep(): void {
-    const cutoff = Date.now() - this.options.idleTimeoutMs
+    // `idleTimeoutMs <= 0` means "never retire for idleness" — the keepalive
+    // pings already keep the transport alive, and retiring it would drop the
+    // in-memory session password (the user then sees NeedsPasswordError in the
+    // middle of a later run). Draining/broken records still go.
+    const idleEnabled = this.options.idleTimeoutMs > 0
+    const cutoff = idleEnabled ? Date.now() - this.options.idleTimeoutMs : 0
 
     for (const [alias, record] of this.records) {
-      if (record.leases.size === 0 && (record.draining || record.idleAt < cutoff)) {
+      if (record.leases.size === 0 && (record.draining || (idleEnabled && record.idleAt < cutoff))) {
         this.disposeRecord(alias, record)
       }
     }

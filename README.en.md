@@ -278,6 +278,7 @@ npm package page: https://www.npmjs.com/package/@tiphareth/dsh-hardssh
 | `vaultAutoUnlock` | enum | `off` | Whether the vault may auto-unlock from the `DSH_CREDENTIAL_PASSWORD` environment variable at plugin load: `off` (default, master password entered by hand) or `env` (explicit opt-in for unattended setups). That variable is visible to anything running as the same user, hence off by default. Only meaningful with `secretStorage: vault`. |
 | `connectTimeoutMs` | number | `30000` | Total budget for the SSH handshake/connect phase in milliseconds. A first connection to a far host (DNS + TCP + KEX + auth + ProxyJump) can easily exceed the old 15s and surface as a spurious "timed out on first connect"; raise it for slow links. Clamped to 5s–10min. |
 | `probeTimeoutMs` | number | `20000` | Connectivity-probe (`true`) budget in milliseconds, used by the GUI connection gate and `POST /api/dsh-ssh/test`. On a high-latency host this step decides whether the workspace is usable. Clamped to 5s–10min. |
+| `idleTimeoutMs` | number | `0` | Retire a pooled connection after this many idle milliseconds. **`0` = never (default)**: keepalive pings hold the transport, and retiring it discards the in-memory session password — after a period of inactivity the next run then fails with `NeedsPasswordError` (and swallows the message being sent). A positive value is clamped to 1 min–24 h; non-positive or `NaN` means "never". |
 
 Example (`cordis.patch.yml`):
 
