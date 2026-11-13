@@ -112,7 +112,7 @@ export class NeedsPasswordError extends Error {
   /** Which secret the connection needs: 'password' or 'passphrase'. */
   readonly secret: 'password' | 'passphrase'
   constructor(alias: string, secret: 'password' | 'passphrase') {
-    super(`SSH 连接 '${alias}' 需要${secret === 'password' ? '密码' : '密钥口令'}，请先输入一次（在该连接存活期内复用，连接池回收后需重新输入；不会保存）`)
+    super(`SSH 连接 '${alias}' 需要${secret === 'password' ? '密码' : '密钥口令'}，请先输入一次（在本次运行内复用、只存于内存不落盘；进程退出、认证被拒或主机配置变更后需重新输入）`)
     this.name = 'NeedsPasswordError'
     this.secret = secret
   }
@@ -546,10 +546,13 @@ export class ConnectionManager {
           new Error('SSH connection disposed while SFTP was active'),
         )
       },
-      // The session password lives exactly as long as the connection it was
-      // entered for: retiring the transport drops it, so an idle sweep cannot
-      // leave the credential usable for the rest of the process.
-      onRetire: (alias) => { this.forgetSessionPassword(alias) },
+      // A session password is only dead after an EXPLICIT invalidation (host
+      // edited/deleted, user disconnect). A transport that merely died — sleep,
+      // Wi-Fi drop, keepalive timeout — keeps the secret, or every wake-up would
+      // demand the password again and fail the next run mid-message.
+      onRetire: (alias, reason) => {
+        if (reason === 'invalidate') this.forgetSessionPassword(alias)
+      },
     })
   }
 

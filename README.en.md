@@ -106,8 +106,10 @@ workspace**; there is no host dropdown:
 ### 5. VSCode Remote-SSH style secure defaults
 
 - Passwords / passphrases are **never persisted** by default (`secretStorage: none`):
-  entered once and reused **for the lifetime of that connection** (an idle pool
-  recycle asks again);
+  entered once and reused **for the rest of this process** (memory only). Idle
+  connections are no longer recycled, and a transport that dies from sleep or a
+  network blip reconnects silently with the same secret; only a process exit, a
+  rejected credential (auth failure) or a host-config edit asks again;
 - opt-in `vault` mode (AES-256-GCM + scrypt) for unattended agents, stored at
   `~/.dsh/ssh-secrets/dsh-ssh-vault.json`. That directory **is inside `~/.dsh`**
   (which the fs seam declares a local root), so the protection is an explicit
@@ -480,8 +482,11 @@ controller a config entry in the profile's `cordis.patch.yml`:
 > the chosen world).
 
 **Prompted to enter a password / "credential required"** — passwords are never saved
-by default: connect and remote browse ask once per session; a process restart asks
-again.
+by default: connect and remote browse ask once, and the secret then stays in memory
+**for the rest of this process**. Connections are no longer recycled when idle
+(`idleTimeoutMs` defaults to `0`), so a sleep or a network blip reconnects silently
+with the same secret; only a process restart, a rejected credential, or a host-config
+edit asks again.
 
 **Host key changed / possible MITM** — the server was reinstalled or rotated keys:
 opening an SSH-workspace session on that server raises the "key changed" dialog;

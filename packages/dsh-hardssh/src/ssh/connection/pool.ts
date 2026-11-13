@@ -27,6 +27,15 @@ export interface SshConnectionService {
   generation(alias: string): number
 }
 
+/** Why a pooled transport was retired. */
+export type RetireReason =
+  /** An explicit invalidation (host edited/deleted, user disconnect, shutdown). */
+  | 'invalidate'
+  /** The transport died on its own (peer close, keepalive timeout, sleep/network). */
+  | 'closed'
+  /** The idle sweep retired it (only when `idleTimeoutMs > 0`). */
+  | 'idle'
+
 export interface ConnectionPoolOptions {
   idleTimeoutMs: number
   /** Open a fresh SSH connection (with jump chain) for one alias. */
@@ -34,12 +43,14 @@ export interface ConnectionPoolOptions {
   /** Called when a pooled connection is torn down (e.g. drop SFTP cache). */
   onDispose?(client: Client): void
   /**
-   * Called once when an alias's pooled transport is retired (idle sweep,
-   * invalidation, shutdown). Session-scoped credentials are tied to the pooled
-   * connection's lifetime, so this is where they are dropped — otherwise a
-   * secret entered for one connection would outlive it for the whole process.
+   * Called once when an alias's pooled transport is retired.
+   *
+   * The reason matters: a session credential is only dead after an EXPLICIT
+   * invalidation (the host may now need a different password). A transport that
+   * merely died — sleep, Wi-Fi drop, keepalive timeout — must not discard it, or
+   * every wake-up would demand the password again.
    */
-  onRetire?(alias: string): void
+  onRetire?(alias: string, reason: RetireReason): void
 }
 
 interface PendingConnect {
@@ -127,12 +138,10 @@ export class ConnectionPool implements SshConnectionService {
 
     const record = this.records.get(alias)
     if (record === undefined) {
-      // No pooled transport to tear down — but the alias's session credential
-      // is still dead (a config change may have replaced the host, or the
-      // connection was already reaped). Notifying here is what keeps the
-      // "secret lives for the connection's lifetime" promise true for an alias
-      // that is currently disconnected; returning early left it process-lifetime.
-      this.options.onRetire?.(alias)
+      // No pooled transport to tear down, but this is still an EXPLICIT
+      // invalidation: a host edit/delete may have replaced the credential, so
+      // the owner is told (and drops the session secret).
+      this.options.onRetire?.(alias, 'invalidate')
       return
     }
 
@@ -145,11 +154,11 @@ export class ConnectionPool implements SshConnectionService {
     record.draining = true
 
     if (options?.mode === 'force') {
-      this.closeTransport(record)
+      this.closeTransport(record, 'invalidate')
     }
 
     if (record.leases.size === 0) {
-      this.disposeRecord(alias, record)
+      this.disposeRecord(alias, record, 'invalidate')
     }
   }
 
@@ -243,7 +252,7 @@ export class ConnectionPool implements SshConnectionService {
       }
 
       if (record.leases.size === 0) {
-        this.disposeRecord(alias, record)
+        this.disposeRecord(alias, record, 'closed')
       }
     }
 
@@ -261,7 +270,7 @@ export class ConnectionPool implements SshConnectionService {
     // An invalidate may land while the handshake is in flight; a stale
     // generation connection must not re-enter the pool afterwards.
     if ((this.generations.get(alias) ?? 0) !== generation) {
-      this.closeTransport(record)
+      this.closeTransport(record, 'invalidate')
       throw new Error(`SSH connection '${alias}' was invalidated while connecting`)
     }
 
@@ -301,7 +310,9 @@ export class ConnectionPool implements SshConnectionService {
         record.idleAt = Date.now()
 
         if (record.leases.size === 0 && (record.draining || record.broken)) {
-          this.disposeRecord(alias, record)
+          // `broken` means the transport died on its own (peer close, keepalive
+          // timeout, sleep); `draining` means an explicit invalidation.
+          this.disposeRecord(alias, record, record.broken ? 'closed' : 'invalidate')
         }
       },
     }
@@ -319,24 +330,24 @@ export class ConnectionPool implements SshConnectionService {
 
     for (const [alias, record] of this.records) {
       if (record.leases.size === 0 && (record.draining || (idleEnabled && record.idleAt < cutoff))) {
-        this.disposeRecord(alias, record)
+        this.disposeRecord(alias, record, record.draining ? 'invalidate' : 'idle')
       }
     }
   }
 
-  private disposeRecord(alias: string, record: PoolRecord): void {
+  private disposeRecord(alias: string, record: PoolRecord, reason: RetireReason): void {
     if (this.records.get(alias) === record) {
       this.records.delete(alias)
     }
 
-    this.closeTransport(record)
+    this.closeTransport(record, reason)
   }
 
-  private closeTransport(record: PoolRecord): void {
+  private closeTransport(record: PoolRecord, reason: RetireReason): void {
     if (record.closed) return
     record.closed = true
 
-    this.options.onRetire?.(record.alias)
+    this.options.onRetire?.(record.alias, reason)
     this.options.onDispose?.(record.client)
 
     try {

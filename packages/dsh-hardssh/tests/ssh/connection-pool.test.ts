@@ -160,19 +160,19 @@ describe('ConnectionPool retirement notification', () => {
     expect(onRetire).not.toHaveBeenCalled()
     lease.release()
     expect(onRetire).toHaveBeenCalledTimes(1)
-    expect(onRetire).toHaveBeenCalledWith('drain-host')
+    expect(onRetire).toHaveBeenCalledWith('drain-host', 'invalidate')
 
     // Force: immediate retirement.
     await pool.acquire('force-host', { kind: 'operation' })
     pool.invalidate('force-host', { mode: 'force' })
     expect(onRetire).toHaveBeenCalledTimes(2)
-    expect(onRetire).toHaveBeenLastCalledWith('force-host')
+    expect(onRetire).toHaveBeenLastCalledWith('force-host', 'invalidate')
 
     // Shutdown retires whatever is left, exactly once each.
     await pool.acquire('shutdown-host', { kind: 'operation' })
     pool.invalidateAll()
     expect(onRetire).toHaveBeenCalledTimes(3)
-    expect(onRetire).toHaveBeenLastCalledWith('shutdown-host')
+    expect(onRetire).toHaveBeenLastCalledWith('shutdown-host', 'invalidate')
   })
 
   it('reports retirement for an alias with no live transport (its secret is still dead)', async () => {
@@ -186,7 +186,7 @@ describe('ConnectionPool retirement notification', () => {
     })
     onRetire.mockClear()
     pool.invalidate('never-connected')
-    expect(onRetire).toHaveBeenCalledWith('never-connected')
+    expect(onRetire).toHaveBeenCalledWith('never-connected', 'invalidate')
     pool.invalidateAll()
   })
 })
@@ -220,10 +220,35 @@ describe('ConnectionPool idle retirement', () => {
       const lease = await pool.acquire('idle-host', { kind: 'operation' })
       lease.release()
       await vi.advanceTimersByTimeAsync(2 * 60_000)
-      expect(onRetire).toHaveBeenCalledWith('idle-host')
+      expect(onRetire).toHaveBeenCalledWith('idle-host', 'idle')
       pool.invalidateAll()
     } finally {
       vi.useRealTimers()
     }
+  })
+})
+/**
+ * The retire REASON decides whether a session credential is dropped: an explicit
+ * invalidation (host edit/delete) may replace the password, while a transport
+ * that merely died (sleep, Wi-Fi drop, keepalive timeout) must keep it — or every
+ * wake-up would demand the password again.
+ */
+describe('ConnectionPool retire reason', () => {
+  it('reports closed for a dead transport', async () => {
+    const onRetire = vi.fn()
+    const client = fakeClient()
+    const pool = new ConnectionPool({ idleTimeoutMs: 0, connect: async () => ({ client, hops: [] }), onRetire })
+    const lease = await pool.acquire('dead-host', { kind: 'operation' })
+    lease.release()
+    client.emit('close')
+    expect(onRetire).toHaveBeenCalledWith('dead-host', 'closed')
+  })
+
+  it('reports invalidate for an explicit invalidation', async () => {
+    const onRetire = vi.fn()
+    const pool = new ConnectionPool({ idleTimeoutMs: 0, connect: async () => ({ client: fakeClient(), hops: [] }), onRetire })
+    await pool.acquire('edited-host', { kind: 'operation' })
+    pool.invalidate('edited-host', { mode: 'force' })
+    expect(onRetire).toHaveBeenCalledWith('edited-host', 'invalidate')
   })
 })
