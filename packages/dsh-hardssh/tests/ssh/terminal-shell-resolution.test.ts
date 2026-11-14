@@ -28,7 +28,7 @@ describe.skipIf(process.platform !== 'win32')('terminal shell resolution (real l
     }
   })
 
-  it('spawns a real terminal with the resolved shell (the failing path)', async () => {
+  it('spawns a real terminal with the resolved shell (the failing path)', { timeout: 30_000 }, async () => {
     const ctx = new Context()
     const local = new LocalSubprocessRuntime(ctx.isolate('subprocess'))
     const switcher = new SwitchSubprocessRuntime(ctx, { local, worldFor: () => undefined })

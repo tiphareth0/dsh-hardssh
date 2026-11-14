@@ -432,6 +432,23 @@ export function isAuthDenied(error: unknown): boolean {
 }
 
 /**
+ * The client had no live socket when the request was submitted.
+ *
+ * ssh2 throws `Error: Not connected` synchronously from `exec`/`sftp` when the
+ * socket is already gone — after a sleep, a Wi-Fi drop, or a keepalive timeout
+ * that has not been observed yet. NOTHING was sent to the server, so replaying
+ * the operation on a fresh connection is safe even for non-idempotent work, and
+ * it is what turns "connected but every run fails with Not connected" into a
+ * transparent reconnect.
+ * @param error - the failure thrown by the operation.
+ * @returns true only for the no-live-socket class.
+ */
+export function isNotConnectedError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  return /not connected/i.test(message) || /client is not connected/i.test(message)
+}
+
+/**
  * Whether an auth denial may drop the session credential stored for an alias.
  *
  * Only the EXACT credential the failed attempt carried qualifies:
@@ -757,6 +774,12 @@ export class ConnectionManager {
    * - idempotent: fn may be retried until it calls control.markCommitted()
    *   (exec marks this when the server accepted the channel).
    *
+   * A `Not connected` failure is the ONE exception to "never replay": ssh2
+   * throws it synchronously when the socket is already gone, so nothing reached
+   * the server and replaying on a fresh connection is safe. Without it, a
+   * sleeping laptop makes every run fail while the sidebar terminal (its own
+   * transport) still works.
+   *
    * A failed operation retires the transport via lease.markBroken(); the
    * lease is always released before the next acquire attempt.
    */
@@ -871,9 +894,9 @@ export class ConnectionManager {
         const aborted = options.signal?.aborted === true
         if (!aborted) lease.markBroken(error)
 
-        const mayReplay = retryPolicy === 'idempotent'
-          && !committed
+        const mayReplay = !committed
           && attempt < maxAttempts
+          && (retryPolicy === 'idempotent' || isNotConnectedError(error))
         if (!mayReplay) {
           throw error instanceof Error ? error : new Error(String(error))
         }

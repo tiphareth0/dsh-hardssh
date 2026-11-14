@@ -16,7 +16,7 @@ import type { HostPayload } from '../../src/ssh/protocol.ts'
 import { TEST_PASSWORD, TEST_USER, TestSshServer } from './helpers/ssh-server.ts'
 import { KnownHostsStore } from '../../src/ssh/known-hosts.ts'
 import { HostKeyMismatchError, HostKeyUnknownError } from '../../src/ssh/known-hosts.ts'
-import { isAuthDenied } from '../../src/ssh/connection/manager.ts'
+import { isAuthDenied, isNotConnectedError } from '../../src/ssh/connection/manager.ts'
 import { TestSshd } from './helpers/sshd.ts'
 
 let server: TestSshServer
@@ -344,6 +344,22 @@ describe('needs-password gate (deps.resolveSecrets path)', () => {
   })
 })
 
+/**
+ * ssh2 throws `Not connected` synchronously when the socket is already gone
+ * (sleep, Wi-Fi drop, an unobserved keepalive timeout). Nothing reached the
+ * server, so withClient replays the operation on a fresh connection instead of
+ * failing a run that looks "connected" (the terminal uses its own transport).
+ */
+describe('isNotConnectedError', () => {
+  it('matches the no-live-socket class only', () => {
+    expect(isNotConnectedError(new Error('Not connected'))).toBe(true)
+    expect(isNotConnectedError(new Error('client is not connected'))).toBe(true)
+    expect(isNotConnectedError('Not connected')).toBe(true)
+    expect(isNotConnectedError(new Error('All configured authentication methods failed'))).toBe(false)
+    expect(isNotConnectedError(new Error('command timed out after 5000 ms'))).toBe(false)
+    expect(isNotConnectedError(new Error('Channel open failure: administratively prohibited'))).toBe(false)
+  })
+})
 describe('isAuthDenied', () => {
   it('detects credential rejection but never transport / timeout failures', () => {
     expect(isAuthDenied(new Error('All configured authentication methods failed'))).toBe(true)
