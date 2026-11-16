@@ -95,6 +95,12 @@ export interface SshWorkspaceRecord {
   remoteRoot: string
   /** Local anchor directory (host workspace path / session cwd). */
   anchorPath: string
+  /**
+   * The DSH host workspace id this record registered (sidebar row identity).
+   * Stable across renames and independent of the title, so the SSH badge can
+   * match its row by id even when two workspaces share a title.
+   */
+  shellWorkspaceId?: string
   /** When the record was created. */
   createdAt: string
 }

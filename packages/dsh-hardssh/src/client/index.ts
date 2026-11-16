@@ -204,12 +204,28 @@ export function apply(ctx: ClientContext): void {
     // The shell's own workspace list (dsh-api-workspace-controller). It is the
     // only place that knows the shell workspace id (the row's `data-row-key`) and
     // the title the user just renamed natively.
-    const shellService = shellWorkspacesService(ctx)
+    //
+    // Resolved LAZILY: our plugin may mount before the workspace controller
+    // provides the service, and a one-shot lookup at mount time would then stay
+    // undefined forever — which silently disabled both the rename-proof badge and
+    // the native-rename sync.
+    let shellService: ShellWorkspacesService | undefined
+    let shellServiceBound = false
+    const resolveShellService = (): ShellWorkspacesService | undefined => {
+      if (shellService === undefined) shellService = shellWorkspacesService(ctx)
+      if (shellService !== undefined && !shellServiceBound) {
+        shellServiceBound = true
+        const subscription = shellService.subscribe?.(() => { adoptShellTitles(); refreshBadges() })
+        if (subscription !== undefined) disposers.push(subscription)
+      }
+      return shellService
+    }
     const adoptingTitles = new Set<string>()
     /** Adopt a native rename back into our record so every surface agrees. */
     const adoptShellTitles = (): void => {
       try {
-        for (const change of titleDrift(manager.getSnapshot().workspaces, shellWorkspaceItems(shellService))) {
+        const service = resolveShellService()
+        for (const change of titleDrift(manager.getSnapshot().workspaces, shellWorkspaceItems(service))) {
           if (adoptingTitles.has(change.id)) continue
           adoptingTitles.add(change.id)
           void api.renameWorkspace(change.id, change.title)
@@ -223,13 +239,20 @@ export function apply(ctx: ClientContext): void {
     const refreshBadges = (): void => {
       try {
         const workspaces = manager.getSnapshot().workspaces
-        // Join the shell's workspaces to our records by anchor path: the shell
-        // row's `data-row-key` carries the shell workspace id, which survives a
-        // native rename, so the badge no longer depends on the title matching.
-        const shellWorkspaces = shellWorkspaceItems(shellService)
+        // The row's `data-row-key` carries the DSH workspace id, which survives a
+        // rename and is unique even when two workspaces share a title. Prefer the
+        // id persisted on our record (deterministic, no shell service needed);
+        // fall back to the shell-service join for records created before the id
+        // was persisted.
+        const shellWorkspaces = shellWorkspaceItems(resolveShellService())
         const byWorkspaceId = new Map<string, { alias: string; remoteRoot: string }>()
+        for (const record of workspaces) {
+          if (typeof record.shellWorkspaceId === 'string' && record.shellWorkspaceId !== '') {
+            byWorkspaceId.set(record.shellWorkspaceId, { alias: record.alias, remoteRoot: record.remoteRoot })
+          }
+        }
         for (const [shellId, record] of joinShellWorkspaces(workspaces, shellWorkspaces)) {
-          byWorkspaceId.set(shellId, { alias: record.alias, remoteRoot: record.remoteRoot })
+          if (!byWorkspaceId.has(shellId)) byWorkspaceId.set(shellId, { alias: record.alias, remoteRoot: record.remoteRoot })
         }
         badgesDispose?.()
         badgesDispose = mountWorkspaceBadges(workspaces.map((workspace) => ({

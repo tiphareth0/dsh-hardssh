@@ -653,16 +653,18 @@ export function apply(ctx: Context, config?: Config): void {
 
   // Host workspace registration hooks (make the anchor a real sidebar
   // workspace). The registry is optional — headless profiles lack it.
-  const registerHostWorkspace = async (anchorPath: string, title: string): Promise<void> => {
+  const registerHostWorkspace = async (anchorPath: string, title: string): Promise<string | undefined> => {
     const registry = hostWorkspaceRegistry(ctx)
-    if (registry === undefined) return
-    if (await resolveHostWorkspace(registry, anchorPath) !== undefined) return
+    if (registry === undefined) return undefined
+    const existing = await resolveHostWorkspace(registry, anchorPath)
+    if (existing !== undefined) return existing.id
     // The 0.2.0 registry canonicalizes the path with fs.realpath and refuses a
     // directory that does not exist. The normal create path has already made the
     // managed anchor, but a startup reconcile replays records whose anchor may
     // have been removed since — restore it instead of failing the registration.
     await mkdir(anchorPath, { recursive: true })
-    await registry.create(anchorPath, title)
+    const created = await registry.create(anchorPath, title)
+    return created?.id
   }
   const unregisterHostWorkspace = async (anchorPath: string): Promise<void> => {
     const registry = hostWorkspaceRegistry(ctx)
@@ -684,6 +686,7 @@ export function apply(ctx: Context, config?: Config): void {
     engine,
     workspaces,
     registerHostWorkspace,
+    rememberShellWorkspace: (id, shellWorkspaceId) => workspaces.rememberShellWorkspace(id, shellWorkspaceId),
     unregisterHostWorkspace,
   })
   // webServer is optional (headless profiles lack it): dynamic inject keeps
@@ -714,7 +717,11 @@ export function apply(ctx: Context, config?: Config): void {
   const reconcileStartupOnce = (): void => {
     if (startupReconciled) return
     startupReconciled = true
-    void reconcileHostWorkspacesOnStartup({ workspaces, registerHostWorkspace }).catch((error: unknown) => {
+    void reconcileHostWorkspacesOnStartup({
+      workspaces,
+      registerHostWorkspace,
+      rememberShellWorkspace: (id, shellWorkspaceId) => workspaces.rememberShellWorkspace(id, shellWorkspaceId),
+    }).catch((error: unknown) => {
       console.warn('[dsh-hardssh] host-workspace startup reconciliation failed:', error instanceof Error ? error.message : String(error))
     })
   }

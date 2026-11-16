@@ -92,7 +92,10 @@ export interface HostWorkspaceReconcileReport {
 /** Registration replay dependencies (the route and the startup path share it). */
 export interface HostWorkspaceReconcileDeps {
   workspaces: WorkspaceStoreView
-  registerHostWorkspace?: (anchorPath: string, title: string) => Promise<void>
+  /** Returns the DSH host workspace id, so it can be persisted on the record. */
+  registerHostWorkspace?: (anchorPath: string, title: string) => Promise<string | undefined>
+  /** Persist the host workspace id on the SSH record (badge row identity). */
+  rememberShellWorkspace?: (id: string, shellWorkspaceId: string) => Promise<void>
 }
 
 /**
@@ -121,7 +124,10 @@ export async function reconcileHostWorkspaces(deps: HostWorkspaceReconcileDeps):
       // No host registry (headless profile): there is no sidebar entry to
       // create, so the desired state already holds for every record.
       if (deps.registerHostWorkspace !== undefined) {
-        await deps.registerHostWorkspace(record.anchorPath, record.title)
+        const shellWorkspaceId = await deps.registerHostWorkspace(record.anchorPath, record.title)
+        // Persist the row identity so the badge can match by id (the title is
+        // neither unique nor stable).
+        if (shellWorkspaceId !== undefined) await deps.rememberShellWorkspace?.(record.id, shellWorkspaceId)
       }
       registered += 1
     } catch (error) {
@@ -139,8 +145,10 @@ export interface WorkspaceRoutesDeps {
   /** SSH-workspace record source: the generic WorkspaceCore-backed
    *  projection store (the only runtime). */
   workspaces: WorkspaceStoreView
-  /** Register the anchor dir as a HOST workspace (sidebar visibility). */
-  registerHostWorkspace?: (anchorPath: string, title: string) => Promise<void>
+  /** Register the anchor dir as a HOST workspace (sidebar visibility); returns its id. */
+  registerHostWorkspace?: (anchorPath: string, title: string) => Promise<string | undefined>
+  /** Persist the host workspace id on the SSH record (badge row identity). */
+  rememberShellWorkspace?: (id: string, shellWorkspaceId: string) => Promise<void>
   /** Drop the host workspace registration for an anchor dir. */
   unregisterHostWorkspace?: (anchorPath: string) => Promise<void>
 }
@@ -229,7 +237,10 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
           // make a retry create a duplicate.
           if (deps.registerHostWorkspace !== undefined) {
             try {
-              await deps.registerHostWorkspace(record.anchorPath, record.title)
+              const shellWorkspaceId = await deps.registerHostWorkspace(record.anchorPath, record.title)
+              // Persist the row identity so the badge matches by id: the title is
+              // neither unique (same-named workspaces) nor stable (native rename).
+              if (shellWorkspaceId !== undefined) await deps.rememberShellWorkspace?.(record.id, shellWorkspaceId)
             } catch (error) {
               const registration = error instanceof Error ? error.message : String(error)
               try {
@@ -398,6 +409,7 @@ export function makeRoutes(deps: WorkspaceRoutesDeps): WebRoute[] {
         const report = await reconcileHostWorkspaces({
           workspaces,
           registerHostWorkspace: deps.registerHostWorkspace,
+          rememberShellWorkspace: deps.rememberShellWorkspace,
         })
         // The helper tolerates a failing record source for the startup path;
         // an explicit HTTP request must still see the I/O failure.

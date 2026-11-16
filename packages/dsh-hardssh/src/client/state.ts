@@ -25,6 +25,7 @@ function sameLedger(a: SshWorkspaceRecord[], b: SshWorkspaceRecord[]): boolean {
       || left.alias !== right.alias
       || left.remoteRoot !== right.remoteRoot
       || left.anchorPath !== right.anchorPath
+      || left.shellWorkspaceId !== right.shellWorkspaceId
     ) {
       return false
     }

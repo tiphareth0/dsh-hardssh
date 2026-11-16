@@ -87,7 +87,11 @@ export function mountWorkspaceBadges(
   byWorkspaceId?: ReadonlyMap<string, { alias: string; remoteRoot: string }>,
 ): () => void {
   const byTitle = new Map<string, { alias: string; remoteRoot: string }>()
-  for (const workspace of workspaces) byTitle.set(workspace.title, workspace)
+  const titleCounts = new Map<string, number>()
+  for (const workspace of workspaces) {
+    byTitle.set(workspace.title, workspace)
+    titleCounts.set(workspace.title, (titleCounts.get(workspace.title) ?? 0) + 1)
+  }
   // Local anchor (and its forward-slash spelling) → the remote label the shell
   // hover card should display; shared with the file-panel address rewrite.
   const labels = anchorLabels(workspaces)
@@ -122,7 +126,11 @@ export function mountWorkspaceBadges(
     const rowKey = row.getAttribute('data-row-key') ?? ''
     const rowWorkspaceId = rowKey.startsWith('workspace:') ? rowKey.slice('workspace:'.length) : undefined
     const title = titleEl.textContent?.trim() ?? ''
-    const target = (rowWorkspaceId === undefined ? undefined : byWorkspaceId?.get(rowWorkspaceId)) ?? byTitle.get(title)
+    // Title matching is a FALLBACK and only when the title is unambiguous: two
+    // workspaces may share a name, and a title-keyed map would then put the other
+    // workspace's alias/remote on this row (the same-name bug).
+    const titleTarget = (titleCounts.get(title) ?? 0) === 1 ? byTitle.get(title) : undefined
+    const target = (rowWorkspaceId === undefined ? undefined : byWorkspaceId?.get(rowWorkspaceId)) ?? titleTarget
     if (target === undefined) return
     // Heal a title this plugin used to set, and drop a shell-provided <title>
     // whose text is the local anchor (that would be a native duplicate of the

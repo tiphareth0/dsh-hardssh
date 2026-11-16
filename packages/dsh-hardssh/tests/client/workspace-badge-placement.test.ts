@@ -87,3 +87,39 @@ describe('workspace badge placement', () => {
     expect(badge).not.toBeNull()
     expect(badge!.previousElementSibling).toBe(projectText)
   })
+describe('workspace badge with duplicate titles', () => {
+  it('gives each same-named row its own badge (matched by id)', () => {
+    const first = row('same-name')
+    const second = row('same-name')
+    first.row.setAttribute('data-row-key', 'workspace:w1')
+    second.row.setAttribute('data-row-key', 'workspace:w2')
+    const records = [
+      { id: 'r1', title: 'same-name', alias: 'host-a', remoteRoot: '/a', anchorPath: 'C:\\a' },
+      { id: 'r2', title: 'same-name', alias: 'host-b', remoteRoot: '/b', anchorPath: 'C:\\b' },
+    ]
+    const byWorkspaceId = new Map([
+      ['w1', { alias: 'host-a', remoteRoot: '/a' }],
+      ['w2', { alias: 'host-b', remoteRoot: '/b' }],
+    ])
+    disposers.push(mountWorkspaceBadges(records, undefined, undefined, byWorkspaceId))
+
+    const badgeOf = (project: HTMLElement): string =>
+      project.querySelector<HTMLElement>('[data-ssh-badge]')?.title ?? ''
+    expect(badgeOf(first.row)).toContain('/a')
+    expect(badgeOf(first.row)).toContain('host-a')
+    expect(badgeOf(second.row)).toContain('/b')
+    expect(badgeOf(second.row)).toContain('host-b')
+  })
+
+  it('shows NO badge for an ambiguous title when no id mapping is available', () => {
+    const ambiguous = row('same-name')
+    const records = [
+      { id: 'r1', title: 'same-name', alias: 'host-a', remoteRoot: '/a', anchorPath: 'C:\\a' },
+      { id: 'r2', title: 'same-name', alias: 'host-b', remoteRoot: '/b', anchorPath: 'C:\\b' },
+    ]
+    disposers.push(mountWorkspaceBadges(records))
+    // Wrong badge would be worse than none: the title alone cannot tell which
+    // workspace this row is.
+    expect(ambiguous.row.querySelector('[data-ssh-badge]')).toBeNull()
+  })
+})

@@ -22,6 +22,11 @@
   - **原生改名回同步到插件记录**：客户端订阅 shell 的 `workspaces` 服务，按「锚点路径」把 shell 工作区与插件记录 join 起来，标题不一致时调用插件的重命名接口采纳新标题（空标题不采纳，避免把记录改成「未命名」）。
   新增 `tests/client/workspace-title-sync.test.ts`（join 的大小写/斜杠容错、漂移检测、空标题忽略）与徽章测试的「原生改名后仍显示」用例。
 - **工作区名称较长时看不到 SSH 徽章**。DSH 0.2.1 的行结构是 `projectRow > [slot, slot, projectText > title, rowActions]`；徽章原先被追加到 `title` 文本 span **内部**，名字一长就被挤出行外、被侧边栏的 `overflow` 裁掉——看起来像「这个工作区没有徽章」。现在徽章作为 `projectText` 的**兄弟节点**插在行内（`flex` 子项），长名称只会让标题截断，徽章保持可见；同时会清理旧版本留在 `title` 内的徽章（否则读到的标题会混入徽章文字，导致匹配失败）。新增 `tests/client/workspace-badge-placement.test.ts`（jsdom）覆盖长名称与旧布局自愈。
+- **两个同名工作区时徽章互相串台**（新建的同名工作区把旧工作区的徽章替换掉）。徽章原先按**标题**匹配，而 `byTitle` 是 Map：同名时后者覆盖前者，旧行就显示成新工作区的别名/远端。现在：
+  - 徽章**优先按 DSH 工作区 id** 匹配（行上的 `data-row-key="workspace:<id>"`），标题匹配只在标题**唯一**时兜底——同名时宁可不显示，也不显示错的；
+  - 工作区创建/启动对账时把 DSH 工作区 id 持久化到记录的 `extensions.shellWorkspaceId`（经 DTO 暴露），所以 id 匹配不依赖客户端能否拿到 shell 的 `workspaces` 服务；
+  - 客户端对 `workspaces` 服务改为**惰性解析**（插件可能先于它挂载），服务出现后自动绑定订阅，恢复原生改名的标题回同步。
+  新增测试：同名两行各自显示自己的徽章、无 id 映射时同名不显示徽章、`rememberShellWorkspace` 持久化与未知 id 的 no-op。
 ## v0.2.8 — 2026-11-04
 
 ### 致谢

@@ -60,6 +60,8 @@ export interface WorkspaceStoreView {
   create(input: { title: string; alias: string; remoteRoot: string }): Promise<SshWorkspaceRecord>
   rename(id: string, title: string): Promise<SshWorkspaceRecord | undefined>
   remove(id: string): Promise<boolean>
+  /** Persist the DSH host workspace id (sidebar row identity) on the record. */
+  rememberShellWorkspace(id: string, shellWorkspaceId: string): Promise<void>
   /** The shared anchor root (fail-closed gating before the runtime is ready). */
   anchorsRoot(): string
 }
@@ -87,6 +89,12 @@ function toSshWorkspaceDto(record: WorkspaceRecord): SshWorkspaceRecord {
     remoteRoot: record.location.root,
     anchorPath,
     createdAt: record.createdAt,
+    // Sidebar row identity: lets the badge match its row by id, which is stable
+    // across renames and (unlike the title) unique when two workspaces share a
+    // name.
+    ...(typeof record.extensions?.shellWorkspaceId === 'string'
+      ? { shellWorkspaceId: record.extensions.shellWorkspaceId }
+      : {}),
   }
 }
 
@@ -269,6 +277,27 @@ export class GenericWorkspaceStore implements WorkspaceStoreView {
     if (existing === undefined || existing.provider.id !== 'ssh') return undefined
     const record = await this.core.update(id, { title: title.trim() })
     return record === undefined || record.provider.id !== 'ssh' ? undefined : toSshWorkspaceDto(record)
+  }
+
+  /**
+   * Remember the DSH host workspace id this record registered.
+   *
+   * The sidebar row carries `data-row-key="workspace:<id>"`, so persisting the id
+   * lets the badge match its row without the (ambiguous) title — two workspaces
+   * may share a title, and a native rename changes it.
+   * @param id - the SSH record id.
+   * @param shellWorkspaceId - the host workspace id returned by the registry.
+   * @returns nothing; a non-SSH id or an unchanged value is a no-op.
+   */
+  async rememberShellWorkspace(id: string, shellWorkspaceId: string): Promise<void> {
+    await this.ready
+    if (shellWorkspaceId === '') return
+    const existing = await this.core.get(id)
+    if (existing === undefined || existing.provider.id !== 'ssh') return
+    if (existing.extensions?.shellWorkspaceId === shellWorkspaceId) return
+    await this.core.update(id, {
+      extensions: { ...(existing.extensions ?? {}), shellWorkspaceId },
+    })
   }
 
   /** WorkspaceCore.remove() is the generic delete; the anchor directory stays in place (the host workspace may still reference it). */

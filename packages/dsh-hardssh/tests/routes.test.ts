@@ -431,3 +431,21 @@ describe('host-delete reference guard over the generic record source', () => {
     expect(deleteSpy).toHaveBeenCalledWith('host')
   })
 })
+/**
+ * The sidebar row's identity is the DSH host workspace id, not the title: two
+ * workspaces may share a name, and a native rename changes the title. Persisting
+ * the id on our record is what lets the badge match its row unambiguously.
+ */
+describe('rememberShellWorkspace', () => {
+  it('persists the host workspace id on the SSH DTO', async () => {
+    const record = await store.create({ title: 'same-name', alias: 'host', remoteRoot: '/srv/app' })
+    expect(record.shellWorkspaceId).toBeUndefined()
+    await store.rememberShellWorkspace(record.id, 'shell-1')
+    const listed = await store.list()
+    expect(listed.find(entry => entry.id === record.id)?.shellWorkspaceId).toBe('shell-1')
+  })
+
+  it('is a no-op for an unknown id', async () => {
+    await expect(store.rememberShellWorkspace('missing-record', 'shell-2')).resolves.toBeUndefined()
+  })
+})
